@@ -297,7 +297,7 @@ main { min-width: 0; }
 .stack-form { display: grid; gap: 17px; margin-top: 20px; }
 .stack-form label { display: grid; gap: 5px; font-size: .9rem; font-weight: 650; }
 .stack-form small { color: var(--quiet); font-weight: 400; }
-.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .account-security input[type="email"], .restricted-form input[type="number"], .reply-form textarea { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
+.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .post-search-filters input[type="search"], .account-security input[type="email"], .restricted-form input[type="number"], .reply-form textarea { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
 textarea { resize: vertical; }
 .stack-form .muted { margin: 0; }
 .stack-form button { justify-self: start; }
@@ -493,6 +493,10 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .profile-item h2 a:hover { text-decoration: underline; }
 .profile-item p { white-space: pre-wrap; }
 .search-tabs { margin-bottom: 12px; }
+.post-search-filters { gap: 10px; margin-top: 12px; padding: 12px 14px; }
+.post-search-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; }
+.post-search-hint { color: var(--quiet); font-size: .82rem; }
+.post-search-filters .form-actions { flex-wrap: wrap; }
 .search-comment .profile-comment-meta { flex-wrap: wrap; overflow-wrap: anywhere; }
 .profile-sidebar { display: grid; gap: 11px; min-width: 0; }
 .profile-card { min-width: 0; overflow: hidden; }
@@ -755,6 +759,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
   .mod-tools-insights { grid-column: 2; }
 }
 @media (max-width: 650px) {
+  .post-search-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .post-search-fields > :last-child { grid-column: 1 / -1; }
   .mod-appeal-filters { width: 100%; }
   .mod-appeal-filters > .mod-appeal-search { flex-basis: 100%; }
   .topbar { position: static; }

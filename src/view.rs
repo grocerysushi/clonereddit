@@ -10,6 +10,8 @@ mod moderation;
 mod moderation_workspace;
 mod post_composer;
 mod post_flair;
+mod post_search_controls;
+mod post_search_query;
 mod profile;
 mod profile_panel;
 mod publishing;
@@ -363,7 +365,8 @@ pub fn route(
     let query = &request.query;
     let notice = field(query, "notice");
     let profile_tab = field(query, "tab");
-    let search_kind = if request.path == "/" && !field(query, "q").trim().is_empty() {
+    let searching = request.path == "/" && search::active(query);
+    let search_kind = if searching {
         search::Kind::from_query(query)
     } else {
         search::Kind::Posts
@@ -378,10 +381,7 @@ pub fn route(
             if community(state, active).is_some_and(|item| !state.can_view_community(item)) {
                 return missing(state);
             }
-            if !state.username.is_empty()
-                && field(query, "q").is_empty()
-                && community(state, active).is_some()
-            {
+            if !state.username.is_empty() && !searching && community(state, active).is_some() {
                 state.record_visit(active, path);
             }
             let title = community(state, active)
@@ -390,11 +390,7 @@ pub fn route(
                 .unwrap_or("The front page");
             let content = search::render(state, auth, active, query, search_kind)
                 .unwrap_or_else(|| feed(state, query, active));
-            let title = if search_kind == search::Kind::Posts {
-                title
-            } else {
-                "Search"
-            };
+            let title = if searching { "Search" } else { title };
             (title, active, content)
         }
         "/thread" => {
@@ -611,7 +607,7 @@ pub fn route(
         field(query, "q"),
         notice,
         right,
-        search_kind,
+        searching.then_some(query),
     ))
 }
 
@@ -723,7 +719,7 @@ fn public_profile(
         "",
         "",
         Some(profile_panel::render(&profile, &request.origin, true, tab)),
-        search::Kind::Posts,
+        None,
     ))
 }
 
@@ -1576,16 +1572,7 @@ fn layout(
     query: &str,
     notice: &str,
 ) -> String {
-    layout_with_rail(
-        state,
-        active,
-        title,
-        body,
-        query,
-        notice,
-        None,
-        search::Kind::Posts,
-    )
+    layout_with_rail(state, active, title, body, query, notice, None, None)
 }
 
 fn layout_with_rail(
@@ -1596,7 +1583,7 @@ fn layout_with_rail(
     query: &str,
     notice: &str,
     right: Option<String>,
-    search_kind: search::Kind,
+    search_query: Option<&BTreeMap<String, String>>,
 ) -> String {
     let mut communities = String::new();
     for item in state.communities.iter().filter(|item| {
@@ -1754,7 +1741,7 @@ fn layout_with_rail(
     };
     let search_community = community(state, active);
     let custom = custom_feed(state, active);
-    let search_view = if search_community.is_some() || custom.is_some() {
+    let search_view = if search_query.is_some() || search_community.is_some() || custom.is_some() {
         active
     } else {
         "all"
@@ -1818,11 +1805,7 @@ fn layout_with_rail(
             icon("plus")
         )
     };
-    let search_type = if search_kind == search::Kind::Posts {
-        String::new()
-    } else {
-        hidden("type", search_kind.code())
-    };
+    let search_fields = search::header_fields(search_query);
     format!(
         r##"<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1830,7 +1813,7 @@ fn layout_with_rail(
 <body><a class="skip" href="#content">Skip to content</a>
 <header class="topbar"><div class="top-inner">
 <a class="wordmark" href="/" aria-label="Commonline home"><span class="brand-mark">{brand}</span>commonline<span class="wordmark-period">.</span></a>
-<form class="search" action="/" role="search"><input type="hidden" name="view" value="{search_view}">{search_type}<input type="search" name="q" aria-label="{search_label}" placeholder="{search_label}" value="{query}" maxlength="120"><button type="submit" aria-label="Run search">{search_icon}</button></form>
+<form class="search" action="/" role="search"><input type="hidden" name="view" value="{search_view}">{search_fields}<input type="search" name="q" aria-label="{search_label}" placeholder="{search_label}" value="{query}" maxlength="120"><button type="submit" aria-label="Run search">{search_icon}</button></form>
 <div class="header-actions">{account_actions}</div>
 </div></header>
 <div class="page-shell{shell_class}">
@@ -1972,13 +1955,15 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     let selected = community(state, active);
     let custom = custom_feed(state, active);
     let search = field(query, "q").trim();
-    let community_feed = selected.filter(|_| search.is_empty());
+    let searching = search::active(query);
+    let community_feed = selected.filter(|_| !searching);
     let flair = community_feed.map_or("", |_| field(query, "flair"));
-    let kind = if search.is_empty() {
-        search::Kind::Posts
-    } else {
+    let kind = if searching {
         search::Kind::from_query(query)
+    } else {
+        search::Kind::Posts
     };
+    let post_query = searching.then(|| post_search_query::PostSearchQuery::new(query));
     let media_only = kind == search::Kind::Media;
     let sort = match field(query, "sort") {
         "best" => "best",
@@ -1995,8 +1980,9 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         .find(|(key, _, _)| *key == field(query, "t"))
         .unwrap_or(TOP_WINDOWS[0]);
     let now = schedule_time::now();
+    let base_url = |scope, sort, window| stream_url(scope, sort, search, window);
     let unfiltered_url =
-        |scope, sort, window| search::with_type(stream_url(scope, sort, search, window), kind);
+        |scope, sort, window| search::with_filters(base_url(scope, sort, window), query, kind);
     let result_url = |scope, sort, window| {
         flair_url(
             unfiltered_url(scope, sort, window),
@@ -2004,7 +1990,8 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         )
     };
     let back = result_url(active, sort, top_window);
-    let mut html = match (active, selected, search.is_empty()) {
+    let mut html = match (active, selected, !searching) {
+        (_, _, false) if search.is_empty() => masthead("Search", "", "DISCUSSIONS"),
         (_, _, false) => masthead("Search", &format!("Results for “{search}”"), "DISCUSSIONS"),
         ("saved", _, true) => masthead(
             "Saved posts.",
@@ -2052,10 +2039,18 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
             "THE COMMONLINE FEED",
         ),
     };
-    if !search.is_empty() {
+    if let Some(post_query) = &post_query {
         html.push_str(&search::tabs(active, query, kind));
+        let clear_url = search::without_post_filters(base_url(active, sort, top_window), kind);
+        let error = post_query.error();
+        html.push_str(&post_search_controls::render(
+            active, query, kind, &clear_url, error,
+        ));
+        if error.is_some() {
+            return html;
+        }
     }
-    if matches!(active, "home" | "following") && search.is_empty() {
+    if matches!(active, "home" | "following") && !searching {
         let tabs = [("home", "For You"), ("following", "Following")]
             .into_iter()
             .map(|(key, label)| {
@@ -2159,7 +2154,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
             html.push_str(&community_rules(item));
         }
     }
-    if let Some(item) = selected.filter(|_| !search.is_empty()) {
+    if let Some(item) = selected.filter(|_| searching) {
         let label = if media_only {
             "Search all media"
         } else {
@@ -2207,7 +2202,6 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     } else {
         String::new()
     };
-    let needle = search.to_lowercase();
     let highlight_positions: BTreeMap<_, _> = community_feed
         .into_iter()
         .flat_map(Community::highlighted_posts)
@@ -2242,17 +2236,6 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
                         && custom.is_none_or(|item| item.communities.contains(&post.community))
                 }
             };
-            let matches = search.is_empty()
-                || [
-                    display_post_title(state, post),
-                    post.body.as_str(),
-                    post.author.as_str(),
-                    post.community.as_str(),
-                    post.flair.as_str(),
-                ]
-                .iter()
-                .any(|text| text.to_lowercase().contains(&needle))
-                || group.is_some_and(|item| item.name.to_lowercase().contains(&needle));
             let visible = !state.hidden.contains(&post.id)
                 && !state.blocked.contains(&post.author)
                 && (selected.is_some() || !state.muted.contains(&post.community))
@@ -2262,7 +2245,12 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
                         .iter()
                         .any(|text| text.to_lowercase().contains(&keyword.to_lowercase()))
                 });
-            viewable && in_view && matches && visible
+            viewable
+                && in_view
+                && visible
+                && post_query
+                    .as_ref()
+                    .is_none_or(|query| query.matches(post, display_post_title(state, post), group))
         })
         .inspect(|post| {
             if community_feed.is_some() && !post.flair.is_empty() {
@@ -2314,7 +2302,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     if total == 0 && !flair.is_empty() {
         html.push_str("<section class='panel empty'><h2>No posts with this flair</h2><p>Choose another flair or clear the filter.</p></section>");
     } else if total == 0
-        && search.is_empty()
+        && !searching
         && selected.is_some_and(|item| {
             !state
                 .posts
@@ -2329,6 +2317,8 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         }
     } else if total == 0 && media_only {
         html.push_str("<section class='panel empty'><h2>No matching media posts</h2></section>");
+    } else if total == 0 && searching {
+        html.push_str("<section class='panel empty'><h2>No matching posts</h2><p>Try different search terms or filters.</p></section>");
     } else if total == 0 && active == "following" {
         html.push_str("<section class='panel empty'><h2>No posts from your communities yet.</h2><a class='button light' href='/?view=communities'>Explore communities</a></section>");
     } else if total == 0 {

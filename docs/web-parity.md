@@ -281,10 +281,16 @@ Chromium checks at 1440 and 390 CSS pixels covered label management, a delegated
 
 Community feeds can filter posts and highlights by flair, including labels preserved on older visible posts. Chromium checks at both widths covered selecting, switching, and clearing a flair, preserving the sort and time range, and reopening filtered feeds after restart. HTTP checks covered viewer-specific visibility, private-community access, and preservation of the filter after a feed action.
 
+## Structured post search update
+
+Workflow **016** is implemented. Post and media search combine exact author, community, and flair filters with quoted phrases. The filters work with or without text and can also be entered as search operators. Search retains its community scope and viewer-specific visibility rules. This brings the implementation count to **80 implemented, 8 partial, and 12 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered combined filters, phrase boundaries, clear and recovery controls, sort and time-range retention, access from separate accounts, and reopening a filtered URL after restart. HTTP checks covered Unicode, conflicting filters, and exclusion of private, removed, and personally filtered results. The existing typed-search and community-feed flair checks also passed.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Improve discovery and publishing. Add structured search filters and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
+2. Improve discovery and publishing. Expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 3. Expand community operations. Add granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 

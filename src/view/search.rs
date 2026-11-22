@@ -4,7 +4,8 @@ use std::fmt::Write;
 
 use super::{
     account_byline, can_view_post, community, community_icon, community_members, community_url,
-    custom_feed, display_post_title, encode, escape, field, initials, is_sensitive, masthead,
+    custom_feed, display_post_title, encode, escape, field, hidden, initials, is_sensitive,
+    masthead,
 };
 use crate::auth::AuthStore;
 use crate::model::{Comment, Community, CustomFeed, Post, State};
@@ -40,11 +41,58 @@ impl Kind {
     }
 }
 
-pub(super) fn with_type(mut url: String, kind: Kind) -> String {
+const POST_FIELDS: &[&str] = &["author", "community", "post_flair"];
+
+fn post_filters(query: &BTreeMap<String, String>) -> impl Iterator<Item = (&'static str, &str)> {
+    POST_FIELDS.iter().copied().filter_map(|name| {
+        let value = field(query, name).trim();
+        (!value.is_empty()).then_some((name, value))
+    })
+}
+
+pub(super) fn active(query: &BTreeMap<String, String>) -> bool {
+    field(query, "search") == "1"
+        || !field(query, "q").trim().is_empty()
+        || post_filters(query).next().is_some()
+}
+
+pub(super) fn without_post_filters(mut url: String, kind: Kind) -> String {
     if kind != Kind::Posts {
         write!(url, "&type={}", kind.code()).unwrap();
     }
+    url.push_str("&search=1");
     url
+}
+
+pub(super) fn with_filters(url: String, query: &BTreeMap<String, String>, kind: Kind) -> String {
+    if !active(query) {
+        return url;
+    }
+    let mut url = without_post_filters(url, kind);
+    for (name, value) in post_filters(query) {
+        write!(url, "&{name}={}", encode(value)).unwrap();
+    }
+    url
+}
+
+pub(super) fn header_fields(query: Option<&BTreeMap<String, String>>) -> String {
+    let mut html = hidden("search", "1");
+    if let Some(query) = query {
+        let kind = Kind::from_query(query);
+        if kind != Kind::Posts {
+            html.push_str(&hidden("type", kind.code()));
+        }
+        for name in ["sort", "t"] {
+            let value = field(query, name);
+            if !value.is_empty() {
+                html.push_str(&hidden(name, value));
+            }
+        }
+        for (name, value) in post_filters(query) {
+            html.push_str(&hidden(name, value));
+        }
+    }
+    html
 }
 
 pub(super) fn has_media(post: &Post) -> bool {
@@ -63,7 +111,7 @@ fn url(active: &str, query: &BTreeMap<String, String>, kind: Kind) -> String {
             write!(url, "&{key}={}", encode(value)).unwrap();
         }
     }
-    with_type(url, kind)
+    with_filters(url, query, kind)
 }
 
 pub(super) fn tabs(active: &str, query: &BTreeMap<String, String>, kind: Kind) -> String {
@@ -96,9 +144,15 @@ pub(super) fn render(
     query: &BTreeMap<String, String>,
     kind: Kind,
 ) -> Option<String> {
+    if !self::active(query) || matches!(kind, Kind::Posts | Kind::Media) {
+        return None;
+    }
     let search = field(query, "q").trim();
     if search.is_empty() {
-        return None;
+        let mut html = masthead("Search", "", "DISCUSSIONS");
+        html.push_str(&tabs(active, query, kind));
+        html.push_str(&empty("Enter a search term"));
+        return Some(html);
     }
     let scope = Scope {
         state,
