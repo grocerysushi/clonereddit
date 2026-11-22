@@ -4,7 +4,7 @@ use std::fmt::Write;
 use crate::model::{Appeal, AppealStatus, Community, ModeratorRole, State};
 use crate::schedule_time;
 
-use super::super::{action_fields, action_form, community_owner, escape, field};
+use super::super::{account_byline, action_fields, action_form, community_owner, escape, field};
 use super::{empty, tools_url};
 
 type Draft<'a> = Option<(&'a BTreeMap<String, String>, &'a str)>;
@@ -118,7 +118,7 @@ pub(super) fn roles(
         let options = role_options(role);
         write!(html, "<section class='panel mod-section mod-role-add'><h2>Add moderator</h2><form class='stack-form' action='/action' method='post'>{fields}<label>Username<input name='handle' value='{}' list='mod-role-usernames' minlength='2' maxlength='24' autocomplete='off' autocapitalize='none' spellcheck='false' required></label><datalist id='mod-role-usernames'>{suggestions}</datalist><label>Role<select name='role'>{options}</select></label><button class='button dark' type='submit'>Add moderator</button></form></section>", escape(handle)).unwrap();
     }
-    write!(html, "<section class='panel mod-section mod-role-roster'><h2>Moderation team</h2><ul><li><div><strong>u/{}</strong><p class='muted'>Owner</p></div></li>", escape(owner)).unwrap();
+    write!(html, "<section class='panel mod-section mod-role-roster'><h2>Moderation team</h2><ul><li><div><strong>{}</strong><p class='muted'>Owner</p></div></li>", account_byline(owner)).unwrap();
     for entry in staff {
         write!(
             html,

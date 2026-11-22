@@ -26,7 +26,7 @@ use crate::mail::AccountMail;
 use crate::media;
 use crate::model::{
     Comment, Community, ContentKind, CustomFeed, ModPermission, Post, PostDraft, ProfileAvatar,
-    State,
+    State, DELETED_ACCOUNT,
 };
 use crate::schedule_time;
 
@@ -38,7 +38,7 @@ pub fn route(
     mail: &AccountMail,
 ) -> Response {
     if request.path.starts_with("/account/") {
-        return session::route(&request, state, auth, mail);
+        return session::route(&request, state, path, auth, mail);
     }
     if state.username.is_empty()
         && (request.method == "POST" || session::requires_account(&request))
@@ -1271,6 +1271,14 @@ fn initials(handle: &str) -> String {
         .collect()
 }
 
+fn account_byline(handle: &str) -> String {
+    if handle == DELETED_ACCOUNT {
+        DELETED_ACCOUNT.into()
+    } else {
+        format!("u/{}", escape(handle))
+    }
+}
+
 fn nav_link(url: &str, label: &str, glyph: &str, selected: bool) -> String {
     let selection = if selected {
         " class='selected' aria-current='page'"
@@ -2331,7 +2339,7 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
             "",
             "menu-item",
         ));
-    } else {
+    } else if post.author != DELETED_ACCOUNT {
         menu.push_str(&action_form(
             "block",
             back,
@@ -2376,12 +2384,12 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
         name = escape(name),
         author = if state.has_profile(&post.author) {
             format!(
-                "<a class='post-author' href='{}'>u/{}</a>",
+                "<a class='post-author' href='{}'>{}</a>",
                 format_args!("/u/{}", encode(&post.author)),
-                escape(&post.author)
+                account_byline(&post.author)
             )
         } else {
-            format!("<span>u/{}</span>", escape(&post.author))
+            format!("<span>{}</span>", account_byline(&post.author))
         },
         age = escape(&post.age_label(schedule_time::now())),
         more = icon("more"),
@@ -2754,15 +2762,19 @@ fn comment_card(
     can_reply: bool,
 ) -> String {
     let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
-    let avatar = escape(&initials(&comment.author));
-    let handle = escape(&comment.author);
+    let avatar = if comment.author == DELETED_ACCOUNT {
+        "–".into()
+    } else {
+        escape(&initials(&comment.author))
+    };
+    let byline = account_byline(&comment.author);
     let author = if state.has_profile(&comment.author) {
         format!(
-            "<a class='post-author' href='/u/{}'>u/{handle}</a>",
+            "<a class='post-author' href='/u/{}'>{byline}</a>",
             encode(&comment.author)
         )
     } else {
-        format!("<strong>u/{handle}</strong>")
+        format!("<strong>{byline}</strong>")
     };
     let owns = comment.author == state.username;
     let (body, controls) = match action {

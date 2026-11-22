@@ -156,6 +156,7 @@ fn contributor_suggestions(state: &State, item: &Community) -> String {
             .map(|comment| comment.author.as_str()),
     );
     contributors.remove(state.username.as_str());
+    contributors.remove(crate::model::DELETED_ACCOUNT);
     if contributors.is_empty() {
         return String::new();
     }

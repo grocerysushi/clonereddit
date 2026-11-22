@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use super::{
-    can_view_post, community, community_icon, community_members, community_url, custom_feed,
-    display_post_title, encode, escape, field, initials, is_sensitive, masthead,
+    account_byline, can_view_post, community, community_icon, community_members, community_url,
+    custom_feed, display_post_title, encode, escape, field, initials, is_sensitive, masthead,
 };
 use crate::auth::AuthStore;
 use crate::model::{Comment, Community, CustomFeed, Post, State};
@@ -214,11 +214,11 @@ fn comments(scope: &Scope<'_>, needle: &str, sort: &str) -> String {
     for (comment, post) in matches {
         let title = escape(display_post_title(state, post));
         let location = format!("/thread?id={}#comment-{}", post.id, comment.id);
-        let author = escape(&comment.author);
+        let author = account_byline(&comment.author);
         let group = community(state, &post.community)
             .map_or(post.community.as_str(), |item| item.name.as_str());
         let excerpt = escape(&excerpt(&comment.body));
-        write!(html, "<article class='panel profile-item search-comment'><div class='profile-comment-meta'><a class='subtle-link' href='{}'>{}</a><span class='muted'>u/{author} · {}</span></div><h2><a href='{location}'>Comment on {title}</a></h2>", community_url(&post.community), escape(group), escape(&comment.age)).unwrap();
+        write!(html, "<article class='panel profile-item search-comment'><div class='profile-comment-meta'><a class='subtle-link' href='{}'>{}</a><span class='muted'>{author} · {}</span></div><h2><a href='{location}'>Comment on {title}</a></h2>", community_url(&post.community), escape(group), escape(&comment.age)).unwrap();
         if post.spoiler || (state.sensitive != "show" && is_sensitive(state, post)) {
             let label = if post.spoiler {
                 "Reveal spoiler"

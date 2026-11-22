@@ -8,6 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[path = "model/account_data.rs"]
 mod account_data;
 use account_data::ProfileData;
+#[path = "model/account_deletion.rs"]
+mod account_deletion;
+pub use account_deletion::DELETED_ACCOUNT;
 #[path = "model/approved_members.rs"]
 mod approved_members;
 pub use approved_members::ApprovedMember;
@@ -2526,7 +2529,14 @@ impl State {
             {
                 let author = match authors {
                     [] | [""] => None,
-                    [handle] => Some(checked_handle(&decode(handle)?).ok()?),
+                    [handle] => {
+                        let handle = decode(handle)?;
+                        if handle == DELETED_ACCOUNT {
+                            Some(handle)
+                        } else {
+                            Some(checked_handle(&handle).ok()?)
+                        }
+                    }
                     _ => return None,
                 };
                 self.scheduled.push(ScheduledItem {

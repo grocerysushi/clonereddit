@@ -24,7 +24,48 @@ pub(super) fn settings(
         r#"<section class="panel standalone account-security"><a class="back-link" href="/profile">← Your profile</a><h1>Account security</h1>{alert}{sessions}
 <section class="account-security-section" aria-labelledby="account-password-heading"><h2 id="account-password-heading">Change password</h2>
 <form class="stack-form account-security-form" method="post" action="/account/security/password" aria-labelledby="account-password-heading">{current}{password}{otp}<button type="submit" class="button dark">Change password</button></form></section>
-{email}{authenticator}</section>"#
+{email}{authenticator}
+<section class="account-security-section account-delete-entry" aria-labelledby="account-delete-heading"><h2 id="account-delete-heading">Delete account</h2><p class="muted">Permanently delete your account and sign out everywhere.</p><a class="button light account-delete-link" href="/account/security/delete">Delete account</a></section></section>"#
+    )
+}
+
+pub(super) fn delete_account(username: &str, two_factor: bool, error: &str) -> String {
+    let username = escape(username);
+    let alert = error_notice(error);
+    let password = current_password("password");
+    let otp = if two_factor {
+        otp_field(true)
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<section class="panel standalone account-auth account-security account-delete-confirm"><h1 id="delete-account-title">Delete your account</h1>{alert}
+<p>Deleting <strong>u/{username}</strong> is permanent.</p>
+<ul class="account-delete-consequences">
+<li>Your profile, saved activity, drafts, and recovery data will be deleted. All sessions will end.</li>
+<li>Your existing posts and comments will stay in their discussions with the author marked as deleted. Copies of messages others received and moderation records can remain.</li>
+<li>Communities you own keep their moderators and access settings. Owner-only settings become unavailable.</li>
+</ul>
+<form class="stack-form account-delete-form" method="post" action="/account/security/delete" aria-labelledby="delete-account-title">{password}{otp}
+<label class="checkbox account-delete-consent"><input type="checkbox" name="confirm" value="yes" required><span>I understand that deleting my account is permanent.</span></label>
+<div class="form-actions"><a class="button light" href="/account/security">Cancel</a><button type="submit" class="button account-delete-danger">Permanently delete account</button></div></form></section>"#
+    )
+}
+
+pub(super) fn account_deleted(cleanup_pending: bool) -> String {
+    let (title, detail) = if cleanup_pending {
+        (
+            "Account closed",
+            "All sessions have ended. Your account cleanup is still in progress.",
+        )
+    } else {
+        (
+            "Account deleted",
+            "Your account has been deleted, and all sessions have ended.",
+        )
+    };
+    format!(
+        r#"<section class="panel standalone account-auth account-security account-delete-result"><h1>{title}</h1><p role="status">{detail}</p><a class="button light" href="/">Return home</a></section>"#
     )
 }
 

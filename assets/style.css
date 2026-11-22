@@ -79,6 +79,15 @@ h1, h2, p { margin: 0; overflow-wrap: anywhere; }
 .account-session-bulk summary { list-style: none; }
 .account-session-bulk summary::-webkit-details-marker { display: none; }
 .account-session-bulk form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
+.account-delete-entry .account-delete-link { margin-top: 8px; border-color: #d8a9a1; color: #74362e; }
+.account-delete-entry .account-delete-link:hover { border-color: #a75c50; background: #f8e8de; }
+.account-delete-consequences { margin: 0 0 15px; padding-inline-start: 21px; color: var(--quiet); }
+.account-delete-consequences li + li { margin-top: 7px; }
+.account-delete-confirm .account-delete-consent { align-items: flex-start; }
+.account-delete-consent input { flex: none; margin: 4px 0 0; }
+.account-delete-form .account-delete-danger { background: #74362e; color: #fff; }
+.account-delete-form .account-delete-danger:hover { background: #8c4438; }
+.account-delete-result > .button { margin-top: 0; }
 .account-security .stack-form .account-otp-input, .account-auth .stack-form .account-otp-input { max-width: 9rem; letter-spacing: .1em; font-variant-numeric: tabular-nums; }
 .account-totp-key input { font-size: clamp(.75rem, 2.7vw, .95rem); }
 .account-inbox-grid { display: grid; grid-template-columns: minmax(155px, 1fr) minmax(0, 2fr); gap: 18px; margin-top: 20px; }

@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use super::{
     checked_handle, encode, encode_image, next_id, required, unix_seconds, value, Comment,
     Community, CustomFeed, DirectMessage, Notification, Post, PostDraft, ProfileAvatar, SocialLink,
-    State,
+    State, DELETED_ACCOUNT,
 };
 
 #[derive(Clone, Default)]
@@ -525,6 +525,9 @@ impl State {
         appeal: bool,
         moderation: bool,
     ) -> Result<(), String> {
+        if recipient == DELETED_ACCOUNT {
+            return Ok(());
+        }
         let id = next_id(&mut self.next_notification)?;
         self.notifications.push(Notification {
             id,

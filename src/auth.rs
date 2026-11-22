@@ -16,6 +16,10 @@ use subtle::ConstantTimeEq;
 
 use crate::http::{valid_session_token, SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECS};
 
+#[path = "auth_deletion.rs"]
+mod deletion;
+use deletion::AccountDeletions;
+
 #[path = "auth_sessions.rs"]
 mod sessions;
 use sessions::Session;
@@ -53,6 +57,7 @@ pub struct AuthStore {
     accounts: BTreeMap<String, Account>,
     sessions: BTreeMap<SecretHash, Session>,
     legacy_claims: BTreeMap<String, SecretHash>,
+    deletions: AccountDeletions,
     login_challenges: BTreeMap<SecretHash, LoginChallenge>,
     otp_failures: BTreeMap<String, OtpFailures>,
     dummy_hash: String,
@@ -70,6 +75,7 @@ impl AuthStore {
             accounts: BTreeMap::new(),
             sessions: BTreeMap::new(),
             legacy_claims: BTreeMap::new(),
+            deletions: AccountDeletions::default(),
             login_challenges: BTreeMap::new(),
             otp_failures: BTreeMap::new(),
             dummy_hash,
@@ -97,6 +103,9 @@ impl AuthStore {
         {
             return Err(invalid_store());
         }
+        store
+            .deletions
+            .validate(store.accounts.keys().chain(store.legacy_claims.keys()))?;
         let now = unix_seconds();
         store.sessions.retain(|_, session| session.expires_at > now);
         store.validate_security_records(now)?;
@@ -110,7 +119,10 @@ impl AuthStore {
         device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let username = checked_username(username)?;
-        if self.accounts.contains_key(&username) || self.legacy_claims.contains_key(&username) {
+        if self.accounts.contains_key(&username)
+            || self.legacy_claims.contains_key(&username)
+            || self.deletions.is_reserved(&username)
+        {
             return Err("That username is unavailable.".into());
         }
         self.replace_credentials(username, password, None, device)
@@ -169,6 +181,9 @@ impl AuthStore {
         device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let username = checked_username(username).map_err(|_| RECOVERY_ERROR)?;
+        if self.deletions.is_reserved(&username) {
+            return Err(RECOVERY_ERROR.into());
+        }
         let code = recovery_code.trim().to_ascii_lowercase();
         if !valid_session_token(&code) {
             return Err(RECOVERY_ERROR.into());
@@ -215,6 +230,9 @@ impl AuthStore {
     /// The operator caller verifies this handle against the existing local site's owner.
     pub fn issue_legacy_recovery(&mut self, username: &str) -> Result<String, String> {
         let username = checked_username(username)?;
+        if self.deletions.is_reserved(&username) {
+            return Err("That username is unavailable.".into());
+        }
         if self.accounts.contains_key(&username) {
             return Err("This account is already registered. Use its recovery code.".into());
         }
@@ -339,6 +357,9 @@ impl AuthStore {
                     return Err(invalid_store());
                 }
             }
+            fields @ (["deleted-handle", ..] | ["pending-account-deletion", ..]) => {
+                self.deletions.read_record(fields)?
+            }
             _ => self.load_security_record(&pieces)?,
         }
         Ok(())
@@ -400,7 +421,7 @@ impl AuthStore {
         for (username, hash) in &self.legacy_claims {
             writeln!(file, "legacy-recovery\t{username}\t{}", hex(hash))?;
         }
-        Ok(())
+        self.deletions.write_records(file)
     }
 }
 

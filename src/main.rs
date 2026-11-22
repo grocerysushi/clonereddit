@@ -1,3 +1,4 @@
+mod account_deletion;
 mod auth;
 mod http;
 mod mail;
@@ -22,7 +23,7 @@ use model::State;
 
 const DEFAULT_PORT: u16 = 4173;
 const PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
-const PUBLISH_RETRY: Duration = Duration::from_secs(10);
+const MAINTENANCE_RETRY: Duration = Duration::from_secs(10);
 
 fn main() {
     if let Err(error) = run() {
@@ -90,16 +91,18 @@ fn run() -> io::Result<()> {
         state_path,
         retry_after: None,
     };
-    app.publish_due();
+    account_deletion::finish_pending(&mut app.state, &app.state_path, &mut app.auth)
+        .map_err(io::Error::other)?;
+    app.run_maintenance();
     let app = Arc::new(Mutex::new(app));
     let scheduler = Arc::clone(&app);
     let (stop, shutdown) = mpsc::channel::<()>();
     let timer = thread::Builder::new().name("commonline-publisher".into()).spawn(move || {
         while matches!(shutdown.recv_timeout(PUBLISH_INTERVAL), Err(mpsc::RecvTimeoutError::Timeout)) {
             match scheduler.lock() {
-                Ok(mut app) => app.publish_due(),
+                Ok(mut app) => app.run_maintenance(),
                 Err(_) => {
-                    eprintln!("Commonline stopped scheduled publishing because the local state is unavailable. Restart the server to retry.");
+                    eprintln!("Commonline stopped background maintenance because the local state is unavailable. Restart the server to retry.");
                     break;
                 }
             }
@@ -150,7 +153,7 @@ struct App {
 
 impl App {
     fn route(&mut self, request: Request) -> Response {
-        self.publish_due();
+        self.run_maintenance();
         let token = request.cookie.as_deref().and_then(auth::session_token);
         let username = token.and_then(|token| self.auth.username(token));
         self.state.activate_profile(username);
@@ -163,16 +166,21 @@ impl App {
         )
     }
 
-    fn publish_due(&mut self) {
+    fn run_maintenance(&mut self) {
         let started = Instant::now();
         if self.retry_after.is_some_and(|retry| started < retry) {
             return;
         }
-        match self
-            .state
-            .publish_due(&self.state_path, schedule_time::now())
-        {
-            Ok(_) => {
+        let result =
+            account_deletion::finish_pending(&mut self.state, &self.state_path, &mut self.auth)
+                .and_then(|()| {
+                    self.state
+                        .publish_due(&self.state_path, schedule_time::now())
+                        .map(|_| ())
+                        .map_err(|error| format!("Could not publish scheduled posts. {error}"))
+                });
+        match result {
+            Ok(()) => {
                 if self.retry_after.take().is_some() {
                     eprintln!("Commonline resumed scheduled publishing.");
                 }
@@ -180,12 +188,12 @@ impl App {
             Err(error) => {
                 if self.retry_after.is_none() {
                     eprintln!(
-                        "Commonline paused scheduled publishing. Could not save {} ({error}). Check that the state file and its directory are writable. Retrying every {} seconds.",
+                        "Commonline paused scheduled publishing. Could not update {} ({error}). Check that the state file and its directory are writable. Retrying every {} seconds.",
                         self.state_path.display(),
-                        PUBLISH_RETRY.as_secs(),
+                        MAINTENANCE_RETRY.as_secs(),
                     );
                 }
-                self.retry_after = Some(started + PUBLISH_RETRY);
+                self.retry_after = Some(started + MAINTENANCE_RETRY);
             }
         }
     }

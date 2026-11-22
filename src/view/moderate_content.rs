@@ -5,7 +5,9 @@ use std::fmt::Write;
 use crate::model::{Comment, Community, ContentKind, ModPermission, Post, State};
 use crate::schedule_time;
 
-use super::super::{action_fields, action_form, display_post_title, encode, escape, field, hidden};
+use super::super::{
+    account_byline, action_fields, action_form, display_post_title, encode, escape, field, hidden,
+};
 use super::{empty, tools_url};
 
 const PAGE_SIZE: usize = 25;
@@ -223,8 +225,8 @@ fn list(
             ""
         };
         let preview = excerpt(entry.body());
-        write!(html, "<article class='panel mod-record mod-content-list-item'><header><span class='flair'>{}</span><span class='muted'>#{} · u/{}</span></header><h2><a href='{}'>{}</a></h2>{context}<p class='mod-record-detail'>{}</p></article>",
-            kind.label(), entry.id(), escape(entry.author()), escape(&detail_url(item, kind, entry.id())), escape(display_post_title(state, entry.post())), escape(&preview)).unwrap();
+        write!(html, "<article class='panel mod-record mod-content-list-item'><header><span class='flair'>{}</span><span class='muted'>#{} · {}</span></header><h2><a href='{}'>{}</a></h2>{context}<p class='mod-record-detail'>{}</p></article>",
+            kind.label(), entry.id(), account_byline(entry.author()), escape(&detail_url(item, kind, entry.id())), escape(display_post_title(state, entry.post())), escape(&preview)).unwrap();
     }
     if last > 1 {
         let page_link = |label, index| {
@@ -262,7 +264,7 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
     } else {
         ""
     };
-    let mut html = format!("<a class='back-link' href='{}'>← Posts &amp; comments</a><article class='panel mod-record mod-content-detail'><header><span class='flair'>{display_status}</span><span class='muted'>{label} #{id} · u/{}</span></header><h2>{}</h2>{context}", escape(&list), escape(entry.author()), escape(display_post_title(state, entry.post())));
+    let mut html = format!("<a class='back-link' href='{}'>← Posts &amp; comments</a><article class='panel mod-record mod-content-detail'><header><span class='flair'>{display_status}</span><span class='muted'>{label} #{id} · {}</span></header><h2>{}</h2>{context}", escape(&list), account_byline(entry.author()), escape(display_post_title(state, entry.post())));
     if !entry.body().is_empty() {
         write!(
             html,

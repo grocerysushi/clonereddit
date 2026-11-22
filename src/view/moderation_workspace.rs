@@ -7,8 +7,8 @@ use std::{
 use crate::model::{Community, ContentKind, ModPermission, Post, Report, State};
 
 use super::{
-    action_fields, action_form, community_icon, community_owner, community_url, encode, escape,
-    field, hidden, icon, score,
+    account_byline, action_fields, action_form, community_icon, community_owner, community_url,
+    encode, escape, field, hidden, icon, score,
 };
 use super::{restricted, scheduled};
 
@@ -641,7 +641,7 @@ impl<'a> Workspace<'a> {
                 ""
             };
             let (title, review) = self.post_review_links(state, post);
-            write!(html, "<li class='mod-discussion-row'><div>{title}<p class='muted'>u/{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}</div></li>", escape(&post.author), escape(&post.age_label(crate::schedule_time::now())), score(state, post), state.visible_reply_count(post)).unwrap();
+            write!(html, "<li class='mod-discussion-row'><div>{title}<p class='muted'>{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}</div></li>", account_byline(&post.author), escape(&post.age_label(crate::schedule_time::now())), score(state, post), state.visible_reply_count(post)).unwrap();
         }
         html.push_str("</ul></section>");
         html
@@ -698,7 +698,7 @@ impl<'a> Workspace<'a> {
             "private" => "Private",
             _ => "Public",
         };
-        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Approved members</a><a class='button light' href='{}'>Moderator roles</a></div></section>", escape(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "approved-members")), escape(&tools_url(self.item, "roles")))
+        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Approved members</a><a class='button light' href='{}'>Moderator roles</a></div></section>", account_byline(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "approved-members")), escape(&tools_url(self.item, "roles")))
     }
 
     fn insights(&self, state: &State) -> String {

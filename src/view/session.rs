@@ -1,4 +1,7 @@
+use std::path::Path;
+
 use super::{account, account_security, field, layout, missing};
+use crate::account_deletion;
 use crate::auth::{session_token, AuthGrant, AuthStore, LoginProgress, SessionDevice};
 use crate::http::{Request, Response};
 use crate::mail::AccountMail;
@@ -33,11 +36,12 @@ pub(super) fn requires_account(request: &Request) -> bool {
 pub(super) fn route(
     request: &Request,
     state: &mut State,
+    path: &Path,
     auth: &mut AuthStore,
     mail: &AccountMail,
 ) -> Response {
     if request.path == "/account/security" || request.path.starts_with("/account/security/") {
-        return security_route(request, state, auth, mail);
+        return security_route(request, state, path, auth, mail);
     }
     if matches!(
         request.path.as_str(),
@@ -172,6 +176,7 @@ fn reset_route(
 fn security_route(
     request: &Request,
     state: &mut State,
+    path: &Path,
     auth: &mut AuthStore,
     mail: &AccountMail,
 ) -> Response {
@@ -183,6 +188,9 @@ fn security_route(
     };
     let input = |key| field(&request.form, key);
     let result = match (request.method.as_str(), request.path.as_str()) {
+        ("GET" | "POST", "/account/security/delete") => {
+            return delete_account(request, state, path, auth, current_token, &username)
+        }
         ("GET", "/account/security") => {
             return settings_page(
                 state,
@@ -302,6 +310,53 @@ fn security_route(
         )),
         Err(error) => settings_page(state, auth, current_token, "", &error),
     }
+}
+
+fn delete_account(
+    request: &Request,
+    state: &mut State,
+    path: &Path,
+    auth: &mut AuthStore,
+    current_token: &str,
+    username: &str,
+) -> Response {
+    let Some(security) = auth.security(username) else {
+        return Response::redirect("/account/login");
+    };
+    let two_factor = security.two_factor;
+    let input = |key| field(&request.form, key);
+    let error = if request.method == "GET" {
+        String::new()
+    } else if input("confirm") != "yes" {
+        "Confirm that you want to permanently delete your account.".into()
+    } else {
+        match auth.begin_account_deletion(current_token, input("password"), input("otp")) {
+            Ok(()) => {
+                let cleanup_pending = account_deletion::finish_pending(state, path, auth)
+                    .inspect_err(|error| {
+                        eprintln!("Commonline will retry account deletion cleanup. {error}")
+                    })
+                    .is_err();
+                let title = if cleanup_pending {
+                    "Account closed"
+                } else {
+                    "Account deleted"
+                };
+                return page(
+                    state,
+                    title,
+                    &account_security::account_deleted(cleanup_pending),
+                )
+                .with_session_cookie(None);
+            }
+            Err(error) => error,
+        }
+    };
+    page(
+        state,
+        "Delete your account",
+        &account_security::delete_account(username, two_factor, &error),
+    )
 }
 
 fn settings_page(
