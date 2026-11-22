@@ -3,6 +3,7 @@ use super::State;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NotificationPreferences {
     pub replies: bool,
+    pub mentions: bool,
     pub messages: bool,
     pub moderation: bool,
 }
@@ -11,6 +12,7 @@ impl Default for NotificationPreferences {
     fn default() -> Self {
         Self {
             replies: true,
+            mentions: true,
             messages: true,
             moderation: true,
         }
@@ -76,6 +78,7 @@ mod tests {
         let default = NotificationPreferences::default();
         let muted = NotificationPreferences {
             replies: false,
+            mentions: false,
             messages: false,
             moderation: false,
         };

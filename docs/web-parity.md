@@ -383,12 +383,23 @@ Workflow **100** is implemented. **Appearance** lets visitors switch between Lig
 
 Chromium checks at 1440 and 390 CSS pixels verified switching both ways, returning to the site, signing out, signing in from a second browser, and restarting the server. They also checked the rendered colors and account and guest preference isolation. Rust checks covered older snapshots and persistence alongside other account preferences.
 
+## Mentions, moderator workflows, and accessibility update
+
+| Workflow | Current result |
+| --- | --- |
+| 069 | **Implemented.** Mentions in posts and comments notify eligible recipients, who can open the exact source or turn off mention alerts. |
+| 078 | **Implemented.** Owners can invite moderators with selected permissions, cancel invitations, and edit or revoke accepted grants. Invitees can accept or decline. |
+| 090 | **Implemented.** Members and moderators can reply in the same mod mail thread. Moderators can archive and reopen it. Earlier messages and replies carry over. |
+| 098 | **Implemented.** Keyboard-only checks completed navigation, publishing, commenting, reply editing, branch expansion, and comment search with visible focus at both browser widths. |
+| 099 | **Partial.** Core controls, landmarks, and status messages expose their names and states to Chromium’s accessibility tree. Uploaded media can have per-file descriptions and video transcripts. Direct end-to-end checks with a screen reader remain. |
+
+The implementation count is **99 implemented, 1 partial, and 0 missing**. All four completed workflows passed targeted Chromium checks at 1440 and 390 CSS pixels on the same release. The checks included restart, cross-account permission denials, and separation of human reports and AutoMod flags. The full acceptance record still requires 99 workflows on one release.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-3. Expand community operations. Add granular role permissions, moderator invitations, and threaded mod mail with archiving. Preserve moderation decisions and access state across restarts.
-4. Complete accessibility checks. Run keyboard and screen-reader workflows and cover user-media alternatives and mobile layouts in the main workflows.
+3. Run the core workflows directly with a screen reader and record focus, announcements, and user-media alternatives.
 
 ## Reddit Help references
 

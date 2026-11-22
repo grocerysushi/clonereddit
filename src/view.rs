@@ -13,6 +13,8 @@ mod discussion_search;
 mod feed_layout;
 mod moderation;
 mod moderation_workspace;
+mod moderator_invitations;
+mod modmail;
 mod post_body_editor;
 mod post_composer;
 mod post_flair;
@@ -250,6 +252,16 @@ pub fn route(
         if action == "send-direct-message" && !auth.has_account(field(&request.form, "recipient")) {
             return message_error(state, auth, &request.form, "Choose a registered recipient.");
         }
+        if matches!(
+            action,
+            "send-mod-mail"
+                | "reply-mod-mail"
+                | "respond-mod-mail"
+                | "archive-mod-mail"
+                | "reopen-mod-mail"
+        ) {
+            return modmail::submission(state, path, action, &request.form);
+        }
         if action == "report-content" {
             return match state.apply(action, &request.form, path) {
                 Ok(notice) => Response::redirect(&format!(
@@ -289,6 +301,9 @@ pub fn route(
             action,
             "set-moderator-role"
                 | "remove-moderator-role"
+                | "invite-moderator"
+                | "cancel-moderator-invitation"
+                | "set-moderator-permissions"
                 | "decide-appeal"
                 | "decide-content-appeal"
                 | "approve-member"
@@ -298,6 +313,12 @@ pub fn route(
                 | "set-post-flair-policy"
         ) {
             return community_management_submission(state, auth, path, action, &request.form);
+        }
+        if matches!(
+            action,
+            "accept-moderator-invitation" | "decline-moderator-invitation"
+        ) {
+            return moderator_invitations::respond(state, path, action, &request.form);
         }
         if matches!(
             action,
@@ -611,9 +632,21 @@ pub fn route(
                 "manage" => "manage",
                 _ => "queue",
             };
+            let active = if section == "mail" {
+                if !modmail::requested_thread_available(state, None, query) {
+                    return missing(state);
+                }
+                if modmail::sent_folder(state, query) {
+                    "mod-mail-sent"
+                } else {
+                    section
+                }
+            } else {
+                section
+            };
             (
                 "Moderation",
-                section,
+                active,
                 moderation::render(state, section, query),
             )
         }
@@ -631,6 +664,11 @@ pub fn route(
             };
             match item {
                 Some(item) => {
+                    if section == "mail"
+                        && !modmail::requested_thread_available(state, Some(item), query)
+                    {
+                        return missing(state);
+                    }
                     let registered = if section == "roles" && community_owner(state, item)
                         || section == "approved-members"
                             && state.can_moderate(item, ModPermission::Members)
@@ -651,6 +689,11 @@ pub fn route(
                 None => return missing(state),
             }
         }
+        moderator_invitations::PATH => (
+            "Moderator invitations",
+            moderator_invitations::PATH,
+            moderator_invitations::render(state, None),
+        ),
         "/moderation/contact" => {
             match community(state, field(query, "community")).filter(|item| item.owner.is_some() && state.can_view_community(item)) {
                 Some(item) if state.is_mod_mail_muted(&item.slug, &state.username) => (
@@ -661,7 +704,7 @@ pub fn route(
                 Some(item) => (
                     "Message moderators",
                     item.slug.as_str(),
-                    moderation::contact(item),
+                    modmail::contact(item, None),
                 ),
                 None => return missing(state),
             }
@@ -1187,12 +1230,15 @@ fn community_management_submission(
     };
     let handle = field(form, "handle").trim().to_ascii_lowercase();
     let handle = handle.strip_prefix("u/").unwrap_or(&handle);
-    let result =
-        if matches!(action, "set-moderator-role" | "approve-member") && !auth.has_account(handle) {
-            Err("Choose a registered ThreadPorch account.".into())
-        } else {
-            state.apply(action, form, path)
-        };
+    let result = if matches!(
+        action,
+        "set-moderator-role" | "invite-moderator" | "approve-member"
+    ) && !auth.has_account(handle)
+    {
+        Err("Choose a registered ThreadPorch account.".into())
+    } else {
+        state.apply(action, form, path)
+    };
     match result {
         Ok(notice) => Response::redirect(&format!("{return_url}&notice={}", encode(notice))),
         Err(error) => {
@@ -1407,7 +1453,7 @@ fn automod_submission(
     };
     let dismissing = action == "dismiss-automod-flag";
     let back = if dismissing {
-        moderation_workspace::automod_return_url(item, form)
+        moderation_workspace::automod_return_url(state, item, form)
     } else {
         format!(
             "/moderation/tools?community={}&section=automod",
@@ -1951,6 +1997,12 @@ fn layout_with_rail(
         )
     })
     .collect::<String>();
+    let invitations = state.incoming_moderator_invitations().count();
+    let invitation_label = if invitations == 0 {
+        "Moderator invitations".to_owned()
+    } else {
+        format!("Moderator invitations ({invitations})")
+    };
     let utility_nav = [
         ("/?view=all", "All discussions", "grid", "all"),
         ("/?view=saved", "Saved", "save", "saved"),
@@ -1962,6 +2014,13 @@ fn layout_with_rail(
             "reports",
         ),
         ("/appeals", "Your appeals", "shield", "appeals"),
+        (modmail::SENT, "Your mod mail", "mail", "mod-mail-sent"),
+        (
+            moderator_invitations::PATH,
+            invitation_label.as_str(),
+            "shield",
+            moderator_invitations::PATH,
+        ),
         ("/policy", "Moderation policy", "shield", "policy"),
     ]
     .into_iter()
@@ -2050,7 +2109,7 @@ fn layout_with_rail(
         String::new()
     } else {
         format!(
-            "<div class='notice' role='status'>{} {}</div>",
+            "<div class='notice' role='status' tabindex='-1' autofocus>{} {}</div>",
             icon("check"),
             escape(notice)
         )
@@ -3196,7 +3255,20 @@ fn post_attachments(post: &Post) -> String {
     if first.content_type.starts_with("video/") {
         let url = source(0);
         let mime = escape(&first.content_type);
-        return format!("<div class='post-video'><video controls preload='metadata' playsinline aria-label='Video attachment'><source src='{url}' type='{mime}'><a href='{url}'>Open video attachment</a></video></div>");
+        let description = escape(
+            post.media_alternatives
+                .description(0)
+                .unwrap_or("Video attachment"),
+        );
+        let transcript = if post.media_alternatives.transcript.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<details class='media-transcript'><summary>Video transcript</summary><p>{}</p></details>",
+                escape(&post.media_alternatives.transcript)
+            )
+        };
+        return format!("<div class='post-video'><video controls preload='metadata' playsinline aria-label='{description}'><source src='{url}' type='{mime}'><a href='{url}'>Open video attachment</a></video></div>{transcript}");
     }
 
     let class = if post.media.len() == 1 {
@@ -3204,11 +3276,24 @@ fn post_attachments(post: &Post) -> String {
     } else {
         "post-gallery"
     };
-    let mut html = format!("<div class='{class}' aria-label='Image attachments'>");
+    let mut html = format!("<div class='{class}' role='group' aria-label='Image attachments'>");
     for index in 0..post.media.len() {
         let url = source(index);
         let label = index + 1;
-        write!(html, "<a href='{url}' target='_blank' rel='noopener' aria-label='Open image {label}'><img src='{url}' alt='Image attachment {label}' loading='lazy'></a>").unwrap();
+        let (alt, link) = post.media_alternatives.description(index).map_or_else(
+            || {
+                (
+                    format!("Image attachment {label}"),
+                    format!("Open image {label}"),
+                )
+            },
+            |description| {
+                let text = escape(description);
+                let link = format!("Open image {label}: {text}");
+                (text, link)
+            },
+        );
+        write!(html, "<a href='{url}' target='_blank' rel='noopener' aria-label='{link}'><img src='{url}' alt='{alt}' loading='lazy'></a>").unwrap();
     }
     html.push_str("</div>");
     html
@@ -3368,7 +3453,12 @@ fn thread(
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
     let pinned = community(state, &post.community).is_some_and(|item| item.is_highlighted(post.id));
     html.push_str(&post_card(state, post, &back, PostView::Thread, pinned));
-    write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort, &query)).unwrap();
+    let results = if query.is_empty() {
+        ""
+    } else {
+        " aria-describedby='discussion-search-summary'"
+    };
+    write!(html, "<section class='panel discussion' id='comments' tabindex='-1' aria-labelledby='discussion-heading'{results}><header class='discussion-heading'><h2 id='discussion-heading'>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort, &query)).unwrap();
     let mut replies = String::new();
     let can_write = can_write_here(state, &post.community);
     let locked = state.is_discussion_locked(post.id);
@@ -3420,7 +3510,7 @@ fn thread(
         };
         let blocked = state.blocked.contains(&comment.author);
         if comment.deleted {
-            write!(replies, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
+            write!(replies, "<article class='comment comment-deleted depth-{}' id='comment-{}' tabindex='-1'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
         } else if state.is_comment_removed(comment.id) {
             let review = content_tool_url(state, &post.community, ContentKind::Comment, comment.id)
                 .map_or_else(String::new, |url| {
@@ -3429,7 +3519,7 @@ fn thread(
                         escape(&url)
                     )
                 });
-            write!(replies, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment removed by moderators.{review}</p></article>", depth.min(3), comment.id).unwrap();
+            write!(replies, "<article class='comment comment-deleted depth-{}' id='comment-{}' tabindex='-1'><p>Comment removed by moderators.{review}</p></article>", depth.min(3), comment.id).unwrap();
         } else if !blocked {
             if !query.is_empty() {
                 searchable_comments.push(comment);
@@ -3636,7 +3726,7 @@ fn comment_card(
     };
     let permalink = escape(&discussion::comment_url(back, comment.id));
     let image = comment_image::render(comment);
-    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment, {}'>· {}</a>{edited}{menu}</div>{body}{image}<div class='post-actions'>{}{reply_control}</div>{controls}</article>",
+    format!("<article class='comment depth-{}' id='comment-{}' tabindex='-1' aria-label='Comment by {byline}'><div class='comment-head'><span class='avatar' aria-hidden='true'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment by {byline}, {}'>· {}</a>{edited}{menu}</div>{body}{image}<div class='post-actions'>{}{reply_control}</div>{controls}</article>",
         depth.min(3), comment.id, escape(&comment.age), escape(&comment.age), votes("comment-vote", comment.id, state.comment_score(comment), vote, back)
     )
 }
@@ -3649,14 +3739,19 @@ fn reply_form(
     draft: ReplyDraft<'_>,
 ) -> String {
     let id = post.to_string();
-    let target = parent
-        .map(|value| hidden("parent", &value.to_string()))
-        .unwrap_or_default();
+    let (target, anchor, label) = match parent {
+        Some(parent) => (
+            hidden("parent", &parent.to_string()),
+            format!(" id='reply-{parent}' tabindex='-1'"),
+            "Reply to comment",
+        ),
+        None => (String::new(), String::new(), "Write a comment"),
+    };
     let fields = action_fields("comment", back, &[("post", &id), sort.form_field()]);
     let alert = discussion::form_error(draft.error);
     let picker = comment_image::picker(draft.image_alt, draft.select_image_again);
     let editor = comment_body_editor::render(draft.body, false, true, false);
-    format!("<form class='reply-form' method='post' action='/action' enctype='multipart/form-data'>{fields}{target}{alert}{editor}{picker}<button class='button dark' type='submit'>Post reply</button></form>")
+    format!("<form class='reply-form'{anchor} aria-label='{label}' method='post' action='/action' enctype='multipart/form-data'>{fields}{target}{alert}{editor}{picker}<button class='button dark' type='submit'>Post reply</button></form>")
 }
 
 fn preferences(state: &State) -> String {

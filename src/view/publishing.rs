@@ -6,7 +6,7 @@ use super::{
     action_fields, can_view_post, community, community_url, encode, escape, field, icon,
     is_sensitive, post_body_editor, post_composer::drafts_link, post_flair,
 };
-use crate::model::{Post, State};
+use crate::model::{Post, State, MEDIA_DESCRIPTION_LIMIT, MEDIA_TRANSCRIPT_LIMIT};
 
 const TABS: &[(&str, &str)] = &[
     ("text", "Text and link"),
@@ -85,7 +85,7 @@ pub(super) fn editor(
             ""
         };
         format!(
-            "<p class='notice publishing-error' role='alert'>{}{reselect}</p>",
+            "<p class='notice publishing-error' role='alert' tabindex='-1' autofocus>{}{reselect}</p>",
             escape(error)
         )
     };
@@ -103,6 +103,11 @@ pub(super) fn editor(
     let (heading, submit, endpoint, enctype, fields, content) = match kind {
         "media" => {
             let media = "<div class='publishing-media-upload'><label>Images or video<input type='file' name='post_media' accept='image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm' multiple required aria-describedby='publishing-media-help'></label><small id='publishing-media-help'>Choose up to six PNG, JPEG, WebP, or GIF images of 2 MiB each, or one MP4 or WebM video of up to 16 MiB.</small></div>";
+            let alternatives = media_alternative_fields(
+                entered("media_descriptions"),
+                entered("media_transcript"),
+                true,
+            );
             (
                 "New media post",
                 "Publish media post",
@@ -110,7 +115,7 @@ pub(super) fn editor(
                 " enctype='multipart/form-data'",
                 String::new(),
                 format!(
-                    "{destination}{title}{media}{body}{flair}{}",
+                    "{destination}{title}{media}{alternatives}{body}{flair}{}",
                     post_details(form)
                 ),
             )
@@ -147,6 +152,25 @@ pub(super) fn editor(
         "<section class='panel standalone composer publishing-composer'><header class='creator-header'><h1>{heading}</h1>{drafts}</header>{tabs}{alert}<form class='stack-form publishing-form' method='post' action='{endpoint}'{enctype}>{fields}{content}<div class='form-actions'><button class='button dark' type='submit'>{submit}</button><a class='button light' href='{}'>Cancel</a></div></form></section>",
         escape(&cancel)
     ))
+}
+
+pub(super) fn media_alternative_fields(
+    descriptions: &str,
+    transcript: &str,
+    include_transcript: bool,
+) -> String {
+    let transcript = if include_transcript {
+        format!(
+            "<label>Video transcript <small>Optional</small><textarea name='media_transcript' rows='4' maxlength='{MEDIA_TRANSCRIPT_LIMIT}' aria-describedby='media-transcript-help'>{}</textarea></label><small id='media-transcript-help'>For video, describe important visuals, speech, and sounds.</small>",
+            escape(transcript)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "<fieldset class='publishing-media-alternatives'><legend>Text alternatives</legend><label>Attachment descriptions <small>Optional</small><textarea name='media_descriptions' rows='3' aria-describedby='media-description-help'>{}</textarea></label><small id='media-description-help'>Use one line per file in attachment order, with up to {MEDIA_DESCRIPTION_LIMIT} characters per line. Leave a line blank to skip a file.</small>{transcript}</fieldset>",
+        escape(descriptions)
+    )
 }
 
 fn community_selector(state: &State, selected: &str, repost: bool) -> String {

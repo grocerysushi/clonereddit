@@ -4,6 +4,7 @@ mod http;
 mod mail;
 mod media;
 mod model;
+mod references;
 mod schedule_time;
 mod totp;
 mod view;

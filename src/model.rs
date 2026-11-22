@@ -44,12 +44,23 @@ mod feed_layout;
 pub use feed_layout::FeedLayout;
 #[path = "model/highlights.rs"]
 mod highlights;
+#[path = "model/media_alternatives.rs"]
+mod media_alternatives;
+pub use media_alternatives::{MediaAlternatives, MEDIA_DESCRIPTION_LIMIT, MEDIA_TRANSCRIPT_LIMIT};
 #[path = "model/moderation_appeals.rs"]
 mod moderation_appeals;
 pub use moderation_appeals::{Appeal, AppealStatus};
 #[path = "model/moderation_roles.rs"]
 mod moderation_roles;
-pub use moderation_roles::{ModPermission, ModeratorAssignment, ModeratorRole};
+pub use moderation_roles::{
+    ModPermission, ModeratorAssignment, ModeratorInvitation, ModeratorRole,
+};
+#[path = "model/mentions.rs"]
+mod mentions;
+pub use mentions::DiscussionNotification;
+#[path = "model/mod_mail.rs"]
+mod mod_mail;
+pub use mod_mail::ModMail;
 #[path = "model/notification_preferences.rs"]
 mod notification_preferences;
 pub use notification_preferences::NotificationPreferences;
@@ -133,6 +144,7 @@ pub struct Post {
     pub repost_of: Option<u64>,
     pub repost_title_from_source: bool,
     pub media: Vec<PostMedia>,
+    pub media_alternatives: MediaAlternatives,
 }
 
 impl Post {
@@ -220,20 +232,11 @@ pub struct Notification {
     pub at: u64,
     pub read: bool,
     pub post: Option<u64>,
+    pub discussion: Option<DiscussionNotification>,
     pub appeal: bool,
     pub moderation: bool,
     pub removal: Option<u64>,
     pub silent: bool,
-}
-
-#[derive(Clone)]
-pub struct ModMail {
-    pub id: u64,
-    pub community: String,
-    pub sender: String,
-    pub subject: String,
-    pub body: String,
-    pub reply: String,
 }
 
 #[derive(Clone)]
@@ -393,9 +396,11 @@ pub struct State {
     pub notifications: Vec<Notification>,
     notification_preferences: NotificationPreferences,
     pub mod_mail: Vec<ModMail>,
+    mod_mail_notifications: BTreeMap<u64, u64>,
     pub mod_log: Vec<ModerationEvent>,
     pub saved_responses: Vec<SavedResponse>,
     pub moderator_roles: Vec<ModeratorAssignment>,
+    moderator_invitations: Vec<ModeratorInvitation>,
     pub approved_members: Vec<ApprovedMember>,
     pub content_removals: Vec<ContentRemoval>,
     pub automod_rules: Vec<AutoModRule>,
@@ -433,6 +438,7 @@ pub struct State {
     next_notification: u64,
     next_mod_mail: u64,
     next_mod_event: u64,
+    next_moderator_invitation: u64,
     next_community_rule: u64,
     next_post_flair: u64,
     next_automod_rule: u64,
@@ -548,6 +554,7 @@ impl State {
             created_at: Some(seeded_at.saturating_sub(legacy_age_seconds(age))), url: String::new(),
             score, reply_count, sensitive, spoiler: false, brand_affiliate: false, image,
             poll: None, repost_of: None, repost_title_from_source: false, media: Vec::new(),
+            media_alternatives: MediaAlternatives::default(),
         }).collect();
         posts.extend(seed_news(8, seeded_at));
 
@@ -595,9 +602,11 @@ impl State {
             notifications: Vec::new(),
             notification_preferences: NotificationPreferences::default(),
             mod_mail: Vec::new(),
+            mod_mail_notifications: BTreeMap::new(),
             mod_log: Vec::new(),
             saved_responses: Vec::new(),
             moderator_roles: Vec::new(),
+            moderator_invitations: Vec::new(),
             approved_members: Vec::new(),
             content_removals: Vec::new(),
             automod_rules: Vec::new(),
@@ -635,6 +644,7 @@ impl State {
             next_notification: 1,
             next_mod_mail: 1,
             next_mod_event: 1,
+            next_moderator_invitation: 1,
             next_community_rule: 1,
             next_post_flair: 1,
             next_automod_rule: 1,
@@ -879,6 +889,7 @@ impl State {
             repost_of: None,
             repost_title_from_source: false,
             media: Vec::new(),
+            media_alternatives: MediaAlternatives::default(),
         });
         item.status = "published".into();
         item.post_id = Some(id);
@@ -907,7 +918,10 @@ impl State {
         }
         self.record_moderation(&community, message)
             .map_err(io::Error::other)?;
-        self.screen_post_at(id, now).map_err(io::Error::other)?;
+        if !self.screen_post_at(id, now).map_err(io::Error::other)? {
+            self.notify_post_mentions(id, &BTreeSet::new())
+                .map_err(io::Error::other)?;
+        }
         Ok(())
     }
 
@@ -1211,11 +1225,19 @@ impl State {
             "decide-content-appeal" => self.decide_content_appeal(form),
             "review-report" => self.review_report(form),
             "send-mod-mail" => self.send_mod_mail(form),
-            "reply-mod-mail" => self.reply_mod_mail(form),
+            "reply-mod-mail" => self.reply_mod_mail(form, true),
+            "respond-mod-mail" => self.reply_mod_mail(form, false),
+            "archive-mod-mail" => self.set_mod_mail_archived(form, true),
+            "reopen-mod-mail" => self.set_mod_mail_archived(form, false),
             "add-saved-response" => self.add_saved_response(form),
             "delete-saved-response" => self.delete_saved_response(form),
             "set-moderator-role" => self.set_moderator_role(form),
             "remove-moderator-role" => self.remove_moderator_role(form),
+            "invite-moderator" => self.invite_moderator(form),
+            "cancel-moderator-invitation" => self.cancel_moderator_invitation(form),
+            "accept-moderator-invitation" => self.respond_to_moderator_invitation(form, true),
+            "decline-moderator-invitation" => self.respond_to_moderator_invitation(form, false),
+            "set-moderator-permissions" => self.set_moderator_permissions(form),
             "approve-member" => self.approve_member(form),
             "revoke-approved-member" => self.revoke_approved_member(form),
             "highlight-post" => self.set_highlight(form, true),
@@ -1290,16 +1312,27 @@ impl State {
     }
 
     pub fn can_view_community(&self, item: &Community) -> bool {
+        self.can_view_community_as(item, &self.username)
+    }
+
+    pub(super) fn can_view_community_as(&self, item: &Community, handle: &str) -> bool {
         item.visibility != "private"
-            || self.can_moderate(item, ModPermission::Members)
-            || self.is_approved_member(&item.slug, &self.username)
+            || [
+                ModPermission::Members,
+                ModPermission::Reports,
+                ModPermission::Content,
+            ]
+            .into_iter()
+            .any(|permission| self.can_moderate_as(item, handle, permission))
+            || self.is_approved_member(&item.slug, handle)
     }
 
     pub fn can_contribute(&self, item: &Community) -> bool {
         !self.username.is_empty()
             && !self.is_banned(&item.slug, &self.username)
             && (item.visibility == "public"
-                || self.can_moderate(item, ModPermission::Members)
+                || item.owner.as_deref() == Some(self.username.as_str())
+                || self.moderator_role(item, &self.username) == Some(ModeratorRole::Moderator)
                 || self.is_approved_member(&item.slug, &self.username))
     }
 
@@ -1607,6 +1640,7 @@ impl State {
         validate_post_media(&media)?;
         let mut updated = self.clone();
         let mut post = updated.new_post(form, "Discussion")?;
+        post.media_alternatives = MediaAlternatives::from_form(form, &media)?;
         post.media = media;
         let notice = updated.add_post(post, "Post published.")?;
         self.commit(updated, path)?;
@@ -1652,6 +1686,7 @@ impl State {
             repost_of: None,
             repost_title_from_source: false,
             media: Vec::new(),
+            media_alternatives: MediaAlternatives::default(),
         })
     }
 
@@ -1659,11 +1694,11 @@ impl State {
         let id = post.id;
         self.posts.push(post);
         let removed = self.screen_post(id)?;
-        Ok(if removed {
-            AUTOMOD_REMOVED_POST
-        } else {
-            published
-        })
+        if removed {
+            return Ok(AUTOMOD_REMOVED_POST);
+        }
+        self.notify_post_mentions(id, &BTreeSet::new())?;
+        Ok(published)
     }
 
     fn create_poll(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1914,7 +1949,8 @@ impl State {
         if self.screen_comment(id)? {
             return Ok(AUTOMOD_REMOVED_COMMENT);
         }
-        self.notify_comment(post_id, parent)?;
+        self.notify_comment_mentions(id, &BTreeSet::new())?;
+        self.notify_comment(post_id, parent, id)?;
         self.record_post_comment(post_id);
         Ok("Comment posted.")
     }
@@ -1956,16 +1992,16 @@ impl State {
         if comment.body == body && comment.markdown == markdown {
             return Ok("Comment unchanged.");
         }
+        let previous_mentions = mentions::comment_mentions(comment);
         comment.body = body.into();
         comment.markdown = markdown;
         comment.edited_at = Some(unix_seconds());
         let id = comment.id;
-        let removed = self.screen_comment(id)?;
-        Ok(if removed {
-            AUTOMOD_REMOVED_COMMENT
-        } else {
-            "Comment updated."
-        })
+        if self.screen_comment(id)? {
+            return Ok(AUTOMOD_REMOVED_COMMENT);
+        }
+        self.notify_comment_mentions(id, &previous_mentions)?;
+        Ok("Comment updated.")
     }
 
     fn delete_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -2120,61 +2156,6 @@ impl State {
             "Mod-mail mute lifted."
         };
         self.record_moderation(&item.community, message)
-    }
-
-    fn send_mod_mail(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let index = self.community_index(form)?;
-        let community = &self.communities[index];
-        if community.owner.is_none() || !self.can_view_community(community) {
-            return Err("This community does not have a moderation inbox.".into());
-        }
-        if self.is_mod_mail_muted(&community.slug, &self.username) {
-            return Err("You are muted in this community’s moderation inbox.".into());
-        }
-        let subject = required(form, "subject", "Subject", 120)?;
-        let body = required(form, "body", "Message", 4_000)?;
-        let id = next_id(&mut self.next_mod_mail)?;
-        self.mod_mail.push(ModMail {
-            id,
-            community: community.slug.clone(),
-            sender: self.username.clone(),
-            subject: subject.into(),
-            body: body.into(),
-            reply: String::new(),
-        });
-        Ok("Message sent to the local moderation inbox.")
-    }
-
-    fn reply_mod_mail(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let id = id_field(form, "id")?;
-        let index = self
-            .mod_mail
-            .iter()
-            .position(|message| message.id == id)
-            .ok_or("This message could not be found.")?;
-        let community = self.mod_mail[index].community.clone();
-        if !self
-            .communities
-            .iter()
-            .any(|item| item.slug == community && self.can_moderate(item, ModPermission::Mail))
-        {
-            return Err("This message could not be found.".into());
-        }
-        let reply = bounded(form, "reply", "Reply", 4_000)?;
-        let reply = if reply.is_empty() {
-            let response_id = value(form, "response_id")
-                .parse::<u64>()
-                .map_err(|_| "Write a reply or choose a saved response.")?;
-            self.saved_responses
-                .iter()
-                .find(|item| item.id == response_id && item.community == community)
-                .map(|item| item.body.clone())
-                .ok_or("This saved response is unavailable for this community.")?
-        } else {
-            reply.into()
-        };
-        self.mod_mail[index].reply = reply;
-        self.record_moderation(&community, "Moderation reply saved.")
     }
 
     fn record_moderation(
@@ -2372,14 +2353,8 @@ impl State {
         {
             owner.clone_from(&username);
         }
-        for message in self
-            .mod_mail
-            .iter_mut()
-            .filter(|message| message.sender == self.username)
-        {
-            message.sender.clone_from(&username);
-        }
         if username != self.username {
+            self.rename_mod_mail_account(&self.username.clone(), &username);
             for report in self
                 .reports
                 .iter_mut()
@@ -2558,7 +2533,13 @@ impl State {
         let target = InlineTarget::Post(id);
         self.place_inline_images(&body, target, Some(target))?;
         let post = &mut self.posts[index];
+        if !post.media.is_empty()
+            && (form.contains_key("media_descriptions") || form.contains_key("media_transcript"))
+        {
+            post.media_alternatives = MediaAlternatives::from_form(form, &post.media)?;
+        }
         let text_changed = post.title != title || post.body != body || post.url != url;
+        let previous_mentions = text_changed.then(|| mentions::post_mentions(post));
         if post.title != title {
             post.repost_title_from_source = false;
         }
@@ -2573,12 +2554,13 @@ impl State {
         if let Some(flair) = flair {
             post.flair = flair;
         }
-        let removed = text_changed && self.screen_post(id)?;
-        Ok(if removed {
-            AUTOMOD_REMOVED_POST
-        } else {
-            "Post updated."
-        })
+        if let Some(previous) = previous_mentions {
+            if self.screen_post(id)? {
+                return Ok(AUTOMOD_REMOVED_POST);
+            }
+            self.notify_post_mentions(id, &previous)?;
+        }
+        Ok("Post updated.")
     }
 
     fn delete_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -2786,6 +2768,7 @@ impl State {
                     repost_of: None,
                     repost_title_from_source: false,
                     media: Vec::new(),
+                    media_alternatives: MediaAlternatives::default(),
                 });
             }
             ["post-created", id, created_at] => {
@@ -2861,6 +2844,15 @@ impl State {
                     content_type: decode(content_type)?,
                 });
                 validate_post_media(&post.media).ok()?;
+            }
+            ["post-media-alternatives", id, transcript, descriptions @ ..] => {
+                let id = number(id)?;
+                let post = self.posts.iter_mut().find(|post| post.id == id)?;
+                if post.media.is_empty() {
+                    return None;
+                }
+                post.media_alternatives =
+                    MediaAlternatives::from_record(transcript, descriptions, &post.media)?;
             }
             ["inline-image", key, content_type, placement @ ..] => {
                 self.read_inline_image(key, content_type, placement)?;
@@ -3009,23 +3001,44 @@ impl State {
             | ["declined-chat-request", ..]) => {
                 self.read_chat_request_record(fields)?;
             }
-            ["notification-preferences", replies, messages, moderation] => {
+            ["notification-preferences", replies, messages, moderation, mention_setting @ ..] => {
                 self.notification_preferences = NotificationPreferences {
                     replies: number(replies)?,
+                    mentions: match mention_setting {
+                        [] => true,
+                        [mentions] => number(mentions)?,
+                        _ => return None,
+                    },
                     messages: number(messages)?,
                     moderation: number(moderation)?,
                 };
             }
             ["notification", id, recipient, body, at, read, post, destination @ ..] => {
-                let (appeal, moderation, removal, silent) = match destination {
-                    [] => (false, false, None, false),
-                    ["appeal"] if post.is_empty() => (true, false, None, false),
-                    ["moderation"] if post.is_empty() => (false, true, None, false),
-                    ["appeal", "silent"] if post.is_empty() => (true, false, None, true),
-                    ["moderation", "silent"] if post.is_empty() => (false, true, None, true),
+                let (appeal, moderation, removal, silent, discussion) = match destination {
+                    [] => (false, false, None, false, None),
+                    ["appeal"] if post.is_empty() => (true, false, None, false, None),
+                    ["moderation"] if post.is_empty() => (false, true, None, false, None),
+                    ["appeal", "silent"] if post.is_empty() => (true, false, None, true, None),
+                    ["moderation", "silent"] if post.is_empty() => (false, true, None, true, None),
                     ["removal", episode] | ["removal", episode, "silent"] if post.is_empty() => {
                         let episode = canonical_u64(episode).filter(|&id| id > 0)?;
-                        (false, true, Some(episode), destination.len() == 3)
+                        (false, true, Some(episode), destination.len() == 3, None)
+                    }
+                    ["mention"] if !post.is_empty() => (
+                        false,
+                        false,
+                        None,
+                        false,
+                        Some(DiscussionNotification::MentionPost),
+                    ),
+                    [kind @ ("reply" | "mention"), id] if !post.is_empty() => {
+                        let id = canonical_u64(id).filter(|&id| id > 0)?;
+                        let target = if *kind == "reply" {
+                            DiscussionNotification::Reply(id)
+                        } else {
+                            DiscussionNotification::MentionComment(id)
+                        };
+                        (false, false, None, false, Some(target))
                     }
                     _ => return None,
                 };
@@ -3036,6 +3049,7 @@ impl State {
                     at: number(at)?,
                     read: number::<bool>(read)? || silent,
                     post: optional_number(post)?,
+                    discussion,
                     appeal,
                     moderation,
                     removal,
@@ -3054,22 +3068,23 @@ impl State {
             fields @ (["automod-sequence", ..] | ["automod-rule", ..] | ["automod-flag", ..]) => {
                 self.read_automod_record(fields)?
             }
-            ["mod-mail", id, community, sender, subject, body, reply] => {
-                self.mod_mail.push(ModMail {
-                    id: number(id)?,
-                    community: decode(community)?,
-                    sender: decode(sender)?,
-                    subject: decode(subject)?,
-                    body: decode(body)?,
-                    reply: decode(reply)?,
-                });
-            }
+            fields @ (["mod-mail", ..]
+            | ["mod-mail-reply", ..]
+            | ["mod-mail-archive", ..]
+            | ["mod-mail-notification", ..]) => self.read_mod_mail_record(fields)?,
             ["moderation-sequence", next_event, next_response] => {
                 self.next_mod_event = number(next_event)?;
                 self.next_saved_response = number(next_response)?;
             }
-            ["moderator-role", slug, handle, role] => {
-                self.read_moderator_role(slug, handle, role)?;
+            ["moderator-role", slug, handle, role, scopes @ ..] => {
+                self.read_moderator_role(slug, handle, role, scopes)?;
+            }
+            ["moderator-invitation-sequence", next] => {
+                let next = canonical_u64(next).filter(|&next| next > 0)?;
+                self.next_moderator_invitation = self.next_moderator_invitation.max(next);
+            }
+            ["moderator-invitation", id, slug, handle, role, scopes @ ..] => {
+                self.read_moderator_invitation(canonical_u64(id)?, slug, handle, role, scopes)?;
             }
             ["approved-member", slug, handle] => self.read_approved_member(slug, handle)?,
             ["schedule-sequence", next_scheduled] => self.next_scheduled = number(next_scheduled)?,
@@ -3379,6 +3394,19 @@ impl State {
                     encode(&media.content_type)
                 )?;
             }
+            let alternatives = &post.media_alternatives;
+            if !alternatives.descriptions.is_empty() || !alternatives.transcript.is_empty() {
+                write!(
+                    file,
+                    "post-media-alternatives\t{}\t{}",
+                    post.id,
+                    encode(&alternatives.transcript)
+                )?;
+                for description in &alternatives.descriptions {
+                    write!(file, "\t{}", encode(description))?;
+                }
+                writeln!(file)?;
+            }
         }
         self.write_inline_images(file)?;
         self.post_insights.write(file, unix_seconds())?;
@@ -3454,6 +3482,12 @@ impl State {
                 "\tappeal"
             } else if notification.moderation {
                 "\tmoderation"
+            } else if let Some(target) = notification.discussion {
+                match target {
+                    DiscussionNotification::Reply(_) => "\treply",
+                    DiscussionNotification::MentionPost
+                    | DiscussionNotification::MentionComment(_) => "\tmention",
+                }
             } else {
                 ""
             };
@@ -3470,22 +3504,17 @@ impl State {
             if let Some(episode) = notification.removal {
                 write!(file, "\t{episode}")?;
             }
+            if let Some(comment) = notification
+                .discussion
+                .and_then(DiscussionNotification::comment)
+            {
+                write!(file, "\t{comment}")?;
+            }
             writeln!(file, "{delivery}")?;
         }
         self.write_appeal_records(file)?;
         self.write_content_appeal_records(file)?;
-        for message in &self.mod_mail {
-            writeln!(
-                file,
-                "mod-mail\t{}\t{}\t{}\t{}\t{}\t{}",
-                message.id,
-                encode(&message.community),
-                encode(&message.sender),
-                encode(&message.subject),
-                encode(&message.body),
-                encode(&message.reply)
-            )?;
-        }
+        self.write_mod_mail_records(file)?;
         writeln!(
             file,
             "moderation-sequence\t{}\t{}",
@@ -3623,6 +3652,7 @@ fn seed_news(first_id: u64, seeded_at: u64) -> [Post; 2] {
         url: String::new(), score, reply_count: 0,
         sensitive: false, spoiler: false, brand_affiliate: false, image: false,
         poll: None, repost_of: None, repost_title_from_source: false, media: Vec::new(),
+        media_alternatives: MediaAlternatives::default(),
     })
 }
 

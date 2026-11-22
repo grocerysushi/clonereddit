@@ -10,7 +10,7 @@ use super::{
     account_byline, action_fields, action_form, can_view_post, community_icon, community_owner,
     community_url, display_post_title, encode, escape, field, hidden, icon, score,
 };
-use super::{restricted, scheduled, wiki};
+use super::{modmail, restricted, scheduled, wiki};
 
 #[path = "automod.rs"]
 mod automod;
@@ -145,7 +145,11 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
 pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
     let permission = match section {
         "" => return state.can_open_mod_tools(item),
-        "queue" | "discussions" | "roles" | "insights" | "log" => ModPermission::Reports,
+        "queue" => {
+            return state.can_moderate(item, ModPermission::Reports)
+                || state.can_moderate(item, ModPermission::Content);
+        }
+        "discussions" | "roles" | "insights" | "log" => ModPermission::Reports,
         "members" | "approved-members" => ModPermission::Members,
         "mail" | "responses" => ModPermission::Mail,
         "scheduled" => ModPermission::Schedule,
@@ -181,7 +185,7 @@ pub(super) fn render(
     let search = field(query, "tool_q").trim();
     let body = if search.is_empty() {
         match section {
-            "mail" => workspace.mail(state),
+            "mail" => modmail::render(state, Some(item), query),
             "scheduled" => scheduled::render(state, item, query),
             "restricted-users" => restricted::render(state, item),
             "appeals" => community_manage::appeals(state, item, query, None),
@@ -226,7 +230,8 @@ pub(super) fn automod_error(
 ) -> String {
     let workspace = Workspace::new(state, item);
     if field(form, "action") == "dismiss-automod-flag" {
-        let filters = QueueFilters::flag_return(form);
+        let filters =
+            QueueFilters::flag_return(form, state.can_moderate(item, ModPermission::Reports));
         let body = automod::error_notice(error) + &workspace.queue_filtered(state, filters);
         workspace.frame(state, "queue", "Queue", "", &body)
     } else {
@@ -251,8 +256,12 @@ pub(super) fn wiki_error(
     Workspace::new(state, item).frame(state, "wiki", wiki::TITLE, "", &body)
 }
 
-pub(super) fn automod_return_url(item: &Community, form: &BTreeMap<String, String>) -> String {
-    QueueFilters::flag_return(form).url(item)
+pub(super) fn automod_return_url(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+) -> String {
+    QueueFilters::flag_return(form, state.can_moderate(item, ModPermission::Reports)).url(item)
 }
 
 pub(super) fn content_error(
@@ -547,9 +556,9 @@ impl QueueFilters {
         }
     }
 
-    fn flag_return(form: &BTreeMap<String, String>) -> Self {
+    fn flag_return(form: &BTreeMap<String, String>, reports: bool) -> Self {
         let mut filters = Self::read(form, true);
-        if field(form, "status") != "needs-review" {
+        if !reports || field(form, "status") != "needs-review" {
             filters.status = "automod";
         }
         filters
@@ -582,13 +591,15 @@ impl<'a> Workspace<'a> {
             .filter(|post| post.community == item.slug)
             .map(|post| (post.id, post))
             .collect();
+        let sees_reports = state.can_moderate(item, ModPermission::Reports);
         let reports = state
             .reports
             .iter()
             .filter(|report| {
-                state
-                    .report_community(report)
-                    .is_some_and(|community| community.slug == item.slug)
+                sees_reports
+                    && state
+                        .report_community(report)
+                        .is_some_and(|community| community.slug == item.slug)
             })
             .map(|report| (report, posts.get(&report.post).copied()))
             .collect();
@@ -630,7 +641,7 @@ impl<'a> Workspace<'a> {
             format!("<span class='muted'>{community}</span>")
         };
         let (summary, workspace_class) = if can_view(state, self.item, "insights") {
-            (self.summary(), "")
+            (self.summary(state), "")
         } else {
             (String::new(), " mod-workspace-limited")
         };
@@ -651,8 +662,12 @@ impl<'a> Workspace<'a> {
         self.queue_filtered(state, QueueFilters::read(query, automatic))
     }
 
-    fn queue_filtered(&self, state: &State, filters: QueueFilters) -> String {
+    fn queue_filtered(&self, state: &State, mut filters: QueueFilters) -> String {
         let automatic = state.can_moderate(self.item, ModPermission::Content);
+        let reports = state.can_moderate(self.item, ModPermission::Reports);
+        if !reports {
+            filters.status = "automod";
+        }
         let QueueFilters { status, sort, kind } = filters;
         let back = filters.url(self.item);
         let mut flags: Vec<_> = state
@@ -679,7 +694,7 @@ impl<'a> Workspace<'a> {
         ];
         let mut tabs = String::new();
         for (key, label, count) in statuses {
-            if key == "automod" && !automatic {
+            if (key == "automod" && !automatic) || (key != "automod" && !reports) {
                 continue;
             }
             let active = if key == status {
@@ -743,9 +758,13 @@ impl<'a> Workspace<'a> {
                     "No reviewed reports",
                     "Reports you mark reviewed will appear here.",
                 ),
-                _ => (
+                _ if automatic => (
                     "You’re caught up",
                     "New reports and AutoMod flags matching this content type will appear here.",
+                ),
+                _ => (
+                    "You’re caught up",
+                    "New reports matching this content type will appear here.",
                 ),
             };
             html.push_str(&empty(heading, detail, "check"));
@@ -759,54 +778,6 @@ impl<'a> Workspace<'a> {
                 state, self.item, &mut flags, filters, &back,
             ));
             html.push_str("</section>");
-        }
-        html
-    }
-
-    fn mail(&self, state: &State) -> String {
-        let back = tools_url(self.item, "mail");
-        let mut options = String::new();
-        for response in state
-            .saved_responses
-            .iter()
-            .filter(|response| response.community == self.item.slug)
-        {
-            write!(
-                options,
-                "<option value='{}'>{}</option>",
-                response.id,
-                escape(&response.title)
-            )
-            .unwrap();
-        }
-        let (picker, required) = if options.is_empty() {
-            (String::new(), " required")
-        } else {
-            (format!("<label>Saved response<select name='response_id'><option value=''>Choose a saved response</option>{options}</select></label><small class='muted'>A written reply takes priority.</small>"), "")
-        };
-        let inbox = state
-            .mod_mail
-            .iter()
-            .rev()
-            .filter(|message| message.community == self.item.slug);
-        let mut html = String::new();
-        for message in inbox {
-            write!(html, "<article class='panel mod-record'><header><span class='flair'>{}</span></header><h2>{}</h2><p class='muted'>From u/{}</p><p class='mod-record-detail'>{}</p>", if message.reply.is_empty() { "Awaiting reply" } else { "Replied" }, escape(&message.subject), escape(&message.sender), escape(&message.body)).unwrap();
-            if message.reply.is_empty() {
-                let fields =
-                    action_fields("reply-mod-mail", &back, &[("id", &message.id.to_string())]);
-                write!(html, "<form class='stack-form mod-reply-form' method='post' action='/action'>{fields}{picker}<label>Reply<textarea name='reply' rows='3' maxlength='4000'{required}></textarea></label><button type='submit' class='button dark'>Send reply</button></form>").unwrap();
-            } else {
-                write!(html, "<blockquote class='moderation-reply'><strong>Moderator reply</strong><p>{}</p></blockquote>", escape(&message.reply)).unwrap();
-            }
-            html.push_str("</article>");
-        }
-        if html.is_empty() {
-            return empty(
-                "Inbox is empty",
-                "Messages to this community’s moderators will appear here.",
-                "mail",
-            );
         }
         html
     }
@@ -988,7 +959,15 @@ impl<'a> Workspace<'a> {
             "private" => "Private",
             _ => "Public",
         };
-        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Approved members</a><a class='button light' href='{}'>Moderator roles</a></div></section>", account_byline(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "approved-members")), escape(&tools_url(self.item, "roles")))
+        let roles = if can_view(state, self.item, "roles") {
+            format!(
+                "<a class='button light' href='{}'>Moderator roles</a>",
+                escape(&tools_url(self.item, "roles"))
+            )
+        } else {
+            String::new()
+        };
+        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Approved members</a>{roles}</div></section>", account_byline(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "approved-members")))
     }
 
     fn insights(&self, state: &State) -> String {
@@ -1055,8 +1034,13 @@ impl<'a> Workspace<'a> {
         html
     }
 
-    fn summary(&self) -> String {
-        format!("<aside class='mod-tools-insights' aria-label='Community insights'><section class='panel mod-summary'><h2>Community activity</h2><dl class='mod-metrics'><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Pending reports</dt><dd>{}</dd></div><div><dt>Scheduled</dt><dd>{}</dd></div></dl><a class='subtle-link' href='{}'>View insights</a></section><section class='panel mod-summary'><h2>Review policy</h2><p class='muted'>Use Posts &amp; comments to remove or restore reported content.</p><a class='subtle-link' href='/policy'>Read the moderation policy</a></section></aside>", self.posts.len(), self.comments, self.pending(), self.upcoming, escape(&tools_url(self.item, "insights")))
+    fn summary(&self, state: &State) -> String {
+        let scheduled = if can_view(state, self.item, "scheduled") {
+            format!("<div><dt>Scheduled</dt><dd>{}</dd></div>", self.upcoming)
+        } else {
+            String::new()
+        };
+        format!("<aside class='mod-tools-insights' aria-label='Community insights'><section class='panel mod-summary'><h2>Community activity</h2><dl class='mod-metrics'><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Pending reports</dt><dd>{}</dd></div>{scheduled}</dl><a class='subtle-link' href='{}'>View insights</a></section><section class='panel mod-summary'><h2>Review policy</h2><a class='subtle-link' href='/policy'>Read the moderation policy</a></section></aside>", self.posts.len(), self.comments, self.pending(), escape(&tools_url(self.item, "insights")))
     }
 }
 

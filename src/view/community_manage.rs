@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use crate::model::{
-    Appeal, AppealStatus, Community, ContentAppeal, ContentKind, ModeratorRole, State,
+    Appeal, AppealStatus, Community, ContentAppeal, ContentKind, ModPermission, ModeratorRole,
+    State,
 };
 use crate::schedule_time;
 
-use super::super::{
-    account_byline, action_fields, action_form, community_owner, encode, escape, field, hidden,
-};
+use super::super::{account_byline, action_fields, community_owner, encode, escape, field, hidden};
 use super::{empty, tools_url};
 
 type Draft<'a> = Option<(&'a BTreeMap<String, String>, &'a str)>;
@@ -100,35 +99,55 @@ pub(super) fn roles(
 
     let mut html = alert(draft);
     if can_manage {
+        let pending = state
+            .outgoing_moderator_invitations(item)
+            .collect::<Vec<_>>();
         let mut suggestions = String::new();
         for handle in registered.iter().filter(|handle| {
             handle.as_str() != owner
                 && !staff.iter().any(|entry| &entry.handle == *handle)
+                && !pending.iter().any(|entry| &entry.handle == *handle)
                 && !state.is_banned(&item.slug, handle)
                 && !state.is_mod_mail_muted(&item.slug, handle)
         }) {
             write!(suggestions, "<option value='{}'></option>", escape(handle)).unwrap();
         }
-        let new_entry = draft.filter(|(form, _)| {
-            field(form, "action") == "set-moderator-role"
-                && !staff
-                    .iter()
-                    .any(|entry| entry.handle == field(form, "handle"))
-        });
-        let (handle, role) = new_entry.map_or(("", "moderator"), |(form, _)| {
-            (field(form, "handle"), field(form, "role"))
-        });
-        let fields = action_fields("set-moderator-role", &back, &[("community", &item.slug)]);
-        let options = role_options(role);
-        write!(html, "<section class='panel mod-section mod-role-add'><h2>Add moderator</h2><form class='stack-form' action='/action' method='post'>{fields}<label>Username<input name='handle' value='{}' list='mod-role-usernames' minlength='2' maxlength='24' autocomplete='off' autocapitalize='none' spellcheck='false' required></label><datalist id='mod-role-usernames'>{suggestions}</datalist><label>Role<select name='role'>{options}</select></label><button class='button dark' type='submit'>Add moderator</button></form></section>", escape(handle)).unwrap();
+        let invite_form = draft
+            .filter(|(form, _)| field(form, "action") == "invite-moderator")
+            .map(|(form, _)| form);
+        let handle = invite_form.map_or("", |form| field(form, "handle"));
+        let fields = action_fields("invite-moderator", &back, &[("community", &item.slug)]);
+        let options = permission_options(None, invite_form, "Permissions");
+        write!(html, "<section class='panel mod-section mod-role-add'><h2>Invite moderator</h2><p>Access starts after the invited member accepts.</p><form class='stack-form' action='/action' method='post'>{fields}<label>Username<input name='handle' value='{}' list='mod-role-usernames' minlength='2' maxlength='26' autocomplete='off' autocapitalize='none' spellcheck='false' required></label><datalist id='mod-role-usernames'>{suggestions}</datalist>{options}<button class='button dark' type='submit'>Send invitation</button></form></section>", escape(handle)).unwrap();
+        html.push_str(
+            "<section class='panel mod-section mod-role-roster'><h2>Pending invitations</h2>",
+        );
+        if pending.is_empty() {
+            html.push_str("<p class='muted'>No pending invitations.</p>");
+        } else {
+            html.push_str("<ul>");
+            for invite in pending {
+                let id = invite.id.to_string();
+                let name = escape(&invite.handle);
+                let permissions = super::super::moderator_invitations::permission_list(invite.role);
+                let fields = action_fields(
+                    "cancel-moderator-invitation",
+                    &back,
+                    &[("community", &item.slug), ("id", &id)],
+                );
+                write!(html, "<li><div><strong>u/{name}</strong><p class='muted'>{permissions}</p></div><form action='/action' method='post'>{fields}<button class='button light' type='submit' aria-label='Cancel invitation for u/{name}'>Cancel invitation</button></form></li>").unwrap();
+            }
+            html.push_str("</ul>");
+        }
+        html.push_str("</section>");
     }
     write!(html, "<section class='panel mod-section mod-role-roster'><h2>Moderation team</h2><ul><li><div><strong>{}</strong><p class='muted'>Owner</p></div></li>", account_byline(owner)).unwrap();
     for entry in staff {
+        let permission_list = super::super::moderator_invitations::permission_list(entry.role);
         write!(
             html,
-            "<li><div><strong>u/{}</strong><p class='muted'>{}</p></div>",
+            "<li><div><strong>u/{}</strong><p class='muted'>{permission_list}</p></div>",
             escape(&entry.handle),
-            entry.role.label()
         )
         .unwrap();
         if can_manage {
@@ -136,32 +155,53 @@ pub(super) fn roles(
                 ("community", item.slug.as_str()),
                 ("handle", entry.handle.as_str()),
             ];
-            let select = draft
-                .filter(|(form, _)| field(form, "handle") == entry.handle)
-                .map_or(entry.role.as_str(), |(form, _)| field(form, "role"));
-            let options = role_options(select);
-            let fields = action_fields("set-moderator-role", &back, &target);
-            let remove = action_form(
-                "remove-moderator-role",
-                &back,
-                &target,
-                "Remove access",
-                "",
-                "button light",
+            let rejected = draft
+                .filter(|(form, _)| {
+                    field(form, "action") == "set-moderator-permissions"
+                        && field(form, "handle") == entry.handle
+                })
+                .map(|(form, _)| form);
+            let handle = escape(&entry.handle);
+            let options = permission_options(
+                Some(entry.role),
+                rejected,
+                &format!("Permissions for u/{handle}"),
             );
-            write!(html, "<div class='mod-role-actions'><form action='/action' method='post'>{fields}<label><span class='sr-only'>Role for u/{}</span><select name='role'>{options}</select></label><button class='button light' type='submit'>Save role</button></form>{remove}</div>", escape(&entry.handle)).unwrap();
+            let fields = action_fields("set-moderator-permissions", &back, &target);
+            let remove = action_fields("remove-moderator-role", &back, &target);
+            let open = if rejected.is_some() { " open" } else { "" };
+            write!(html, "<details class='preference-list'{open}><summary>Edit permissions <span class='sr-only'>for u/{handle}</span></summary><form class='stack-form' action='/action' method='post'>{fields}{options}<button class='button dark' type='submit'>Save permissions</button></form><form action='/action' method='post'>{remove}<button class='button light' type='submit' aria-label='Remove access for u/{handle}'>Remove access</button></form></details>").unwrap();
         }
         html.push_str("</li>");
     }
-    html.push_str("</ul></section><section class='panel mod-section mod-role-help'><h2>What each role can do</h2><dl><dt>Moderator</dt><dd>Remove and restore posts and comments, review reports and appeals, manage approved members, bans and mutes, reply to mod mail, and schedule posts and events.</dd><dt>Appeals reviewer</dt><dd>Review and decide appeals for this community.</dd><dt>Owner</dt><dd>Set community access and appearance, pin posts, and manage moderator roles.</dd></dl></section>");
+    html.push_str("</ul></section>");
     html
 }
 
-fn role_options(selected: &str) -> String {
-    [ModeratorRole::Moderator, ModeratorRole::AppealsReviewer]
-        .into_iter()
-        .map(|role| option(role.as_str(), role.label(), selected))
-        .collect()
+fn permission_options(
+    role: Option<ModeratorRole>,
+    form: Option<&BTreeMap<String, String>>,
+    legend: &str,
+) -> String {
+    let mut html = format!("<fieldset><legend>{legend}</legend>");
+    for permission in ModPermission::ALL {
+        let name = format!("permission-{}", permission.code());
+        let checked = if form.map_or(role.is_some_and(|role| role.allows(permission)), |form| {
+            field(form, &name) == "on"
+        }) {
+            " checked"
+        } else {
+            ""
+        };
+        write!(
+            html,
+            "<label class='checkbox'><input type='checkbox' name='{name}'{checked}> {}</label>",
+            permission.label()
+        )
+        .unwrap();
+    }
+    html.push_str("</fieldset>");
+    html
 }
 
 const APPEAL_TYPES: &[(&str, &str)] = &[

@@ -240,6 +240,7 @@ mod tests {
             repost_of: None,
             repost_title_from_source: false,
             media: Vec::new(),
+            media_alternatives: Default::default(),
         }
     }
 

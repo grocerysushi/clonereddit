@@ -4,7 +4,8 @@ use std::fmt::Write;
 
 use super::{account_security, action_form, appearance, encode, escape, field, icon, visible_post};
 use crate::model::{
-    ChatRequestPermission, DirectMessage, Notification, NotificationPreferences, State,
+    ChatRequestPermission, DirectMessage, DiscussionNotification, Notification,
+    NotificationPreferences, State,
 };
 use crate::schedule_time::{display, to_local};
 
@@ -35,6 +36,7 @@ pub(super) fn settings(
     };
     let switches: String = [
         ("replies", "Replies", "Replies to your posts and comments.", prefs.replies),
+        ("mentions", "Mentions", "Posts or comments that mention your username.", prefs.mentions),
         ("messages", "Personal messages", "New direct messages. Conversations stay in Messages.", prefs.messages),
         ("moderation", "Moderation notices", "Restrictions, removals, and appeal decisions.", prefs.moderation),
     ].into_iter().map(|(name, label, help, enabled)| {
@@ -48,7 +50,7 @@ pub(super) fn settings(
 <div class="form-actions"><a class="button light" href="{appearance_url}">Appearance</a></div>
 <section aria-labelledby="notification-preferences-title"><h2 id="notification-preferences-title">Notification preferences</h2>
 <p>Choose which future activity appears in your in-app notifications. Muted moderation notices remain available under <a class="subtle-link" href="/notifications?view=moderation">Moderation updates</a>.</p>
-<form class="stack-form notification-settings-form" action="/account/settings" method="post" aria-labelledby="notification-preferences-title">{switches}<button type="submit" class="button dark">Save preferences</button></form></section>{chat_settings}</section>"#
+<form class="stack-form notification-settings-form" action="/account/settings" method="post" aria-labelledby="notification-preferences-title"><input type="hidden" name="mentions_present" value="1">{switches}<button type="submit" class="button dark">Save preferences</button></form></section>{chat_settings}</section>"#
     )
 }
 
@@ -83,7 +85,7 @@ pub(super) fn auth_form(kind: &str, username: &str, error: &str) -> String {
         String::new()
     } else {
         format!(
-            "<p class='notice account-error' role='alert'>{}</p>",
+            "<p class='notice account-error' role='alert' tabindex='-1' autofocus>{}</p>",
             escape(error)
         )
     };
@@ -244,6 +246,8 @@ pub(super) fn visible_notifications(state: &State) -> impl Iterator<Item = &Noti
         item.recipient == state.username
             && !item.silent
             && item.post.is_none_or(|id| visible_post(state, id).is_some())
+            && state.can_view_discussion_notification(item)
+            && state.can_view_mod_mail_notification(item.id)
     })
 }
 
@@ -252,7 +256,11 @@ pub(super) fn notifications(state: &State, moderation_only: bool) -> String {
         state
             .notifications
             .iter()
-            .filter(|item| item.recipient == state.username && (item.appeal || item.moderation))
+            .filter(|item| {
+                item.recipient == state.username
+                    && (item.appeal || item.moderation)
+                    && state.can_view_mod_mail_notification(item.id)
+            })
             .collect()
     } else {
         visible_notifications(state).collect()
@@ -298,6 +306,8 @@ pub(super) fn notifications(state: &State, moderation_only: bool) -> String {
                 removal_notification_link(state, episode)
             } else if item.appeal {
                 "<a class='subtle-link' href='/appeals'>View your appeals</a>".to_owned()
+            } else if let Some(id) = state.mod_mail_notification_target(item.id) {
+                super::modmail::notification_link(state, id)
             } else if item.moderation {
                 if (item.body.starts_with("Moderators removed your ")
                     || item.body.starts_with("AutoMod removed your "))
@@ -311,7 +321,19 @@ pub(super) fn notifications(state: &State, moderation_only: bool) -> String {
                     String::new()
                 }
             } else if let Some(id) = item.post {
-                format!("<a class='subtle-link' href='/thread?id={id}'>View discussion</a>")
+                let (anchor, label) = match item.discussion {
+                    Some(DiscussionNotification::Reply(comment)) => {
+                        (format!("#comment-{comment}"), "View reply")
+                    }
+                    Some(DiscussionNotification::MentionComment(comment)) => {
+                        (format!("#comment-{comment}"), "View mentioned comment")
+                    }
+                    Some(DiscussionNotification::MentionPost) => {
+                        (String::new(), "View mentioned post")
+                    }
+                    None => (String::new(), "View discussion"),
+                };
+                format!("<a class='subtle-link' href='/thread?id={id}{anchor}'>{label}</a>")
             } else {
                 "<a class='subtle-link' href='/messages'>Open messages</a>".to_owned()
             };

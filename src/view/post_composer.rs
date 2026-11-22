@@ -215,15 +215,33 @@ pub(super) fn editor(
     }).collect::<String>();
     let alert = rejected.map_or_else(String::new, |(_, error)| {
         format!(
-            "<p class='notice publishing-error' role='alert'>{}</p>",
+            "<p class='notice publishing-error' role='alert' tabindex='-1' autofocus>{}</p>",
             escape(error)
         )
     });
+    let media_alternatives =
+        post.filter(|post| !post.media.is_empty())
+            .map_or_else(String::new, |post| {
+                let saved_descriptions = post.media_alternatives.descriptions.join("\n");
+                let descriptions = rejected.map_or(saved_descriptions.as_str(), |(form, _)| {
+                    field(form, "media_descriptions")
+                });
+                let transcript = rejected
+                    .map_or(post.media_alternatives.transcript.as_str(), |(form, _)| {
+                        field(form, "media_transcript")
+                    });
+                publishing::media_alternative_fields(
+                    descriptions,
+                    transcript,
+                    post.media[0].content_type.starts_with("video/"),
+                )
+            });
     format!(
         r#"<section class="panel standalone composer"><header class="creator-header"><h1>{heading}</h1>{draft_actions}</header>{tabs}{alert}<form class="stack-form" method="post" action="/action">{fields}{new_fields}
 <label>Title<input name="title" required maxlength="160" value="{title}" placeholder="What are we discussing?"></label>
 <details class="composer-tags"{tags_open}><summary>{tag_icon} Add tags</summary><div class="composer-tag-options">{tag_fields}</div></details>
 {body}
+{media_alternatives}
 <label>Link <small>Optional</small><input name="url" type="url" maxlength="600" value="{url}" placeholder="https://"></label>
 <div class="form-actions composer-actions"><a class="button light" href="{cancel}">Cancel</a><button class="button dark" type="submit">{submit}</button>{save}{discard}</div></form></section>"#,
         tag_icon = icon("tag"),

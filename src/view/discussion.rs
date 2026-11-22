@@ -172,9 +172,10 @@ pub(super) fn editor(
     );
     let cancel = escape(&comment_url(back, comment.id));
     let alert = form_error(error);
+    let id = comment.id;
     let editor = comment_body_editor::render(body, true, markdown, comment.image.is_none());
     format!(
-        r#"<form class="stack-form comment-edit-form" method="post" action="/action" aria-label="Edit comment">{fields}{alert}
+        r#"<form class="stack-form comment-edit-form" id="edit-comment-{id}" tabindex="-1" method="post" action="/action" aria-label="Edit comment">{fields}{alert}
 {editor}
 <div class="form-actions comment-form-actions"><button class="button dark" type="submit">Save changes</button><a class="button light" href="{cancel}">Cancel</a></div></form>"#
     )
@@ -216,14 +217,14 @@ pub(super) fn confirm_delete(
     let cancel = escape(&comment_url(back, id));
     let alert = form_error(error);
     format!(
-        r#"<section class="comment-delete-confirm" aria-labelledby="delete-comment-heading-{id}"><h3 id="delete-comment-heading-{id}">Delete this comment?</h3><p class="muted">Replies will stay in the discussion.</p>{alert}
+        r#"<section class="comment-delete-confirm" id="delete-comment-{id}" tabindex="-1" aria-labelledby="delete-comment-heading-{id}"><h3 id="delete-comment-heading-{id}">Delete this comment?</h3><p class="muted">Replies will stay in the discussion.</p>{alert}
 <form class="form-actions comment-delete-form comment-form-actions" method="post" action="/action">{fields}<button class="button dark" type="submit">Delete comment</button><a class="button light" href="{cancel}">Cancel</a></form></section>"#
     )
 }
 
 pub(super) fn action_url(back: &str, action: &str, id: u64) -> String {
     let separator = if back.contains('?') { '&' } else { '?' };
-    format!("{back}{separator}{action}={id}#comment-{id}")
+    format!("{back}{separator}{action}={id}#{action}-{id}")
 }
 
 pub(super) fn comment_url(back: &str, id: u64) -> String {
@@ -235,7 +236,7 @@ pub(super) fn form_error(error: &str) -> String {
         String::new()
     } else {
         format!(
-            "<p class='notice comment-form-error' role='alert'>{}</p>",
+            "<p class='notice comment-form-error' role='alert' tabindex='-1' autofocus>{}</p>",
             escape(error)
         )
     }

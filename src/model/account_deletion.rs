@@ -33,7 +33,16 @@ impl State {
 
         self.pending_artwork.retain(|entry| entry.creator != handle);
         self.notifications.retain(|entry| entry.recipient != handle);
+        self.mod_mail_notifications
+            .retain(|id, _| self.notifications.iter().any(|entry| entry.id == *id));
+        self.rename_mod_mail_account(handle, DELETED_ACCOUNT);
         self.moderator_roles.retain(|entry| entry.handle != handle);
+        self.moderator_invitations.retain(|entry| {
+            entry.handle != handle
+                && !self.communities.iter().any(|item| {
+                    item.slug == entry.community && item.owner.as_deref() == Some(handle)
+                })
+        });
         self.approved_members.retain(|entry| entry.handle != handle);
         self.delete_account_chat_requests(handle);
         self.content_appeals.retain(|case| case.appellant != handle);

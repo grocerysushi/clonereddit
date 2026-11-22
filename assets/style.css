@@ -554,6 +554,11 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .post-gallery-single img { aspect-ratio: auto; max-height: 435px; object-fit: contain; }
 .post-video { margin: 8px 0; border-radius: 8px; overflow: hidden; background: #20251f; }
 .post-video video { display: block; width: 100%; max-height: 480px; }
+.publishing-media-alternatives { display: grid; gap: 6px; }
+.publishing-media-alternatives label:not(:first-of-type) { margin-top: 6px; }
+.publishing-media-alternatives > small { color: var(--quiet); }
+.media-transcript { margin: 8px 0; }
+.media-transcript p { white-space: pre-wrap; }
 .post-poll, .post-repost { margin: 9px 0 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .poll-summary, .post-repost p { color: var(--quiet); font-size: .8rem; }
 .poll-vote fieldset { display: grid; gap: 5px; padding: 0; margin: 7px 0; border: 0; }
@@ -736,6 +741,9 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 :is(.mod-role-roster, .mod-access-roster) li + li { border-top: 1px solid var(--line); }
 :is(.mod-role-roster, .mod-access-roster) strong { overflow-wrap: anywhere; }
 .mod-role-roster p { font-size: .85rem; }
+.mod-role-add .stack-form { margin-top: 10px; }
+.mod-role-roster details { width: 100%; }
+.mod-role-roster details > form { margin-top: 8px; }
 .mod-role-actions, .mod-role-actions > form:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 :is(.mod-role-actions, .mod-access-roster) .button { margin-top: 0; min-height: 35px; padding: 4px 8px; font-size: .8rem; }
 .mod-access-account { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }

@@ -114,6 +114,10 @@ The America/Chicago conversion follows the U.S. daylight saving schedule. Choose
 
 37. In **Mod Tools → Wiki**, create a page with a title and a stable address. Save the Markdown draft and publish it when ready. Later edits stay in the draft until a moderator publishes them. Use the page’s editor list to grant or revoke draft editing for a joined or approved member. Members can open their assigned drafts from the community’s **Wiki**. Published pages follow the community’s viewing permissions.
 38. Open **Appearance** from navigation or **Account Settings**, choose **Light** or **Dark**, and select **Save appearance**. The choice follows your account when you sign in. Guest choices are saved in the browser.
+39. Mention someone using their `u/username` in a post or comment. The recipient gets a link to the exact post or comment when they can view it, and can control **Mentions** under **Account Settings → Notification preferences**.
+40. As a community owner, open **Mod Tools → Moderator roles**, invite a registered account, and select the permissions they need. The invitee accepts or declines under **Moderator invitations**. Owners can cancel invitations and edit or revoke active permissions.
+41. Send a message from **Message moderators** and follow the conversation under **Your mod mail → Sent**. Moderators open threads from **Mod Tools → Mod mail**, can reply with a saved response, and can archive resolved threads. A moderator can reopen an archived thread to resume replies.
+42. In a media post, use **Text alternatives** to describe each attachment. Enter one description per line in upload order. A video can also have a transcript with its important visuals, speech, and sounds. Edit an existing media post to add or revise its descriptions or transcript.
 
 Uploaded post and comment attachments are stored in `commonline.state.media` by default. The server appends `.media` to a custom state path. Move or back up the state file, accounts file, and media directory together. Keep those private local files out of source control.
 

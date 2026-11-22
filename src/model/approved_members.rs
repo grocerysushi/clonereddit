@@ -25,6 +25,9 @@ impl State {
         let index = self.moderated_community_index(form, ModPermission::Members)?;
         let item = &self.communities[index];
         let handle = restriction_handle(value(form, "handle"))?;
+        if handle == self.username && self.moderator_role(item, &handle).is_some() {
+            return Err("Ask another moderator to approve your account.".into());
+        }
         if item.owner.as_deref() == Some(handle.as_str())
             || self.moderator_role(item, &handle) == Some(ModeratorRole::Moderator)
         {

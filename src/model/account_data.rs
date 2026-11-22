@@ -3,8 +3,9 @@ use std::io::{self, Write};
 
 use super::{
     checked_handle, encode, encode_image, next_id, required, unix_seconds, value, Appearance,
-    ChatRequestPermission, Comment, Community, CustomFeed, DirectMessage, FeedLayout, Notification,
-    NotificationPreferences, Post, PostDraft, ProfileAvatar, SocialLink, State, DELETED_ACCOUNT,
+    ChatRequestPermission, Comment, Community, CustomFeed, DirectMessage, DiscussionNotification,
+    FeedLayout, Notification, NotificationPreferences, Post, PostDraft, ProfileAvatar, SocialLink,
+    State, DELETED_ACCOUNT,
 };
 
 #[derive(Clone, Default)]
@@ -193,8 +194,8 @@ impl ProfileData {
         if prefs != NotificationPreferences::default() {
             writeln!(
                 file,
-                "notification-preferences\t{}\t{}\t{}",
-                prefs.replies, prefs.messages, prefs.moderation,
+                "notification-preferences\t{}\t{}\t{}\t{}",
+                prefs.replies, prefs.messages, prefs.moderation, prefs.mentions,
             )?;
         }
         if self.chat_request_permission != ChatRequestPermission::default() {
@@ -563,7 +564,12 @@ impl State {
         Ok("Notifications marked read.")
     }
 
-    pub(super) fn notify_comment(&mut self, post: u64, parent: Option<u64>) -> Result<(), String> {
+    pub(super) fn notify_comment(
+        &mut self,
+        post: u64,
+        parent: Option<u64>,
+        comment: u64,
+    ) -> Result<(), String> {
         let (recipient, subject) = match parent {
             Some(id) => (
                 self.comments
@@ -581,10 +587,17 @@ impl State {
             ),
         };
         if let Some(recipient) = recipient {
+            if self.has_discussion_notification(
+                &recipient,
+                post,
+                DiscussionNotification::MentionComment(comment),
+            ) {
+                return Ok(());
+            }
             self.notify(
                 &recipient,
                 format!("u/{} {subject}.", self.username),
-                NotificationKind::Reply(post),
+                NotificationKind::Reply { post, comment },
             )?;
         }
         Ok(())
@@ -625,21 +638,29 @@ impl State {
             return Ok(());
         }
         let prefs = self.notification_preferences_for(recipient);
-        let direct = matches!(kind, NotificationKind::Reply(_) | NotificationKind::Message);
+        let direct = matches!(
+            kind,
+            NotificationKind::Reply { .. } | NotificationKind::Message
+        );
         if direct && (recipient == self.username || self.either_blocked(&self.username, recipient))
         {
             return Ok(());
         }
-        let (post, appeal, moderation, removal, silent) = match kind {
-            NotificationKind::Reply(post) if prefs.replies => {
-                (Some(post), false, false, None, false)
-            }
-            NotificationKind::Message if prefs.messages => (None, false, false, None, false),
-            NotificationKind::Reply(_) | NotificationKind::Message => return Ok(()),
-            NotificationKind::Appeal => (None, true, false, None, !prefs.moderation),
-            NotificationKind::Moderation => (None, false, true, None, !prefs.moderation),
+        let (post, discussion, appeal, moderation, removal, silent) = match kind {
+            NotificationKind::Reply { post, comment } if prefs.replies => (
+                Some(post),
+                Some(DiscussionNotification::Reply(comment)),
+                false,
+                false,
+                None,
+                false,
+            ),
+            NotificationKind::Message if prefs.messages => (None, None, false, false, None, false),
+            NotificationKind::Reply { .. } | NotificationKind::Message => return Ok(()),
+            NotificationKind::Appeal => (None, None, true, false, None, !prefs.moderation),
+            NotificationKind::Moderation => (None, None, false, true, None, !prefs.moderation),
             NotificationKind::Removal(episode) => {
-                (None, false, true, Some(episode), !prefs.moderation)
+                (None, None, false, true, Some(episode), !prefs.moderation)
             }
         };
         let id = next_id(&mut self.next_notification)?;
@@ -648,6 +669,7 @@ impl State {
             recipient: recipient.into(),
             body,
             post,
+            discussion,
             appeal,
             moderation,
             removal,
@@ -660,7 +682,7 @@ impl State {
 }
 
 enum NotificationKind {
-    Reply(u64),
+    Reply { post: u64, comment: u64 },
     Message,
     Appeal,
     Moderation,

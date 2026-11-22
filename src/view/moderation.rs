@@ -3,30 +3,31 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use super::moderation_workspace::{report_record, QueueKind};
+use super::modmail;
 use super::{
-    action_fields, can_view_post, community_owner, community_url, encode, escape, field, hidden,
-    post_card, PostView,
+    can_view_post, community_owner, community_url, encode, escape, field, hidden, post_card,
+    PostView,
 };
-use crate::model::{Community, ModMail, ModPermission, State};
+use crate::model::{Community, ModPermission, State};
 
 const QUEUE_URL: &str = "/moderation?section=queue";
-const MAIL_URL: &str = "/moderation?section=mail";
 const MOD_FEED_URL: &str = "/moderation?section=mod-feed";
 
 pub(super) fn render(state: &State, section: &str, query: &BTreeMap<String, String>) -> String {
+    if section == "mail" {
+        return modmail::render(state, None, query);
+    }
     let assigned: BTreeMap<&str, &Community> = state
         .communities
         .iter()
         .filter(|item| match section {
             "manage" => state.can_open_mod_tools(item),
-            "mail" => state.can_moderate(item, ModPermission::Mail),
             _ => state.can_moderate(item, ModPermission::Reports),
         })
         .map(|item| (item.slug.as_str(), item))
         .collect();
 
     match section {
-        "mail" => mail(state, &assigned),
         "mod-feed" => mod_feed(state, &assigned),
         "manage" => manage(state, &assigned),
         _ => queue(state, &assigned, query),
@@ -97,93 +98,6 @@ fn queue(
     }
     html.push_str("</section>");
     html
-}
-
-fn mail(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
-    let mut html = String::from(
-        "<section class='panel standalone moderation-tool'><h1>Mod mail</h1><section class='preference-list'><h2>Inbox</h2>",
-    );
-    let mut inbox = state
-        .mod_mail
-        .iter()
-        .rev()
-        .filter_map(|message| {
-            owned
-                .get(message.community.as_str())
-                .map(|item| (message, *item))
-        })
-        .peekable();
-    if inbox.peek().is_none() {
-        html.push_str("<p class='muted log-empty'>No messages to your communities.</p>");
-    }
-    for (message, item) in inbox {
-        mail_record(&mut html, message, Some(&item.name), true);
-    }
-
-    html.push_str("</section><section class='preference-list'><h2>Sent</h2>");
-    let mut sent = state
-        .mod_mail
-        .iter()
-        .rev()
-        .filter(|message| message.sender == state.username)
-        .peekable();
-    if sent.peek().is_none() {
-        html.push_str("<p class='muted log-empty'>No messages sent.</p>");
-    }
-    for message in sent {
-        let name = state
-            .communities
-            .iter()
-            .find(|item| item.slug == message.community && state.can_view_community(item))
-            .map(|item| item.name.as_str());
-        mail_record(&mut html, message, name, false);
-    }
-    html.push_str("</section></section>");
-    html
-}
-
-fn mail_record(html: &mut String, message: &ModMail, community_name: Option<&str>, inbox: bool) {
-    let from = if inbox {
-        format!("From u/{} · ", escape(&message.sender))
-    } else {
-        String::from("To ")
-    };
-    let destination = community_name.map_or_else(
-        || "Community unavailable".to_owned(),
-        |name| {
-            format!(
-                "<a class='subtle-link' href='{}'>{}</a>",
-                community_url(&message.community),
-                escape(name)
-            )
-        },
-    );
-    write!(
-        html,
-        "<article class='log-item moderation-record'><h3>{}</h3><p class='muted'>{from}{destination}</p><p>{}</p>",
-        escape(&message.subject),
-        escape(&message.body)
-    )
-    .unwrap();
-    if !message.reply.is_empty() {
-        write!(
-            html,
-            "<blockquote class='moderation-reply'><strong>Reply from {}</strong><p>{}</p></blockquote>",
-            escape(community_name.unwrap_or("the moderation team")),
-            escape(&message.reply)
-        )
-        .unwrap();
-    } else if inbox {
-        write!(
-            html,
-            "<form class='stack-form moderation-reply-form' method='post' action='/action'>{}<label>Reply<textarea name='reply' rows='3' maxlength='4000' required></textarea></label><button class='button dark' type='submit'>Send reply</button></form>",
-            action_fields("reply-mod-mail", MAIL_URL, &[("id", &message.id.to_string())])
-        )
-        .unwrap();
-    } else {
-        html.push_str("<p class='muted'>Awaiting reply</p>");
-    }
-    html.push_str("</article>");
 }
 
 fn mod_feed(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
@@ -257,13 +171,4 @@ fn manage(state: &State, assigned: &BTreeMap<&str, &Community>) -> String {
     }
     html.push_str("</section>");
     html
-}
-
-pub(super) fn contact(item: &Community) -> String {
-    let fields = action_fields("send-mod-mail", MAIL_URL, &[("community", &item.slug)]);
-    let community = escape(&item.name);
-    let cancel = community_url(&item.slug);
-    format!(
-        "<section class='panel standalone moderation-tool'><h1>Contact moderators</h1><p>Send a message to the moderators of <strong>{community}</strong>.</p><form class='stack-form' action='/action' method='post'>{fields}<label>Subject<input name='subject' maxlength='120' required></label><label>Message<textarea name='body' rows='7' maxlength='4000' required></textarea></label><div class='form-actions'><button class='button dark' type='submit'>Send message</button><a class='button light' href='{cancel}'>Cancel</a></div></form></section>"
-    )
 }

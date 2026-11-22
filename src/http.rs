@@ -65,6 +65,8 @@ const POST_MEDIA_FIELDS: &[&str] = &[
     "spoiler",
     "brand_affiliate",
     "url",
+    "media_descriptions",
+    "media_transcript",
 ];
 const COMMENT_FIELDS: &[&str] = &[
     "action",

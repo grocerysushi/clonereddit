@@ -158,7 +158,7 @@ fn account_settings(request: &Request, state: &mut State, path: &Path) -> Respon
         };
         (previous_notifications, chat)
     } else {
-        if ["replies", "messages", "moderation"]
+        if ["replies", "mentions", "messages", "moderation"]
             .iter()
             .any(|key| request.form.get(*key).is_some_and(|value| value != "on"))
         {
@@ -173,6 +173,13 @@ fn account_settings(request: &Request, state: &mut State, path: &Path) -> Respon
         (
             NotificationPreferences {
                 replies: request.form.contains_key("replies"),
+                mentions: if request.form.contains_key("mentions_present")
+                    || request.form.contains_key("mentions")
+                {
+                    request.form.contains_key("mentions")
+                } else {
+                    previous_notifications.mentions
+                },
                 messages: request.form.contains_key("messages"),
                 moderation: request.form.contains_key("moderation"),
             },
