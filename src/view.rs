@@ -20,6 +20,7 @@ mod post_search_query;
 mod profile;
 mod profile_panel;
 mod publishing;
+mod references;
 mod reporting;
 mod restricted;
 mod scheduled;
@@ -70,6 +71,16 @@ pub fn route(
     }
     if let Some(profile_path) = request.path.strip_prefix("/u/") {
         return public_profile(state, auth, &request, profile_path);
+    }
+    if request.method == "GET" {
+        if let Some(slug) = request.path.strip_prefix("/c/") {
+            let slug = slug.to_ascii_lowercase();
+            if community(state, &slug).is_none() {
+                return missing(state);
+            }
+            request.path = "/".into();
+            request.query.insert("view".into(), slug);
+        }
     }
     if request.method == "POST" && request.path == "/posts/media/new" {
         return media_submission(request, state, path);
@@ -2958,7 +2969,17 @@ fn post_preview(state: &State, post: &Post, back: &str, full: bool, sensitive: b
     let body_excerpt = if full || post.body.chars().count() <= 300 {
         post.body.clone()
     } else {
-        format!("{}…", post.body.chars().take(297).collect::<String>())
+        let mut excerpt: String = post.body.chars().take(297).collect();
+        let (last_word_start, last_word) = excerpt
+            .rsplit_once(char::is_whitespace)
+            .map_or((0, excerpt.as_str()), |(before, word)| (before.len(), word));
+        if (last_word.contains("c/") || last_word.contains("u/"))
+            && post.body[excerpt.len()..].starts_with(|ch: char| !ch.is_whitespace())
+        {
+            excerpt.truncate(last_word_start);
+        }
+        excerpt.push('…');
+        excerpt
     };
     let body = if body_excerpt.is_empty() {
         String::new()
@@ -3385,7 +3406,7 @@ fn comment_card(
             let body = if comment.body.is_empty() {
                 String::new()
             } else {
-                format!("<p>{}</p>", escape(&comment.body))
+                format!("<p>{}</p>", references::render_text(&comment.body))
             };
             (body, controls)
         }
