@@ -16,6 +16,11 @@ use subtle::ConstantTimeEq;
 
 use crate::http::{valid_session_token, SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECS};
 
+#[path = "auth_sessions.rs"]
+mod sessions;
+use sessions::Session;
+pub use sessions::{SessionDevice, SessionSummary};
+
 #[path = "auth_security.rs"]
 mod security;
 pub use security::{AccountSecurity, LoginProgress};
@@ -40,12 +45,6 @@ struct Account {
     password_hash: String,
     recovery_hash: SecretHash,
     security: SecurityData,
-}
-
-#[derive(Clone)]
-struct Session {
-    username: String,
-    expires_at: u64,
 }
 
 #[derive(Clone)]
@@ -104,17 +103,22 @@ impl AuthStore {
         Ok(store)
     }
 
-    pub fn register(&mut self, username: &str, password: &str) -> Result<AuthGrant, String> {
+    pub fn register(
+        &mut self,
+        username: &str,
+        password: &str,
+        device: SessionDevice,
+    ) -> Result<AuthGrant, String> {
         let username = checked_username(username)?;
         if self.accounts.contains_key(&username) || self.legacy_claims.contains_key(&username) {
             return Err("That username is unavailable.".into());
         }
-        self.replace_credentials(username, password, None)
+        self.replace_credentials(username, password, None, device)
     }
 
     #[cfg(test)]
     fn login(&mut self, username: &str, password: &str) -> Result<AuthGrant, String> {
-        match self.begin_login(username, password)? {
+        match self.begin_login(username, password, SessionDevice::default())? {
             LoginProgress::SignedIn(grant) => Ok(grant),
             LoginProgress::SecondFactor(_) => {
                 Err("Complete sign-in with your authenticator.".into())
@@ -147,7 +151,13 @@ impl AuthStore {
         recovery_code: &str,
         new_password: &str,
     ) -> Result<AuthGrant, String> {
-        self.recover_with_otp(username, recovery_code, new_password, "")
+        self.recover_with_otp(
+            username,
+            recovery_code,
+            new_password,
+            "",
+            SessionDevice::default(),
+        )
     }
 
     pub fn recover_with_otp(
@@ -156,6 +166,7 @@ impl AuthStore {
         recovery_code: &str,
         new_password: &str,
         otp: &str,
+        device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let username = checked_username(username).map_err(|_| RECOVERY_ERROR)?;
         let code = recovery_code.trim().to_ascii_lowercase();
@@ -172,7 +183,7 @@ impl AuthStore {
             return Err(RECOVERY_ERROR.into());
         }
         let counter = self.verify_active_factor(&username, otp, unix_seconds())?;
-        self.replace_credentials(username, new_password, counter)
+        self.replace_credentials(username, new_password, counter, device)
     }
 
     pub fn logout(&mut self, token: &str) -> Result<(), String> {
@@ -189,11 +200,8 @@ impl AuthStore {
     }
 
     pub fn username(&self, token: &str) -> Option<&str> {
-        if !valid_session_token(token) {
-            return None;
-        }
-        let session = self.sessions.get(&secret_hash(token))?;
-        (session.expires_at > unix_seconds()).then_some(session.username.as_str())
+        self.active_session(token, unix_seconds())
+            .map(|(_, session)| session.username.as_str())
     }
 
     pub fn has_account(&self, username: &str) -> bool {
@@ -222,6 +230,7 @@ impl AuthStore {
         username: String,
         password: &str,
         counter: Option<u64>,
+        device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         if !valid_password(password) {
             return Err("Use a password with 12 to 128 characters.".into());
@@ -250,7 +259,7 @@ impl AuthStore {
         }
         updated.legacy_claims.remove(&username);
         updated.revoke_authentication(&username);
-        let grant = updated.add_session(&username, Some(code))?;
+        let grant = updated.add_session(&username, Some(code), device)?;
         self.commit(updated)?;
         Ok(grant)
     }
@@ -267,6 +276,7 @@ impl AuthStore {
         &mut self,
         username: &str,
         recovery_code: Option<String>,
+        device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let session = random_secret()?;
         let hash = secret_hash(&session);
@@ -280,6 +290,8 @@ impl AuthStore {
             Session {
                 username: username.to_owned(),
                 expires_at: now.saturating_add(SESSION_MAX_AGE_SECS),
+                created_at: Some(now),
+                device,
             },
         );
         Ok(AuthGrant {
@@ -307,16 +319,12 @@ impl AuthStore {
                     return Err(invalid_store());
                 }
             }
-            ["session", hash, username, expiration] if canonical_username(username) => {
+            ["session", hash, username, expiration, metadata @ ..]
+                if canonical_username(username) =>
+            {
                 let hash = decode_hash(hash).ok_or_else(invalid_store)?;
-                let expires_at = expiration.parse::<u64>().map_err(|_| invalid_store())?;
-                let old = self.sessions.insert(
-                    hash,
-                    Session {
-                        username: (*username).into(),
-                        expires_at,
-                    },
-                );
+                let session = Session::from_record(username, expiration, metadata)?;
+                let old = self.sessions.insert(hash, session);
                 if old.is_some() {
                     return Err(invalid_store());
                 }
@@ -387,13 +395,7 @@ impl AuthStore {
             .iter()
             .filter(|(_, session)| session.expires_at > now)
         {
-            writeln!(
-                file,
-                "session\t{}\t{}\t{}",
-                hex(hash),
-                session.username,
-                session.expires_at
-            )?;
+            session.write_record(file, hash)?;
         }
         for (username, hash) in &self.legacy_claims {
             writeln!(file, "legacy-recovery\t{username}\t{}", hex(hash))?;
@@ -516,7 +518,7 @@ fn invalid_store() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{random_secret, AuthStore};
+    use super::{random_secret, AuthStore, SessionDevice};
     use std::{fs, path::PathBuf};
 
     #[test]
@@ -539,7 +541,9 @@ mod tests {
         let fixture = TempState(folder);
         let state = fixture.0.join("site.state");
         let mut auth = AuthStore::load(&state).unwrap();
-        let signup = auth.register(USER, OLD_PASSWORD).unwrap();
+        let signup = auth
+            .register(USER, OLD_PASSWORD, SessionDevice::default())
+            .unwrap();
         let second_login = auth.login(USER, OLD_PASSWORD).unwrap();
         let old_code = signup.recovery_code.unwrap();
 

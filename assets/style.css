@@ -68,6 +68,17 @@ h1, h2, p { margin: 0; overflow-wrap: anywhere; }
 .account-security-section > .muted { margin-top: 5px; }
 .account-security-email { overflow-wrap: anywhere; margin: 6px 0; }
 .account-security-pending { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 12px; margin-top: 9px; }
+.account-session-list { list-style: none; margin: 6px 0 10px; padding: 0; }
+.account-session-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.account-session-detail { flex: 1 1 215px; min-width: 0; }
+.account-session-device, .account-session-meta > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 7px; }
+.account-session-device strong { overflow-wrap: anywhere; }
+.account-session-meta { display: grid; gap: 2px; margin: 3px 0 0; color: var(--quiet); font-size: .83rem; }
+.account-session-meta dt { font-weight: 650; }
+.account-session-meta dd { margin: 0; }
+.account-session-bulk summary { list-style: none; }
+.account-session-bulk summary::-webkit-details-marker { display: none; }
+.account-session-bulk form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
 .account-security .stack-form .account-otp-input, .account-auth .stack-form .account-otp-input { max-width: 9rem; letter-spacing: .1em; font-variant-numeric: tabular-nums; }
 .account-totp-key input { font-size: clamp(.75rem, 2.7vw, .95rem); }
 .account-inbox-grid { display: grid; grid-template-columns: minmax(155px, 1fr) minmax(0, 2fr); gap: 18px; margin-top: 20px; }

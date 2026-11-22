@@ -185,10 +185,16 @@ This release brings the implementation count to **65 implemented, 17 partial, an
 
 Independent Chromium profiles at 1440 and 390 CSS pixels each verified an address, reset a password by email, changed the password in settings, and enrolled and used an authenticator. Both profiles rejected old passwords and invalid authenticator codes. Verified addresses and enrolled authenticators persisted after restarting the server. An isolated SMTP test confirmed that an emailed code worked after restart, failed on reuse, and ended prior sessions when redeemed. It also checked that resetting an enrolled account requires an authenticator code. Rust model tests cover replacing a verified address and expiring email codes.
 
+## Session management update
+
+Workflow **059** is implemented. Account Security shows active sessions, marks the current browser, and supports signing out one session or every other session. Older sessions remain manageable. This brings the implementation count to **66 implemented, 17 partial, and 17 missing**.
+
+Workflow **059** passed at 1440 and 390 CSS pixels in independent Chromium profiles. Individual sign-out ended the selected session, and bulk sign-out preserved the current browser and a separate account. Revoked sessions stayed signed out after restarting the server. A separate upgrade check verified that sessions from the prior release stayed manageable.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Complete account controls. Add a session list with individual session revocation and account deletion. Add notification preferences and chat request controls.
+2. Add account deletion, notification preferences, and chat request controls.
 3. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 4. Expand community operations. Add structured rules and reporting, granular role permissions, timed restrictions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 5. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.

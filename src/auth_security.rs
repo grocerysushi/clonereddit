@@ -5,7 +5,7 @@ use subtle::ConstantTimeEq;
 
 use super::{
     canonical_username, checked_username, decode_hash, hex, invalid_store, random_secret,
-    secret_hash, unix_seconds, AuthGrant, AuthStore, SecretHash,
+    secret_hash, unix_seconds, AuthGrant, AuthStore, SecretHash, SessionDevice,
 };
 use crate::{http::valid_session_token, mail::valid_address, totp};
 
@@ -122,11 +122,16 @@ impl AuthStore {
         })
     }
 
-    pub fn begin_login(&mut self, username: &str, password: &str) -> Result<LoginProgress, String> {
+    pub fn begin_login(
+        &mut self,
+        username: &str,
+        password: &str,
+        device: SessionDevice,
+    ) -> Result<LoginProgress, String> {
         let username = self.verify_password(username, password)?;
         if self.accounts[&username].security.factor.is_none() {
             let mut updated = self.clone();
-            let grant = updated.add_session(&username, None)?;
+            let grant = updated.add_session(&username, None, device)?;
             self.commit(updated)?;
             return Ok(LoginProgress::SignedIn(grant));
         }
@@ -152,7 +157,12 @@ impl AuthStore {
         Ok(LoginProgress::SecondFactor(token))
     }
 
-    pub fn finish_login(&mut self, challenge: &str, otp: &str) -> Result<AuthGrant, String> {
+    pub fn finish_login(
+        &mut self,
+        challenge: &str,
+        otp: &str,
+        device: SessionDevice,
+    ) -> Result<AuthGrant, String> {
         if !valid_session_token(challenge) {
             return Err(CHALLENGE_ERROR.into());
         }
@@ -189,7 +199,7 @@ impl AuthStore {
             .security
             .accept_counter(Some(counter));
         updated.otp_failures.remove(&username);
-        let grant = updated.add_session(&username, None)?;
+        let grant = updated.add_session(&username, None, device)?;
         self.commit(updated)?;
         Ok(grant)
     }
@@ -200,13 +210,14 @@ impl AuthStore {
         current_password: &str,
         new_password: &str,
         otp: &str,
+        device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let username = self.verify_password(username, current_password)?;
         if current_password == new_password {
             return Err("Choose a different password.".into());
         }
         let counter = self.verify_active_factor(&username, otp, unix_seconds())?;
-        self.replace_credentials(username, new_password, counter)
+        self.replace_credentials(username, new_password, counter, device)
     }
 
     pub fn request_email_verification(
@@ -298,6 +309,7 @@ impl AuthStore {
         code: &str,
         new_password: &str,
         otp: &str,
+        device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let username = self
             .verified_email_account(username_or_email)
@@ -310,7 +322,7 @@ impl AuthStore {
             return Err(EMAIL_RESET_ERROR.into());
         }
         let counter = self.verify_active_factor(&username, otp, now)?;
-        self.replace_credentials(username, new_password, counter)
+        self.replace_credentials(username, new_password, counter, device)
     }
 
     fn verified_email_account(&self, key: &str) -> Option<String> {
@@ -346,7 +358,12 @@ impl AuthStore {
         Ok(secret)
     }
 
-    pub fn confirm_two_factor(&mut self, username: &str, otp: &str) -> Result<AuthGrant, String> {
+    pub fn confirm_two_factor(
+        &mut self,
+        username: &str,
+        otp: &str,
+        device: SessionDevice,
+    ) -> Result<AuthGrant, String> {
         const ERROR: &str = "Authenticator setup expired. Start setup again.";
         let username = checked_username(username).map_err(|_| ERROR)?;
         let now = unix_seconds();
@@ -367,7 +384,7 @@ impl AuthStore {
             last_counter: counter,
         });
         updated.revoke_authentication(&username);
-        let grant = updated.add_session(&username, None)?;
+        let grant = updated.add_session(&username, None, device)?;
         self.commit(updated)?;
         Ok(grant)
     }
@@ -377,6 +394,7 @@ impl AuthStore {
         username: &str,
         password: &str,
         otp: &str,
+        device: SessionDevice,
     ) -> Result<AuthGrant, String> {
         let username = self.verify_password(username, password)?;
         if self
@@ -394,7 +412,7 @@ impl AuthStore {
         data.factor = None;
         data.invalidate_pending();
         updated.revoke_authentication(&username);
-        let grant = updated.add_session(&username, None)?;
+        let grant = updated.add_session(&username, None, device)?;
         self.commit(updated)?;
         Ok(grant)
     }
@@ -668,7 +686,9 @@ mod tests {
     }
 
     fn challenge(auth: &mut AuthStore) -> String {
-        let LoginProgress::SecondFactor(challenge) = auth.begin_login(USER, PASSWORD).unwrap()
+        let LoginProgress::SecondFactor(challenge) = auth
+            .begin_login(USER, PASSWORD, SessionDevice::default())
+            .unwrap()
         else {
             panic!("an enrolled account cannot sign in with its password alone");
         };
@@ -679,7 +699,9 @@ mod tests {
         let secret = auth.start_two_factor(USER, PASSWORD).unwrap();
         let previous = unix_seconds() / 30 - 1;
         let previous_code = totp::test_code(&secret, previous);
-        let grant = auth.confirm_two_factor(USER, &previous_code).unwrap();
+        let grant = auth
+            .confirm_two_factor(USER, &previous_code, SessionDevice::default())
+            .unwrap();
         (secret, previous_code, grant)
     }
 
@@ -687,9 +709,12 @@ mod tests {
     fn email_proof_is_one_time_unique_and_keeps_the_verified_mailbox_until_confirmed() {
         let fixture = Fixture::new();
         let mut auth = fixture.load();
-        let signup = auth.register(USER, PASSWORD).unwrap();
+        let signup = auth
+            .register(USER, PASSWORD, SessionDevice::default())
+            .unwrap();
         let second = auth.login(USER, PASSWORD).unwrap();
-        auth.register(OTHER, PASSWORD).unwrap();
+        auth.register(OTHER, PASSWORD, SessionDevice::default())
+            .unwrap();
         assert!(auth
             .request_email_reset("unknown@example.invalid")
             .unwrap()
@@ -745,13 +770,13 @@ mod tests {
         assert_eq!(security.pending_email, Some(pending.address.as_str()));
         assert!(auth.request_email_reset(USER).unwrap().is_none());
         let grant = auth
-            .reset_by_email(USER, &reset.code, REPLACEMENT, "")
+            .reset_by_email(USER, &reset.code, REPLACEMENT, "", SessionDevice::default())
             .unwrap();
         assert_eq!(auth.username(&grant.session), Some(USER));
         assert_eq!(auth.username(&signup.session), None);
         assert_eq!(auth.username(&second.session), None);
         assert!(auth
-            .reset_by_email(USER, &reset.code, PASSWORD, "")
+            .reset_by_email(USER, &reset.code, PASSWORD, "", SessionDevice::default())
             .is_err());
         assert!(auth.verify_email(USER, &pending.code).is_err());
         assert_eq!(auth.security(USER).unwrap().email, Some(EMAIL));
@@ -763,7 +788,8 @@ mod tests {
     fn email_codes_expire_and_verified_address_changes_invalidate_old_resets() {
         let fixture = Fixture::new();
         let mut auth = fixture.load();
-        auth.register(USER, PASSWORD).unwrap();
+        auth.register(USER, PASSWORD, SessionDevice::default())
+            .unwrap();
         let first = auth
             .request_email_verification(USER, PASSWORD, "", EMAIL)
             .unwrap();
@@ -796,7 +822,7 @@ mod tests {
             .unwrap()
             .expires_at = unix_seconds();
         assert!(auth
-            .reset_by_email(USER, &reset.code, REPLACEMENT, "")
+            .reset_by_email(USER, &reset.code, REPLACEMENT, "", SessionDevice::default())
             .is_err());
         let data = &mut auth.accounts.get_mut(USER).unwrap().security;
         data.reset_sent_at = 0;
@@ -808,7 +834,7 @@ mod tests {
         auth.verify_email(USER, &changed.code).unwrap();
         assert!(auth.request_email_reset(EMAIL).unwrap().is_none());
         assert!(auth
-            .reset_by_email(USER, &reset.code, REPLACEMENT, "")
+            .reset_by_email(USER, &reset.code, REPLACEMENT, "", SessionDevice::default())
             .is_err());
     }
 
@@ -816,7 +842,9 @@ mod tests {
     fn authenticator_enrollment_gates_login_and_replay_remains_blocked_after_restart() {
         let fixture = Fixture::new();
         let mut auth = fixture.load();
-        let signup = auth.register(USER, PASSWORD).unwrap();
+        let signup = auth
+            .register(USER, PASSWORD, SessionDevice::default())
+            .unwrap();
         let recovery = signup.recovery_code.unwrap();
         let (secret, previous_code, enrolled) = enroll(&mut auth);
         assert_eq!(auth.username(&signup.session), None);
@@ -824,24 +852,34 @@ mod tests {
         assert!(auth.start_two_factor(USER, PASSWORD).is_err());
         assert!(auth.recover(USER, &recovery, REPLACEMENT).is_err());
         assert!(auth
-            .change_password(USER, PASSWORD, REPLACEMENT, "")
+            .change_password(USER, PASSWORD, REPLACEMENT, "", SessionDevice::default())
             .is_err());
         assert!(auth
             .request_email_verification(USER, PASSWORD, "", EMAIL)
             .is_err());
 
         let attempt = challenge(&mut auth);
-        assert!(auth.finish_login(&attempt, &previous_code).is_err());
+        assert!(auth
+            .finish_login(&attempt, &previous_code, SessionDevice::default())
+            .is_err());
         let current_code = totp::test_code(&secret, unix_seconds() / 30);
-        let signed_in = auth.finish_login(&attempt, &current_code).unwrap();
+        let signed_in = auth
+            .finish_login(&attempt, &current_code, SessionDevice::default())
+            .unwrap();
         assert_eq!(auth.username(&signed_in.session), Some(USER));
-        assert!(auth.finish_login(&attempt, &current_code).is_err());
+        assert!(auth
+            .finish_login(&attempt, &current_code, SessionDevice::default())
+            .is_err());
         let pending = challenge(&mut auth);
         let mut auth = fixture.load();
         assert!(auth.security(USER).unwrap().two_factor);
-        assert!(auth.finish_login(&pending, &current_code).is_err());
+        assert!(auth
+            .finish_login(&pending, &current_code, SessionDevice::default())
+            .is_err());
         let fresh = challenge(&mut auth);
-        assert!(auth.finish_login(&fresh, &current_code).is_err());
+        assert!(auth
+            .finish_login(&fresh, &current_code, SessionDevice::default())
+            .is_err());
         assert!(auth.start_two_factor(USER, PASSWORD).is_err());
     }
 
@@ -849,28 +887,51 @@ mod tests {
     fn replacing_login_challenges_does_not_reset_the_account_attempt_limit() {
         let fixture = Fixture::new();
         let mut auth = fixture.load();
-        auth.register(USER, PASSWORD).unwrap();
+        auth.register(USER, PASSWORD, SessionDevice::default())
+            .unwrap();
         let (secret, _, _) = enroll(&mut auth);
         for _ in 0..OTP_ATTEMPTS {
             let old = challenge(&mut auth);
             let new = challenge(&mut auth);
-            assert!(auth.finish_login(&old, "invalid").is_err());
-            assert!(auth.finish_login(&new, "invalid").is_err());
+            assert!(auth
+                .finish_login(&old, "invalid", SessionDevice::default())
+                .is_err());
+            assert!(auth
+                .finish_login(&new, "invalid", SessionDevice::default())
+                .is_err());
         }
         assert_eq!(auth.login_challenges.len(), 1);
         let attempt = challenge(&mut auth);
         let code = totp::test_code(&secret, unix_seconds() / 30);
-        match auth.finish_login(&attempt, &code) {
+        match auth.finish_login(&attempt, &code, SessionDevice::default()) {
             Err(error) => assert_eq!(error, OTP_LIMIT_ERROR),
             Ok(_) => panic!("issuing a new challenge bypassed the account attempt limit"),
         }
     }
 
     #[test]
+    fn revoking_other_sessions_discards_a_pending_challenge_without_ending_the_current_session() {
+        let fixture = Fixture::new();
+        let mut auth = fixture.load();
+        auth.register(USER, PASSWORD, SessionDevice::default())
+            .unwrap();
+        let (_, _, current) = enroll(&mut auth);
+        let pending = challenge(&mut auth);
+        assert_eq!(auth.login_challenges.len(), 1);
+        assert_eq!(auth.revoke_other_sessions(&current.session).unwrap(), 0);
+        assert!(auth.login_challenges.is_empty());
+        assert_eq!(auth.username(&current.session), Some(USER));
+        assert!(auth
+            .finish_login(&pending, "invalid", SessionDevice::default())
+            .is_err());
+    }
+
+    #[test]
     fn email_reset_requires_the_enrolled_factor_and_revokes_old_sessions() {
         let fixture = Fixture::new();
         let mut auth = fixture.load();
-        auth.register(USER, PASSWORD).unwrap();
+        auth.register(USER, PASSWORD, SessionDevice::default())
+            .unwrap();
         let email = auth
             .request_email_verification(USER, PASSWORD, "", EMAIL)
             .unwrap();
@@ -878,12 +939,20 @@ mod tests {
         let (secret, _, enrolled) = enroll(&mut auth);
         let reset = auth.request_email_reset(USER).unwrap().unwrap();
         assert!(auth
-            .reset_by_email(USER, &reset.code, REPLACEMENT, "")
+            .reset_by_email(USER, &reset.code, REPLACEMENT, "", SessionDevice::default())
             .is_err());
-        assert!(auth.disable_two_factor(USER, PASSWORD, "").is_err());
+        assert!(auth
+            .disable_two_factor(USER, PASSWORD, "", SessionDevice::default())
+            .is_err());
         let otp = totp::test_code(&secret, unix_seconds() / 30);
         let grant = auth
-            .reset_by_email(USER, &reset.code, REPLACEMENT, &otp)
+            .reset_by_email(
+                USER,
+                &reset.code,
+                REPLACEMENT,
+                &otp,
+                SessionDevice::default(),
+            )
             .unwrap();
         let auth = fixture.load();
         assert!(auth.security(USER).unwrap().two_factor);

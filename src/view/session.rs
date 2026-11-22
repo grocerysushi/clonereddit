@@ -1,5 +1,5 @@
 use super::{account, account_security, field, layout, missing};
-use crate::auth::{session_token, AuthGrant, AuthStore, LoginProgress};
+use crate::auth::{session_token, AuthGrant, AuthStore, LoginProgress, SessionDevice};
 use crate::http::{Request, Response};
 use crate::mail::AccountMail;
 use crate::model::State;
@@ -47,7 +47,7 @@ pub(super) fn route(
     }
     if request.path == "/account/login/otp" && request.method == "POST" {
         let challenge = field(&request.form, "challenge");
-        return match auth.finish_login(challenge, field(&request.form, "otp")) {
+        return match auth.finish_login(challenge, field(&request.form, "otp"), device(request)) {
             Ok(grant) => signed_in(state, auth, grant, "/"),
             Err(error) => page(
                 state,
@@ -79,7 +79,7 @@ pub(super) fn route(
     let username = field(&request.form, "username").trim().to_ascii_lowercase();
     let password = field(&request.form, "password");
     if kind == "login" {
-        return match auth.begin_login(&username, password) {
+        return match auth.begin_login(&username, password, device(request)) {
             Ok(LoginProgress::SignedIn(grant)) => signed_in(state, auth, grant, "/"),
             Ok(LoginProgress::SecondFactor(challenge)) => page(
                 state,
@@ -93,12 +93,13 @@ pub(super) fn route(
         "register" if state.reserved_handle(&username) => {
             return form_page(state, &username, "That username is unavailable.");
         }
-        "register" => auth.register(&username, password),
+        "register" => auth.register(&username, password, device(request)),
         _ => auth.recover_with_otp(
             &username,
             field(&request.form, "recovery_code"),
             password,
             field(&request.form, "otp"),
+            device(request),
         ),
     };
     match result {
@@ -155,6 +156,7 @@ fn reset_route(
             input("code"),
             input("password"),
             input("otp"),
+            device(request),
         ) {
             Ok(grant) => signed_in(state, auth, grant, "/profile"),
             Err(error) => page(
@@ -173,14 +175,34 @@ fn security_route(
     auth: &mut AuthStore,
     mail: &AccountMail,
 ) -> Response {
-    let username = state.username.clone();
-    if username.is_empty() {
+    let Some(current_token) = request.cookie.as_deref().and_then(session_token) else {
         return Response::redirect("/account/login");
-    }
+    };
+    let Some(username) = auth.username(current_token).map(str::to_owned) else {
+        return Response::redirect("/account/login");
+    };
     let input = |key| field(&request.form, key);
     let result = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/account/security") => {
-            return settings_page(state, auth, field(&request.query, "notice"), "")
+            return settings_page(
+                state,
+                auth,
+                current_token,
+                field(&request.query, "notice"),
+                "",
+            )
+        }
+        ("POST", "/account/security/sessions/revoke") => auth
+            .revoke_session(current_token, input("session_id"))
+            .map(|()| "Session signed out."),
+        ("POST", "/account/security/sessions/revoke-others") => {
+            auth.revoke_other_sessions(current_token).map(|count| {
+                if count == 0 {
+                    "No other active sessions."
+                } else {
+                    "Signed out everywhere else."
+                }
+            })
         }
         ("GET", "/account/security/totp/confirm")
             if auth
@@ -198,6 +220,7 @@ fn security_route(
                 return settings_page(
                     state,
                     auth,
+                    current_token,
                     "",
                     "Email delivery is unavailable on this server.",
                 );
@@ -219,11 +242,11 @@ fn security_route(
                     "Set up two-factor authentication",
                     &account_security::setup(&secret, ""),
                 ),
-                Err(error) => settings_page(state, auth, "", &error),
+                Err(error) => settings_page(state, auth, current_token, "", &error),
             };
         }
         ("POST", "/account/security/totp/confirm") => {
-            return match auth.confirm_two_factor(&username, input("otp")) {
+            return match auth.confirm_two_factor(&username, input("otp"), device(request)) {
                 Ok(grant) => signed_in(
                     state,
                     auth,
@@ -238,14 +261,19 @@ fn security_route(
             };
         }
         ("POST", "/account/security/totp/disable") => {
-            return match auth.disable_two_factor(&username, input("password"), input("otp")) {
+            return match auth.disable_two_factor(
+                &username,
+                input("password"),
+                input("otp"),
+                device(request),
+            ) {
                 Ok(grant) => signed_in(
                     state,
                     auth,
                     grant,
                     "/account/security?notice=Two-factor%20authentication%20disabled.",
                 ),
-                Err(error) => settings_page(state, auth, "", &error),
+                Err(error) => settings_page(state, auth, current_token, "", &error),
             };
         }
         ("POST", "/account/security/password") => {
@@ -254,6 +282,7 @@ fn security_route(
                 input("current_password"),
                 input("password"),
                 input("otp"),
+                device(request),
             ) {
                 Ok(grant) => signed_in(
                     state,
@@ -261,7 +290,7 @@ fn security_route(
                     grant,
                     "/account/security?notice=Password%20changed.",
                 ),
-                Err(error) => settings_page(state, auth, "", &error),
+                Err(error) => settings_page(state, auth, current_token, "", &error),
             };
         }
         _ => return missing(state),
@@ -271,22 +300,35 @@ fn security_route(
             "/account/security?notice={}",
             super::encode(notice)
         )),
-        Err(error) => settings_page(state, auth, "", &error),
+        Err(error) => settings_page(state, auth, current_token, "", &error),
     }
 }
 
-fn settings_page(state: &State, auth: &AuthStore, notice: &str, error: &str) -> Response {
-    let Some(info) = auth.security(&state.username) else {
+fn settings_page(
+    state: &State,
+    auth: &AuthStore,
+    current_token: &str,
+    notice: &str,
+    error: &str,
+) -> Response {
+    let (Some(info), Some(sessions)) = (
+        auth.security(&state.username),
+        auth.active_sessions(current_token),
+    ) else {
         return Response::redirect("/account/login");
     };
     Response::html(layout(
         state,
         "account",
         "Account security",
-        &account_security::settings(&info, error),
+        &account_security::settings(&info, &sessions, error),
         "",
         notice,
     ))
+}
+
+fn device(request: &Request) -> SessionDevice {
+    SessionDevice::from_user_agent(request.user_agent.as_deref().unwrap_or_default())
 }
 
 fn page(state: &State, title: &str, body: &str) -> Response {

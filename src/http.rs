@@ -71,6 +71,7 @@ pub struct Request {
     pub post_uploads: Vec<Upload>,
     pub range: Option<String>,
     pub cookie: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 pub struct Upload {
@@ -407,9 +408,11 @@ fn read_request(
         post_uploads: Vec::new(),
         range: None,
         cookie: None,
+        user_agent: None,
     };
     let headers = parse_headers(lines)?;
     request.cookie = headers.get("cookie").cloned();
+    request.user_agent = headers.get("user-agent").cloned();
     if let Some(range) = headers.get("range") {
         if !range
             .bytes()

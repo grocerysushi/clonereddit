@@ -1,7 +1,14 @@
-use super::{escape, hidden};
-use crate::auth::AccountSecurity;
+use std::fmt::Write;
 
-pub(super) fn settings(info: &AccountSecurity<'_>, error: &str) -> String {
+use super::{escape, hidden};
+use crate::auth::{AccountSecurity, SessionSummary};
+use crate::schedule_time;
+
+pub(super) fn settings(
+    info: &AccountSecurity<'_>,
+    sessions: &[SessionSummary],
+    error: &str,
+) -> String {
     let alert = error_notice(error);
     let otp = if info.two_factor {
         otp_field(true)
@@ -10,13 +17,63 @@ pub(super) fn settings(info: &AccountSecurity<'_>, error: &str) -> String {
     };
     let email = recovery_email(info, &otp);
     let authenticator = authenticator_settings(info.two_factor, info.pending_two_factor, &otp);
+    let sessions = active_sessions(sessions);
     let current = current_password("current_password");
     let password = new_password();
     format!(
-        r#"<section class="panel standalone account-security"><a class="back-link" href="/profile">← Your profile</a><h1>Account security</h1>{alert}
+        r#"<section class="panel standalone account-security"><a class="back-link" href="/profile">← Your profile</a><h1>Account security</h1>{alert}{sessions}
 <section class="account-security-section" aria-labelledby="account-password-heading"><h2 id="account-password-heading">Change password</h2>
 <form class="stack-form account-security-form" method="post" action="/account/security/password" aria-labelledby="account-password-heading">{current}{password}{otp}<button type="submit" class="button dark">Change password</button></form></section>
 {email}{authenticator}</section>"#
+    )
+}
+
+fn active_sessions(sessions: &[SessionSummary]) -> String {
+    let mut html = String::from("<section class='account-security-section account-active-sessions' aria-labelledby='account-sessions-heading'><h2 id='account-sessions-heading'>Active sessions</h2>");
+    if !sessions.is_empty() {
+        html.push_str("<ul class='account-session-list'>");
+        for session in sessions {
+            let device = escape(&session.device);
+            let (class, badge, action) = if session.current {
+                (
+                    " account-session-current",
+                    "<span class='flair'>This session</span>",
+                    "<form method='post' action='/account/logout'><button type='submit' class='button light'>Sign out here</button></form>".to_owned(),
+                )
+            } else {
+                let session_id = hidden("session_id", &session.id);
+                (
+                    "",
+                    "",
+                    format!("<form method='post' action='/account/security/sessions/revoke'>{session_id}<button type='submit' class='button light' aria-label='Sign out {device} session'>Sign out session</button></form>"),
+                )
+            };
+            let started = session
+                .created_at
+                .map_or_else(|| "Unavailable".to_owned(), utc_time);
+            let expiry = utc_time(session.expires_at);
+            write!(html, "<li class='account-session-row{class}'><div class='account-session-detail'><div class='account-session-device'><strong>{device}</strong>{badge}</div><dl class='account-session-meta'><div><dt>Signed in</dt><dd>{started}</dd></div><div><dt>Expires</dt><dd>{expiry}</dd></div></dl></div>{action}</li>").unwrap();
+        }
+        html.push_str("</ul>");
+    }
+    if sessions.iter().any(|session| !session.current) {
+        html.push_str("<details class='account-session-bulk'><summary class='button light'>Sign out everywhere else</summary><form method='post' action='/account/security/sessions/revoke-others'><p class='muted'>Other browsers and devices will need to sign in again.</p><button type='submit' class='button dark'>Confirm sign out</button></form></details>");
+    } else {
+        html.push_str("<p class='muted account-session-empty'>No other active sessions.</p>");
+    }
+    html.push_str("</section>");
+    html
+}
+
+fn utc_time(timestamp: u64) -> String {
+    let local = schedule_time::to_local(timestamp, "UTC");
+    if local.is_empty() {
+        return "Unavailable".to_owned();
+    }
+    let seconds = timestamp % 60;
+    format!(
+        "<time datetime='{local}:{seconds:02}Z'>{}</time>",
+        escape(&schedule_time::display(timestamp, "UTC"))
     )
 }
 
