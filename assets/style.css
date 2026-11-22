@@ -417,7 +417,15 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .composer-toggle input { width: 19px; height: 19px; flex: none; }
 .markup-guide { margin-top: -10px; color: var(--quiet); font-size: .88rem; }
 .markup-guide p { margin-top: 4px; }
-.composer > .inline { margin-top: 12px; }
+.composer-actions, .draft-discard-confirmation .form-actions { flex-wrap: wrap; }
+.draft-discard-confirmation { display: block; }
+.draft-discard-confirmation .form-actions { margin-top: 10px; }
+.draft-list { list-style: none; padding: 0; margin: 7px 0 0; }
+.draft-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 0; border-top: 1px solid var(--line); }
+.draft-entry-summary { flex: 1 1 10rem; min-width: 0; overflow-wrap: anywhere; }
+.draft-entry-summary .muted { font-size: .85rem; }
+.draft-entry-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.draft-preview { font-size: .9rem; }
 .publishing-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; padding: 0 0 7px; margin: 5px 0 10px; border-bottom: 1px solid var(--line); }
 .publishing-tabs a { display: block; padding: 5px 9px; border-radius: 7px; color: var(--quiet); font-weight: 650; font-size: .9rem; }
 .publishing-tabs a:hover { background: var(--pale); }

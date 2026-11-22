@@ -197,7 +197,7 @@ mod tests {
         state.delete_account_profile(OWNER);
         state.delete_account_profile(OWNER);
         assert!(state.username.is_empty());
-        assert!(state.draft.is_none());
+        assert!(state.drafts.is_empty());
         state.save(&path.0).unwrap();
         let mut state = State::load(&path.0).unwrap();
         assert!(!state.has_profile(OWNER));

@@ -34,7 +34,8 @@ pub(super) struct ProfileData {
     flair: String,
     social_links: Vec<SocialLink>,
     created: u64,
-    draft: Option<PostDraft>,
+    drafts: Vec<PostDraft>,
+    next_draft: u64,
     pub(super) notification_preferences: NotificationPreferences,
     pub(super) chat_request_permission: ChatRequestPermission,
 }
@@ -48,6 +49,7 @@ impl ProfileData {
             public_posts: known,
             public_comments: known,
             created: if known { unix_seconds() } else { 0 },
+            next_draft: 1,
             ..Self::default()
         }
     }
@@ -79,7 +81,8 @@ impl ProfileData {
             flair: state.profile_flair.clone(),
             social_links: state.social_links.clone(),
             created: state.profile_created,
-            draft: state.draft.clone(),
+            drafts: state.drafts.clone(),
+            next_draft: state.next_draft,
             notification_preferences: state.notification_preferences,
             chat_request_permission: state.chat_request_permission,
         }
@@ -111,7 +114,8 @@ impl ProfileData {
         state.profile_flair = self.flair;
         state.social_links = self.social_links;
         state.profile_created = self.created;
-        state.draft = self.draft;
+        state.drafts = self.drafts;
+        state.next_draft = self.next_draft;
         state.notification_preferences = self.notification_preferences;
         state.chat_request_permission = self.chat_request_permission;
     }
@@ -126,6 +130,7 @@ impl ProfileData {
                 | "profile-image"
                 | "social-link"
                 | "draft"
+                | "draft-sequence"
                 | "notification-preferences"
                 | "chat-request-permission"
                 | "F"
@@ -198,10 +203,14 @@ impl ProfileData {
                 encode(&link.url)
             )?;
         }
-        if let Some(draft) = &self.draft {
+        if self.next_draft > 1 {
+            writeln!(file, "draft-sequence\t{}", self.next_draft)?;
+        }
+        for draft in &self.drafts {
             writeln!(
                 file,
-                "draft\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "draft\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                draft.id,
                 encode(&draft.community),
                 encode(&draft.title),
                 encode(&draft.body),
@@ -590,4 +599,149 @@ enum NotificationKind {
     Appeal,
     Moderation,
     Removal(u64),
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use std::{fs, path::PathBuf, time::SystemTime};
+
+    use super::*;
+
+    struct Fixture(PathBuf);
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    fn form(fields: &[(&str, &str)]) -> BTreeMap<String, String> {
+        fields
+            .iter()
+            .map(|&(key, value)| (key.into(), value.into()))
+            .collect()
+    }
+
+    #[test]
+    fn drafts_keep_identity_scope_and_content_across_publishing_and_restarts() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "commonline-drafts-{}-{nonce}.state",
+            std::process::id()
+        )));
+        let path = &fixture.0;
+        let mut initial = State::seeded();
+        initial.activate_profile(Some("draft_owner"));
+        initial.save(path).unwrap();
+        let active_draft = "draft\tmedia-lab\tOld title\tOld body\thttps://example.org/old\tOld flair\ttrue\tfalse\ttrue";
+        let other_draft = "draft\t\tOther account draft\tOther body\t\t\tfalse\ttrue\tfalse";
+        let snapshot = fs::read_to_string(path).unwrap();
+        fs::write(
+            path,
+            format!(
+                "{snapshot}{active_draft}\naccount-data\tdraft_other\tblur\t{}\n",
+                encode(other_draft)
+            ),
+        )
+        .unwrap();
+
+        let mut state = State::load(path).unwrap();
+        let legacy = state.draft(1).unwrap();
+        assert_eq!(legacy.title, "Old title");
+        assert_eq!(legacy.body, "Old body");
+        assert_eq!(legacy.url, "https://example.org/old");
+        assert_eq!(legacy.flair, "Old flair");
+        assert!(legacy.sensitive && !legacy.spoiler && legacy.brand_affiliate);
+
+        state
+            .apply("save-draft", &form(&[("body", "Untitled draft")]), path)
+            .unwrap();
+        state
+            .apply("save-draft", &form(&[("title", "Discard this one")]), path)
+            .unwrap();
+        let publish_id = state.drafts[1].id;
+        let discard_id = state.drafts[2].id;
+        assert!(1 < publish_id && publish_id < discard_id);
+        let edit = form(&[
+            ("draft_id", &publish_id.to_string()),
+            ("community", "media-lab"),
+            ("title", "Ready to publish"),
+            ("body", "Updated body"),
+        ]);
+        state.apply("save-draft", &edit, path).unwrap();
+        assert_eq!(state.drafts.len(), 3);
+        assert_eq!(state.drafts[1].id, publish_id);
+        assert_eq!(state.drafts[2].id, discard_id);
+
+        state.activate_profile(Some("draft_other"));
+        assert_eq!(state.draft(1).unwrap().title, "Other account draft");
+        assert!(state.draft(publish_id).is_none());
+        assert!(state.apply("save-draft", &edit, path).is_err());
+        assert!(state.apply("create", &edit, path).is_err());
+        let discard = form(&[("draft_id", &discard_id.to_string())]);
+        assert!(state.apply("delete-draft", &discard, path).is_err());
+        state.activate_profile(Some("draft_owner"));
+        assert_eq!(state.draft(publish_id).unwrap().body, "Updated body");
+        state.apply("delete-draft", &discard, path).unwrap();
+
+        let mut state = State::load(path).unwrap();
+        assert!(state.draft(discard_id).is_none());
+        state
+            .apply("save-draft", &form(&[("title", "Keep this draft")]), path)
+            .unwrap();
+        let next = state.drafts.last().unwrap().id;
+        assert!(next > discard_id);
+        let invalid = form(&[("draft_id", &publish_id.to_string())]);
+        let mut poll = edit.clone();
+        poll.extend(form(&[
+            ("option_1", "Yes"),
+            ("option_2", "No"),
+            ("duration", "1"),
+        ]));
+        state.apply("create-poll", &poll, path).unwrap();
+        assert!(state.draft(publish_id).is_some());
+        let posts = state.posts.len();
+        assert!(state.apply("create", &invalid, path).is_err());
+        assert!(state
+            .apply("create", &edit, &path.join("invalid.state"))
+            .is_err());
+        assert!(state.draft(publish_id).is_some());
+        assert_eq!(state.posts.len(), posts);
+
+        state.apply("create", &edit, path).unwrap();
+        assert!(state.apply("create", &edit, path).is_err());
+        assert_eq!(state.posts.len(), posts + 1);
+        assert_eq!(state.posts.last().unwrap().title, "Ready to publish");
+        assert!(state.draft(publish_id).is_none());
+        assert_eq!(state.draft(1).unwrap().title, "Old title");
+        assert_eq!(state.draft(next).unwrap().title, "Keep this draft");
+        let mut state = State::load(path).unwrap();
+        assert!(state.draft(publish_id).is_none());
+        for id in [1, next] {
+            state
+                .apply(
+                    "delete-draft",
+                    &form(&[("draft_id", &id.to_string())]),
+                    path,
+                )
+                .unwrap();
+        }
+
+        let mut state = State::load(path).unwrap();
+        assert!(state.drafts.is_empty());
+        state
+            .apply(
+                "save-draft",
+                &form(&[("title", "Saved after clearing drafts")]),
+                path,
+            )
+            .unwrap();
+        assert!(state.drafts[0].id > next);
+        state.activate_profile(Some("draft_other"));
+        assert_eq!(state.drafts.len(), 1);
+        assert_eq!(state.draft(1).unwrap().title, "Other account draft");
+    }
 }

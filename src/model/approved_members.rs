@@ -225,7 +225,7 @@ mod tests {
         assert!(state
             .save_draft(&form(&[("community", "private-room"), ("title", "Bypass")]))
             .is_err());
-        assert_eq!(state.draft.as_ref().unwrap().title, "Keep my local draft");
+        assert_eq!(state.drafts[0].title, "Keep my local draft");
         let feed_id = state.custom_feeds[0].id.to_string();
         state
             .edit_feed(&form(&[("id", &feed_id), ("name", "Renamed feed")]))

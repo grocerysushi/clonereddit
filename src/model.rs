@@ -273,6 +273,7 @@ pub struct SocialLink {
 
 #[derive(Clone)]
 pub struct PostDraft {
+    pub id: u64,
     pub community: String,
     pub title: String,
     pub body: String,
@@ -366,7 +367,8 @@ pub struct State {
     pub profile_flair: String,
     pub social_links: Vec<SocialLink>,
     pub profile_created: u64,
-    pub draft: Option<PostDraft>,
+    pub drafts: Vec<PostDraft>,
+    next_draft: u64,
     account_profiles: BTreeMap<String, ProfileData>,
     managed_profiles: bool,
     legacy_profile: Option<String>,
@@ -556,7 +558,8 @@ impl State {
             profile_flair: String::new(),
             social_links: Vec::new(),
             profile_created: unix_seconds(),
-            draft: None,
+            drafts: Vec::new(),
+            next_draft: 1,
             account_profiles: BTreeMap::new(),
             managed_profiles: false,
             legacy_profile: None,
@@ -999,10 +1002,7 @@ impl State {
             "create-repost" => self.create_repost(form),
             "vote-poll" => self.vote_poll(form),
             "save-draft" => self.save_draft(form),
-            "delete-draft" => {
-                self.draft = None;
-                Ok("Draft discarded.")
-            }
+            "delete-draft" => self.discard_draft(form),
             "comment" => self.create_comment(form),
             "edit-comment" => self.edit_comment(form),
             "delete-comment" => self.delete_comment(form),
@@ -1356,8 +1356,13 @@ impl State {
     }
 
     fn create_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let draft = self.draft_position(form)?;
         let post = self.new_post(form, "Discussion")?;
-        self.add_post(post, form, "Post published.")
+        let notice = self.add_post(post, "Post published.")?;
+        if let Some(index) = draft {
+            self.drafts.remove(index);
+        }
+        Ok(notice)
     }
 
     pub fn create_media_post(
@@ -1373,7 +1378,7 @@ impl State {
         let mut updated = self.clone();
         let mut post = updated.new_post(form, "Discussion")?;
         post.media = media;
-        let notice = updated.add_post(post, form, "Post published.")?;
+        let notice = updated.add_post(post, "Post published.")?;
         self.commit(updated, path)?;
         Ok(notice)
     }
@@ -1420,17 +1425,9 @@ impl State {
         })
     }
 
-    fn add_post(
-        &mut self,
-        post: Post,
-        form: &BTreeMap<String, String>,
-        published: &'static str,
-    ) -> Result<&'static str, String> {
+    fn add_post(&mut self, post: Post, published: &'static str) -> Result<&'static str, String> {
         let id = post.id;
         self.posts.push(post);
-        if value(form, "from_draft") == "1" {
-            self.draft = None;
-        }
         let removed = self.screen_post(id)?;
         Ok(if removed {
             AUTOMOD_REMOVED_POST
@@ -1467,7 +1464,7 @@ impl State {
             votes: BTreeMap::new(),
             closes_at: unix_seconds() + duration * 86_400,
         });
-        self.add_post(post, form, "Poll published.")
+        self.add_post(post, "Poll published.")
     }
 
     fn vote_poll(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1538,10 +1535,29 @@ impl State {
         post.repost_title_from_source = default_title;
         post.sensitive |= sensitive;
         post.spoiler |= spoiler;
-        self.add_post(post, form, "Repost published.")
+        self.add_post(post, "Repost published.")
+    }
+
+    pub fn draft(&self, id: u64) -> Option<&PostDraft> {
+        self.drafts.iter().find(|draft| draft.id == id)
+    }
+
+    fn draft_position(&self, form: &BTreeMap<String, String>) -> Result<Option<usize>, String> {
+        let requested = value(form, "draft_id");
+        if requested.is_empty() {
+            if value(form, "from_draft") == "1" {
+                return Err("Reopen your saved draft in the composer and try again.".into());
+            }
+            return Ok(None);
+        }
+        canonical_u64(requested)
+            .and_then(|id| self.drafts.iter().position(|draft| draft.id == id))
+            .map(Some)
+            .ok_or_else(|| "This draft is unavailable.".into())
     }
 
     fn save_draft(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let position = self.draft_position(form)?;
         let community = if value(form, "community").is_empty() {
             String::new()
         } else {
@@ -1554,7 +1570,12 @@ impl State {
         if title.is_empty() && body.is_empty() && url.is_empty() {
             return Err("Add a title, some post text, or a link before saving a draft.".into());
         }
-        self.draft = Some(PostDraft {
+        let id = match position {
+            Some(index) => self.drafts[index].id,
+            None => next_id(&mut self.next_draft)?,
+        };
+        let draft = PostDraft {
+            id,
             community,
             title: title.into(),
             body: body.into(),
@@ -1563,8 +1584,21 @@ impl State {
             sensitive: value(form, "sensitive") == "on",
             spoiler: value(form, "spoiler") == "on",
             brand_affiliate: value(form, "brand_affiliate") == "on",
-        });
+        };
+        if let Some(index) = position {
+            self.drafts[index] = draft;
+        } else {
+            self.drafts.push(draft);
+        }
         Ok("Draft saved.")
+    }
+
+    fn discard_draft(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self
+            .draft_position(form)?
+            .ok_or("Choose a saved draft to discard.")?;
+        self.drafts.remove(index);
+        Ok("Draft discarded.")
     }
 
     fn create_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -2521,8 +2555,26 @@ impl State {
                 label: decode(label)?,
                 url: decode(url)?,
             }),
-            ["draft", community, title, body, url, flair, sensitive, spoiler, brand_affiliate] => {
-                self.draft = Some(PostDraft {
+            ["draft-sequence", next] => {
+                let next = canonical_u64(next).filter(|&id| id > 0)?;
+                self.next_draft = self.next_draft.max(next);
+            }
+            ["draft", fields @ ..] => {
+                let (id, values) = match fields {
+                    [id, values @ ..] if values.len() == 8 => (canonical_u64(id)?, values),
+                    _ => (1, fields),
+                };
+                let [community, title, body, url, flair, sensitive, spoiler, brand_affiliate] =
+                    values
+                else {
+                    return None;
+                };
+                if id == 0 || self.draft(id).is_some() {
+                    return None;
+                }
+                self.next_draft = self.next_draft.max(id.checked_add(1)?);
+                self.drafts.push(PostDraft {
+                    id,
                     community: decode(community)?,
                     title: decode(title)?,
                     body: decode(body)?,

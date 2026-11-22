@@ -267,10 +267,16 @@ In Resolved, reviewers can combine appeal type with Approved, Denied, or Closed.
 
 Reviewers can search the queue by a full or partial username or an exact appeal ID. Prefix a numeric username with `u/` or `@` to search for the account. Desktop and mobile checks covered combined filters, tab counts, clearing the search, and retaining search during a successful or failed decision. Server checks covered exact ID matching and community-scoped results.
 
+## Multiple post drafts update
+
+Workflow **033** is implemented for text and link posts. The composer can save multiple drafts and resume or discard each one independently. Publishing consumes the selected draft, and existing saved drafts carry over. This brings the implementation count to **78 implemented, 9 partial, and 13 missing**.
+
+Desktop and mobile Chromium checks covered saving, resuming, editing, discarding, and publishing individual drafts across separate accounts and after restart. Server checks covered migration of the previous single draft, simultaneous saves, failed saves and publications, and keeping other drafts after publishing.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
+2. Improve discovery and publishing. Add structured search filters and community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 3. Expand community operations. Add granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 

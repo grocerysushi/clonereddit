@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use super::{
     action_fields, can_view_post, community, community_url, encode, escape, field, icon,
-    is_sensitive,
+    is_sensitive, post_composer::drafts_link,
 };
 use crate::model::{Post, State};
 
@@ -137,8 +137,9 @@ pub(super) fn editor(
         _ => return None,
     };
     let tabs = tabs(kind, selected);
+    let drafts = drafts_link();
     Some(format!(
-        "<section class='panel standalone composer publishing-composer'><h1>{heading}</h1>{tabs}{alert}<form class='stack-form publishing-form' method='post' action='{endpoint}'{enctype}>{fields}{content}<div class='form-actions'><button class='button dark' type='submit'>{submit}</button><a class='button light' href='{}'>Cancel</a></div></form></section>",
+        "<section class='panel standalone composer publishing-composer'><header class='creator-header'><h1>{heading}</h1>{drafts}</header>{tabs}{alert}<form class='stack-form publishing-form' method='post' action='{endpoint}'{enctype}>{fields}{content}<div class='form-actions'><button class='button dark' type='submit'>{submit}</button><a class='button light' href='{}'>Cancel</a></div></form></section>",
         escape(&cancel)
     ))
 }

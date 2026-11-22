@@ -8,6 +8,7 @@ mod custom;
 mod discussion;
 mod moderation;
 mod moderation_workspace;
+mod post_composer;
 mod profile;
 mod profile_panel;
 mod publishing;
@@ -28,8 +29,8 @@ use crate::http::{Request, Response};
 use crate::mail::AccountMail;
 use crate::media;
 use crate::model::{
-    Comment, Community, ContentKind, CustomFeed, ModPermission, Post, PostDraft, ProfileAvatar,
-    State, DELETED_ACCOUNT,
+    Comment, Community, ContentKind, CustomFeed, ModPermission, Post, ProfileAvatar, State,
+    DELETED_ACCOUNT,
 };
 use crate::schedule_time;
 
@@ -288,6 +289,9 @@ pub fn route(
         if matches!(action, "comment" | "edit-comment" | "delete-comment") {
             return comment_submission(state, path, action, &request.form);
         }
+        if matches!(action, "save-draft" | "delete-draft") {
+            return draft_submission(state, path, action, &request.form);
+        }
         let deleted_media = if action == "delete" {
             find_post(state, &request.form)
                 .map(|post| post.media.clone())
@@ -313,7 +317,6 @@ pub fn route(
                         .last()
                         .map(|item| community_url(&item.slug)),
                     "create-feed" => state.custom_feeds.last().map(|item| custom_url(item.id)),
-                    "save-draft" => Some("/new?draft=1".into()),
                     "send-direct-message" => Some(format!(
                         "/messages?peer={}",
                         encode(
@@ -345,6 +348,7 @@ pub fn route(
                 };
                 publishing_error(state, &request.form, kind, &error)
             }
+            Err(error) if action == "create" => text_composer_error(state, &request.form, &error),
             Err(error) if action == "send-direct-message" => {
                 message_error(state, auth, &request.form, &error)
             }
@@ -409,20 +413,10 @@ pub fn route(
                 None => return missing(state),
             }
         }
-        "/new" => (
-            "New post",
-            "",
-            publishing::editor(state, query, None, "").unwrap_or_else(|| {
-                editor(
-                    state,
-                    None,
-                    field(query, "community"),
-                    (field(query, "draft") == "1")
-                        .then_some(state.draft.as_ref())
-                        .flatten(),
-                )
-            }),
-        ),
+        "/new" => match new_post_composer(state, query) {
+            Some(content) => ("New post", "", content),
+            None => return missing(state),
+        },
         "/communities/start" => (
             "Start a community",
             "start-community",
@@ -533,7 +527,7 @@ pub fn route(
             Some(post) => (
                 "Edit post",
                 "",
-                editor(state, Some(post), &post.community, None),
+                post_composer::editor(state, Some(post), &post.community, None, None),
             ),
             None => return missing(state),
         },
@@ -858,6 +852,73 @@ fn post_submission_target(state: &State, id: u64) -> String {
     } else {
         format!("/thread?id={id}")
     }
+}
+
+fn new_post_composer(state: &State, query: &BTreeMap<String, String>) -> Option<String> {
+    if let Some(id) = query.get("discard_draft") {
+        let draft = state.draft(id.parse().ok()?)?;
+        return Some(post_composer::drafts(state, Some(draft)));
+    }
+    if field(query, "drafts") == "1" {
+        return Some(post_composer::drafts(state, None));
+    }
+    let selected = field(query, "community");
+    if let Some(id) = query.get("draft") {
+        let draft = state.draft(id.parse().ok()?)?;
+        return Some(post_composer::editor(
+            state,
+            None,
+            selected,
+            Some(draft),
+            None,
+        ));
+    }
+    Some(
+        publishing::editor(state, query, None, "")
+            .unwrap_or_else(|| post_composer::editor(state, None, selected, None, None)),
+    )
+}
+
+fn draft_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    match state.apply(action, form, path) {
+        Ok(notice) => {
+            let draft_id = if action == "save-draft" {
+                field(form, "draft_id")
+                    .parse::<u64>()
+                    .ok()
+                    .or_else(|| state.drafts.last().map(|draft| draft.id))
+            } else {
+                None
+            };
+            let target = draft_id.map_or_else(
+                || "/new?drafts=1".to_owned(),
+                |id| format!("/new?draft={id}"),
+            );
+            Response::redirect(&format!("{target}&notice={}", encode(notice)))
+        }
+        Err(error) if action == "save-draft" => text_composer_error(state, form, &error),
+        Err(error) => form_error(state, &error, "/new?drafts=1"),
+    }
+}
+
+fn text_composer_error(state: &State, form: &BTreeMap<String, String>, error: &str) -> Response {
+    let draft = field(form, "draft_id")
+        .parse()
+        .ok()
+        .and_then(|id| state.draft(id));
+    let body = post_composer::editor(
+        state,
+        None,
+        field(form, "community"),
+        draft,
+        Some((form, error)),
+    );
+    Response::html(layout(state, "", "New post", &body, "", ""))
 }
 
 fn publishing_error(
@@ -3080,123 +3141,6 @@ fn reply_form(
     let fields = action_fields("comment", back, &[("post", &id), sort.form_field()]);
     let alert = discussion::form_error(error);
     format!("<form class='reply-form' method='post' action='/action'>{fields}{target}{alert}<label><span class='sr-only'>Write a reply</span><textarea name='body' required maxlength='4000' rows='3' placeholder='Add to the discussion'>{}</textarea></label><button class='button dark' type='submit'>Post reply</button></form>", escape(draft))
-}
-
-fn editor(state: &State, post: Option<&Post>, selected: &str, draft: Option<&PostDraft>) -> String {
-    let (title, body, url, flair, tags) = match (post, draft) {
-        (Some(item), _) => (
-            item.title.as_str(),
-            item.body.as_str(),
-            item.url.as_str(),
-            item.flair.as_str(),
-            [item.sensitive, item.spoiler, item.brand_affiliate],
-        ),
-        (_, Some(item)) => (
-            item.title.as_str(),
-            item.body.as_str(),
-            item.url.as_str(),
-            item.flair.as_str(),
-            [item.sensitive, item.spoiler, item.brand_affiliate],
-        ),
-        _ => ("", "", "", state.profile_flair.as_str(), [false; 3]),
-    };
-    let id = post.map(|item| item.id.to_string()).unwrap_or_default();
-    let selected = draft
-        .map(|item| item.community.as_str())
-        .unwrap_or(selected);
-    let action = if post.is_some() { "edit" } else { "create" };
-    let back = post
-        .map(|p| format!("/thread?id={}", p.id))
-        .unwrap_or_else(|| "/".into());
-    let options = state
-        .communities
-        .iter()
-        .filter(|item| state.can_contribute(item))
-        .map(|item| {
-            format!(
-                "<option value='{}'{}>{}</option>",
-                escape(&item.slug),
-                if item.slug == selected {
-                    " selected"
-                } else {
-                    ""
-                },
-                escape(&item.name)
-            )
-        })
-        .collect::<String>();
-    let new_fields = if post.is_none() {
-        format!("<label>Community<select name='community' required><option value=''>Choose a community</option>{options}</select></label><label>Post flair <small>Optional</small><input name='flair' maxlength='32' value='{}' placeholder='Discussion, question, or link'></label>", escape(flair))
-    } else {
-        String::new()
-    };
-    let tag_fields = [
-        ("sensitive", "NSFW (18+)", "Contains mature or adult content"),
-        ("spoiler", "Spoiler", "Collapses the post body until someone reveals it"),
-        ("brand_affiliate", "Brand affiliate", "Discloses that this post was made for a brand or business"),
-    ].into_iter().zip(tags).map(|((name, label, help), checked)| {
-        format!("<label class='composer-toggle'><span><strong>{label}</strong><small>{help}</small></span><input type='checkbox' name='{name}'{}></label>", if checked { " checked" } else { "" })
-    }).collect::<String>();
-    let resume = if post.is_none() && state.draft.is_some() && draft.is_none() {
-        "<a class='button light' href='/new?draft=1'>Resume saved draft</a>"
-    } else {
-        ""
-    };
-    let save = if post.is_none() {
-        "<button class='button light' type='submit' name='save_draft' value='1' formnovalidate>Save draft</button>"
-    } else {
-        ""
-    };
-    let discard = if draft.is_some() {
-        action_form(
-            "delete-draft",
-            "/new",
-            &[],
-            "Discard draft",
-            "",
-            "button light",
-        )
-    } else {
-        String::new()
-    };
-    let tabs = if post.is_none() {
-        publishing::tabs("text", selected)
-    } else {
-        String::new()
-    };
-    format!(
-        r#"<section class="panel standalone composer"><header class="creator-header"><h1>{heading}</h1>{resume}</header>{tabs}<form class="stack-form" method="post" action="/action">{fields}{new_fields}
-<label>Title<input name="title" required maxlength="160" value="{title}" placeholder="What are we discussing?"></label>
-<details class="composer-tags"{tags_open}><summary>{tag_icon} Add tags</summary><div class="composer-tag-options">{tag_fields}</div></details>
-<label>Body text <small>Optional</small><textarea name="body" rows="7" maxlength="8000" placeholder="Add context or ask a question">{body}</textarea></label>
-<details class="markup-guide"><summary>Formatting help</summary><p>Use <code>**bold**</code>, <code>*italic*</code>, or <code>`inline code`</code> in the body.</p></details>
-<label>Link <small>Optional</small><input name="url" type="url" maxlength="600" value="{url}" placeholder="https://"></label>
-<div class="form-actions"><a class="button light" href="{back}">Cancel</a><button class="button dark" type="submit">{submit}</button>{save}</div></form>{discard}</section>"#,
-        heading = if post.is_some() {
-            "Edit post"
-        } else {
-            "New post"
-        },
-        fields = action_fields(
-            action,
-            &back,
-            &[
-                ("id", &id),
-                ("tags_present", "1"),
-                ("from_draft", if draft.is_some() { "1" } else { "0" })
-            ]
-        ),
-        tag_icon = icon("tag"),
-        tags_open = if tags.contains(&true) { " open" } else { "" },
-        title = escape(title),
-        body = escape(body),
-        url = escape(url),
-        submit = if post.is_some() {
-            "Save changes"
-        } else {
-            "Publish post"
-        },
-    )
 }
 
 fn preferences(state: &State) -> String {
