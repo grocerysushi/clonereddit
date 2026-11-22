@@ -141,33 +141,27 @@ fn cover(state: &State, public: bool) -> String {
 fn profile_posts(state: &State, public: bool) -> impl DoubleEndedIterator<Item = &Post> {
     state.posts.iter().filter(move |post| {
         post.author == state.username
-            && if public {
-                state.public_posts
+            && super::can_view_post(state, post)
+            && (!public
+                || state.public_posts
                     && !state.profile_hidden_posts.contains(&post.id)
                     && super::community(state, &post.community)
-                        .is_some_and(|item| item.visibility != "private")
-            } else {
-                super::can_view_post(state, post)
-            }
+                        .is_some_and(|item| item.visibility != "private"))
     })
 }
 
 fn profile_comments(state: &State, public: bool) -> impl DoubleEndedIterator<Item = &Comment> {
     state.comments.iter().filter(move |comment| {
         !comment.deleted
+            && !state.is_comment_removed(comment.id)
             && comment.author == state.username
-            && if public {
-                state.public_comments
-                    && !state.profile_hidden_comments.contains(&comment.id)
-                    && state
-                        .posts
-                        .iter()
-                        .find(|post| post.id == comment.post)
-                        .and_then(|post| super::community(state, &post.community))
-                        .is_some_and(|item| item.visibility != "private")
-            } else {
-                super::visible_post(state, comment.post).is_some()
-            }
+            && super::visible_post(state, comment.post).is_some_and(|post| {
+                !public
+                    || state.public_comments
+                        && !state.profile_hidden_comments.contains(&comment.id)
+                        && super::community(state, &post.community)
+                            .is_some_and(|item| item.visibility != "private")
+            })
     })
 }
 

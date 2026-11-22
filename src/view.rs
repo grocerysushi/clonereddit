@@ -22,7 +22,8 @@ use crate::auth::AuthStore;
 use crate::http::{Request, Response};
 use crate::media;
 use crate::model::{
-    Comment, Community, CustomFeed, ModPermission, Post, PostDraft, ProfileAvatar, State,
+    Comment, Community, ContentKind, CustomFeed, ModPermission, Post, PostDraft, ProfileAvatar,
+    State,
 };
 use crate::schedule_time;
 
@@ -219,6 +220,9 @@ pub fn route(
         if matches!(action, "restrict-user" | "lift-restriction") {
             return restriction_submission(state, path, action, &request.form);
         }
+        if matches!(action, "remove-content" | "restore-content") {
+            return content_submission(state, path, action, &request.form);
+        }
         if matches!(action, "edit-comment" | "delete-comment") {
             return comment_submission(state, path, action, &request.form);
         }
@@ -307,19 +311,9 @@ pub fn route(
             (title, active, feed(state, query, active))
         }
         "/thread" => {
-            if let Ok(id) = field(query, "id").parse() {
-                if state
-                    .posts
-                    .iter()
-                    .find(|post| post.id == id)
-                    .and_then(|post| community(state, &post.community))
-                    .is_some_and(|item| state.can_view_community(item))
-                {
-                    if !state.username.is_empty() {
-                        state.record_post_visit(id, path);
-                    }
-                } else {
-                    return missing(state);
+            if !state.username.is_empty() {
+                if let Some(id) = find_post(state, query).map(|post| post.id) {
+                    state.record_post_visit(id, path);
                 }
             }
             match find_post(state, query) {
@@ -581,6 +575,9 @@ fn comment_submission(
     let Ok(id) = field(form, "id").parse::<u64>() else {
         return missing(state);
     };
+    if state.is_comment_removed(id) {
+        return missing(state);
+    }
     let Some(comment) = state
         .comments
         .iter()
@@ -589,12 +586,9 @@ fn comment_submission(
         return missing(state);
     };
     let post_id = comment.post;
-    let Some(post) = state.posts.iter().find(|post| post.id == post_id) else {
+    let Some(post) = visible_post(state, post_id) else {
         return missing(state);
     };
-    if !community(state, &post.community).is_some_and(|item| state.can_view_community(item)) {
-        return missing(state);
-    }
     let back = format!("/thread?id={post_id}");
     let editing = action == "edit-comment";
     let can_edit = can_write_here(state, &post.community);
@@ -609,7 +603,7 @@ fn comment_submission(
         }
         Err(error) if editing && !can_edit => form_error(state, &error, &back),
         Err(error) => {
-            let Some(post) = state.posts.iter().find(|post| post.id == post_id) else {
+            let Some(post) = visible_post(state, post_id) else {
                 return missing(state);
             };
             let interaction = if editing {
@@ -736,6 +730,49 @@ fn community_management_submission(
                 ),
             };
             Response::html(layout(state, "mod-workspace", title, &body, "", ""))
+        }
+    }
+}
+
+fn content_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let slug = field(form, "community");
+    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Content)) {
+        return missing(state);
+    }
+
+    match state.apply(action, form, path) {
+        Ok(notice) => {
+            let status = if action == "remove-content" {
+                "removed"
+            } else {
+                "available"
+            };
+            Response::redirect(&format!(
+                "/moderation/tools?community={}&section=content&kind={}&id={}&status={status}&notice={}",
+                encode(slug),
+                encode(field(form, "kind")),
+                encode(field(form, "id")),
+                encode(notice)
+            ))
+        }
+        Err(error) => {
+            let Some(item) = community(state, slug) else {
+                return missing(state);
+            };
+            let body = moderation_workspace::content_error(state, item, form, &error);
+            Response::html(layout(
+                state,
+                "mod-workspace",
+                "Posts & comments",
+                &body,
+                "",
+                "",
+            ))
         }
     }
 }
@@ -941,6 +978,7 @@ fn shared_feed(state: &State, feed: &CustomFeed) -> String {
         .iter()
         .filter(|post| {
             feed.communities.contains(&post.community)
+                && !state.is_post_removed(post.id)
                 && community(state, &post.community)
                     .is_some_and(|item| item.visibility != "private")
                 && !(is_sensitive(state, post) && state.sensitive == "hide")
@@ -954,7 +992,7 @@ fn shared_feed(state: &State, feed: &CustomFeed) -> String {
         let name = community(state, &post.community)
             .map(|item| item.name.as_str())
             .unwrap_or(&post.community);
-        write!(html, "<article class='panel profile-item'><a class='subtle-link' href='{}'>{}</a><h2><a href='/thread?id={}'>{}</a></h2></article>", community_url(&post.community), escape(name), post.id, escape(&post.title)).unwrap();
+        write!(html, "<article class='panel profile-item'><a class='subtle-link' href='{}'>{}</a><h2><a href='/thread?id={}'>{}</a></h2></article>", community_url(&post.community), escape(name), post.id, escape(display_post_title(state, post))).unwrap();
     }
     html
 }
@@ -1081,7 +1119,17 @@ fn visible_post(state: &State, id: u64) -> Option<&Post> {
 }
 
 fn can_view_post(state: &State, post: &Post) -> bool {
-    community(state, &post.community).is_some_and(|item| state.can_view_community(item))
+    !state.is_post_removed(post.id)
+        && community(state, &post.community).is_some_and(|item| state.can_view_community(item))
+}
+
+fn content_tool_url(state: &State, slug: &str, kind: ContentKind, id: u64) -> Option<String> {
+    community(state, slug).filter(|item| state.can_moderate(item, ModPermission::Content))?;
+    Some(format!(
+        "/moderation/tools?community={}&section=content&kind={}&id={id}",
+        encode(slug),
+        kind.as_str()
+    ))
 }
 
 fn community_icon(item: &Community) -> String {
@@ -1643,6 +1691,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     let mut posts: Vec<&Post> = state
         .posts
         .iter()
+        .filter(|post| !state.is_post_removed(post.id))
         .filter(|post| {
             let group = community(state, &post.community);
             let viewable = group.is_some_and(|item| {
@@ -1686,7 +1735,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         .collect();
     posts.sort_by_key(|post| {
         let votes = i64::from(score(state, post));
-        let replies = i64::from(post.reply_count.min(100));
+        let replies = i64::from(state.visible_reply_count(post).min(100));
         let rank = match sort {
             "new" => 0,
             "top" => votes,
@@ -1710,7 +1759,12 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     write!(html, "<div class='feed-tools'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details><span>{} discussion{}</span></div>", icon("chevron"), posts.len(), if posts.len() == 1 { "" } else { "s" }).unwrap();
     if posts.is_empty()
         && search.is_empty()
-        && selected.is_some_and(|item| !state.posts.iter().any(|post| post.community == item.slug))
+        && selected.is_some_and(|item| {
+            !state
+                .posts
+                .iter()
+                .any(|post| post.community == item.slug && !state.is_post_removed(post.id))
+        })
     {
         if can_write_here(state, active) {
             write!(html, "<section class='panel empty'><h2>Start the discussion.</h2><p>Be the first to post in this community.</p><a class='button dark' href='/new?community={}'>{} New post</a></section>", encode(active), icon("plus")).unwrap();
@@ -1912,7 +1966,7 @@ fn community_editor(state: &State, existing: Option<&Community>) -> String {
             .posts
             .iter()
             .rev()
-            .filter(|post| post.community == item.slug)
+            .filter(|post| post.community == item.slug && !state.is_post_removed(post.id))
         {
             write!(
                 options,
@@ -2113,7 +2167,15 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
         "<a class='menu-item' href='/report?id={id}'>Report a legal concern</a>"
     )
     .unwrap();
-    let comment_count = post.reply_count;
+    if let Some(url) = content_tool_url(state, &post.community, ContentKind::Post, post.id) {
+        write!(
+            menu,
+            "<a class='menu-item' href='{}'>Moderate post</a>",
+            escape(&url)
+        )
+        .unwrap();
+    }
+    let comment_count = state.visible_reply_count(post);
     let event = event_details(state, post.id);
     let pin_label = if pinned {
         format!(
@@ -2372,9 +2434,24 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
     while let Some((comment, depth)) = stack.pop() {
         if comment.deleted {
             write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
+        } else if state.is_comment_removed(comment.id) {
+            let review = content_tool_url(state, &post.community, ContentKind::Comment, comment.id)
+                .map_or_else(String::new, |url| {
+                    format!(
+                        " <a class='subtle-link' href='{}'>Review removal</a>",
+                        escape(&url)
+                    )
+                });
+            write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment removed by moderators.{review}</p></article>", depth.min(3), comment.id).unwrap();
         } else if !state.blocked.contains(&comment.author) {
             html.push_str(&comment_card(
-                state, comment, depth, &back, action, can_reply,
+                state,
+                &post.community,
+                comment,
+                depth,
+                &back,
+                action,
+                can_reply,
             ));
         }
         if let Some(children) = branches.get(&Some(comment.id)) {
@@ -2392,13 +2469,14 @@ fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comm
         .filter(|comment| comment.post == post)
         .map(|comment| (comment.id, comment))
         .collect();
-    // Keep a deleted ancestor only when it anchors a surviving reply.
+    let hidden = |comment: &Comment| comment.deleted || state.is_comment_removed(comment.id);
+    // Keep a placeholder only when it anchors a surviving reply.
     let mut ancestors = BTreeSet::new();
-    for comment in comments.values().filter(|comment| !comment.deleted) {
+    for comment in comments.values().filter(|comment| !hidden(comment)) {
         let mut parent = comment.parent;
         while let Some(placeholder) = parent
             .and_then(|id| comments.get(&id))
-            .filter(|item| item.deleted && ancestors.insert(item.id))
+            .filter(|item| hidden(item) && ancestors.insert(item.id))
         {
             parent = placeholder.parent;
         }
@@ -2406,7 +2484,7 @@ fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comm
     let mut branches: BTreeMap<_, Vec<&Comment>> = BTreeMap::new();
     for comment in comments
         .values()
-        .filter(|comment| !comment.deleted || ancestors.contains(&comment.id))
+        .filter(|comment| !hidden(comment) || ancestors.contains(&comment.id))
     {
         branches.entry(comment.parent).or_default().push(comment);
     }
@@ -2418,6 +2496,7 @@ fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comm
 
 fn comment_card(
     state: &State,
+    community: &str,
     comment: &Comment,
     depth: usize,
     back: &str,
@@ -2464,7 +2543,8 @@ fn comment_card(
             )
         })
         .unwrap_or_default();
-    let menu = discussion::menu(state, comment, back, can_reply);
+    let moderation = content_tool_url(state, community, ContentKind::Comment, comment.id);
+    let menu = discussion::menu(state, comment, back, can_reply, moderation.as_deref());
     let reply_link = if can_reply {
         format!(
             "<a class='action' href='{back}&amp;reply={}#comment-{}'>{} Reply</a>",

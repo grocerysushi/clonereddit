@@ -2,7 +2,8 @@ use std::cmp::Reverse;
 use std::fmt::Write;
 
 use super::{
-    community, community_url, encode, escape, icon, initials, post_card, profile_name, profile_url,
+    can_view_post, community, community_url, encode, escape, icon, initials, post_card,
+    profile_name, profile_url, visible_post,
 };
 use crate::model::{Comment, Post, State};
 
@@ -133,13 +134,7 @@ fn posts<'a>(state: &'a State, tab: &str, public: bool) -> Vec<&'a Post> {
         return state
             .history
             .iter()
-            .filter_map(|id| {
-                state.posts.iter().find(|post| {
-                    post.id == *id
-                        && community(state, &post.community)
-                            .is_some_and(|item| state.can_view_community(item))
-                })
-            })
+            .filter_map(|id| visible_post(state, *id))
             .collect();
     }
     let mut list: Vec<_> = state
@@ -159,9 +154,7 @@ fn posts<'a>(state: &'a State, tab: &str, public: bool) -> Vec<&'a Post> {
                                 && public_post(state, post))
                 }
             };
-            in_tab
-                && community(state, &post.community)
-                    .is_some_and(|item| state.can_view_community(item))
+            in_tab && can_view_post(state, post)
         })
         .collect();
     list.sort_by_key(|post| Reverse(post.id));
@@ -177,20 +170,13 @@ fn comments(state: &State, public: bool) -> Vec<&Comment> {
         .iter()
         .filter(|item| {
             !item.deleted
+                && !state.is_comment_removed(item.id)
                 && item.author == state.username
-                && state
-                    .posts
-                    .iter()
-                    .find(|post| post.id == item.post)
-                    .is_some_and(|post| {
-                        if public {
-                            !state.profile_hidden_comments.contains(&item.id)
-                                && public_post(state, post)
-                        } else {
-                            community(state, &post.community)
-                                .is_some_and(|item| state.can_view_community(item))
-                        }
-                    })
+                && visible_post(state, item.post).is_some_and(|post| {
+                    !public
+                        || !state.profile_hidden_comments.contains(&item.id)
+                            && public_post(state, post)
+                })
         })
         .collect();
     list.sort_by_key(|item| Reverse(item.id));
@@ -209,7 +195,7 @@ fn add_posts<'a>(
             let group = community(state, &post.community)
                 .map(|item| item.name.as_str())
                 .unwrap_or(&post.community);
-            write!(html, "<article class='panel profile-item'><a class='subtle-link' href='{}'>{}</a><h2><a href='/thread?id={}'>{}</a></h2><p class='muted'>{} comments</p></article>", community_url(&post.community), escape(group), post.id, escape(&post.title), post.reply_count).unwrap();
+            write!(html, "<article class='panel profile-item'><a class='subtle-link' href='{}'>{}</a><h2><a href='/thread?id={}'>{}</a></h2><p class='muted'>{} comments</p></article>", community_url(&post.community), escape(group), post.id, escape(&post.title), state.visible_reply_count(post)).unwrap();
         } else {
             html.push_str(&post_card(state, post, back, false, false));
         }
@@ -218,7 +204,7 @@ fn add_posts<'a>(
 
 fn add_comments<'a>(html: &mut String, state: &State, comments: impl Iterator<Item = &'a Comment>) {
     for item in comments {
-        let Some(post) = state.posts.iter().find(|post| post.id == item.post) else {
+        let Some(post) = visible_post(state, item.post) else {
             continue;
         };
         let content = if post.sensitive

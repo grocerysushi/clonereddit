@@ -149,7 +149,7 @@ pub(super) fn roles(
         }
         html.push_str("</li>");
     }
-    html.push_str("</ul></section><section class='panel mod-section mod-role-help'><h2>What each role can do</h2><dl><dt>Moderator</dt><dd>Review reports and appeals, manage approved members, bans and mutes, reply to mod mail, and schedule posts and events.</dd><dt>Appeals reviewer</dt><dd>Review and decide appeals for this community.</dd><dt>Owner</dt><dd>Set community access and appearance, pin posts, and manage moderator roles.</dd></dl></section>");
+    html.push_str("</ul></section><section class='panel mod-section mod-role-help'><h2>What each role can do</h2><dl><dt>Moderator</dt><dd>Remove and restore posts and comments, review reports and appeals, manage approved members, bans and mutes, reply to mod mail, and schedule posts and events.</dd><dt>Appeals reviewer</dt><dd>Review and decide appeals for this community.</dd><dt>Owner</dt><dd>Set community access and appearance, pin posts, and manage moderator roles.</dd></dl></section>");
     html
 }
 

@@ -11,6 +11,9 @@ use account_data::ProfileData;
 #[path = "model/approved_members.rs"]
 mod approved_members;
 pub use approved_members::ApprovedMember;
+#[path = "model/content_moderation.rs"]
+mod content_moderation;
+pub use content_moderation::{ContentKind, ContentRemoval};
 #[path = "model/moderation_appeals.rs"]
 mod moderation_appeals;
 pub use moderation_appeals::{Appeal, AppealStatus};
@@ -125,6 +128,7 @@ pub struct Notification {
     pub read: bool,
     pub post: Option<u64>,
     pub appeal: bool,
+    pub moderation: bool,
 }
 
 #[derive(Clone)]
@@ -274,6 +278,7 @@ pub struct State {
     pub saved_responses: Vec<SavedResponse>,
     pub moderator_roles: Vec<ModeratorAssignment>,
     pub approved_members: Vec<ApprovedMember>,
+    pub content_removals: Vec<ContentRemoval>,
     pub scheduled: Vec<ScheduledItem>,
     pub restrictions: Vec<CommunityRestriction>,
     pub appeals: Vec<Appeal>,
@@ -446,6 +451,7 @@ impl State {
             saved_responses: Vec::new(),
             moderator_roles: Vec::new(),
             approved_members: Vec::new(),
+            content_removals: Vec::new(),
             scheduled: Vec::new(),
             restrictions: Vec::new(),
             appeals: Vec::new(),
@@ -645,9 +651,7 @@ impl State {
     pub fn record_post_visit(&mut self, id: u64, path: &Path) {
         if self.guest()
             || self.history.first() == Some(&id)
-            || !self
-                .community_for_post(id)
-                .is_some_and(|community| self.can_view_community(community))
+            || self.viewable_post_community(id).is_none()
         {
             return;
         }
@@ -833,13 +837,13 @@ impl State {
             }
             "comment-vote" => {
                 let id = id_field(form, "id")?;
-                if !self.comments.iter().any(|comment| {
-                    comment.id == id
-                        && !comment.deleted
-                        && self
-                            .community_for_post(comment.post)
-                            .is_some_and(|community| self.can_view_community(community))
-                }) {
+                if self.is_comment_removed(id)
+                    || !self.comments.iter().any(|comment| {
+                        comment.id == id
+                            && !comment.deleted
+                            && self.viewable_post_community(comment.post).is_some()
+                    })
+                {
                     return Err("This comment could not be found.".into());
                 }
                 vote(&mut self.comment_votes, id, direction(form)?);
@@ -909,6 +913,8 @@ impl State {
             "remove-moderator-role" => self.remove_moderator_role(form),
             "approve-member" => self.approve_member(form),
             "revoke-approved-member" => self.revoke_approved_member(form),
+            "remove-content" => self.moderate_content(form, false),
+            "restore-content" => self.moderate_content(form, true),
             "schedule-item" => self.schedule_item(form),
             "edit-scheduled-item" => self.edit_scheduled_item(form),
             "cancel-scheduled-item" => self.cancel_scheduled_item(form),
@@ -952,13 +958,9 @@ impl State {
 
     fn post_id(&self, form: &BTreeMap<String, String>, key: &str) -> Result<u64, String> {
         let id = id_field(form, key)?;
-        if self
-            .community_for_post(id)
-            .is_some_and(|community| self.can_view_community(community))
-        {
-            return Ok(id);
-        }
-        Err("This post could not be found.".into())
+        self.viewable_post_community(id)
+            .map(|_| id)
+            .ok_or_else(|| "This post could not be found.".into())
     }
 
     pub fn can_view_community(&self, item: &Community) -> bool {
@@ -977,6 +979,7 @@ impl State {
 
     pub fn can_edit_post(&self, post: &Post) -> bool {
         post.author == self.username
+            && !self.is_post_removed(post.id)
             && self
                 .communities
                 .iter()
@@ -1005,6 +1008,11 @@ impl State {
         self.communities
             .iter()
             .find(|community| community.slug == post.community)
+    }
+
+    fn viewable_post_community(&self, id: u64) -> Option<&Community> {
+        self.community_for_post(id)
+            .filter(|community| self.can_view_community(community) && !self.is_post_removed(id))
     }
 
     fn community_slug(&self, form: &BTreeMap<String, String>) -> Result<String, String> {
@@ -1130,21 +1138,19 @@ impl State {
 
     fn pin_community(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let index = self.owned_community_index(form)?;
-        let community = &mut self.communities[index];
-        let slug = community.slug.clone();
+        let slug = self.communities[index].slug.clone();
         if value(form, "post").is_empty() {
-            community.pinned_post = None;
+            self.communities[index].pinned_post = None;
             return self.record_moderation(&slug, "Discussion unpinned.");
         }
         let id = id_field(form, "post")?;
-        if !self
-            .posts
-            .iter()
-            .any(|post| post.id == id && post.community == community.slug)
+        if self
+            .viewable_post_community(id)
+            .is_none_or(|community| community.slug != slug)
         {
             return Err("Choose a discussion from this community to pin.".into());
         }
-        community.pinned_post = Some(id);
+        self.communities[index].pinned_post = Some(id);
         self.record_moderation(&slug, "Discussion pinned.")
     }
 
@@ -1366,6 +1372,9 @@ impl State {
     }
 
     pub fn repost_source(&self, id: u64) -> Option<&Post> {
+        if self.is_post_removed(id) {
+            return None;
+        }
         let post = self.posts.iter().find(|post| post.id == id)?;
         let community = self
             .communities
@@ -1453,7 +1462,7 @@ impl State {
                     .iter()
                     .find(|comment| comment.id == id && comment.post == post_id)
                     .ok_or("This reply must belong to the same discussion.")?;
-                if parent.deleted {
+                if parent.deleted || self.is_comment_removed(id) {
                     return Err("This comment is no longer open for replies.".into());
                 }
                 Some(id)
@@ -1480,6 +1489,9 @@ impl State {
 
     fn own_visible_comment_index(&self, form: &BTreeMap<String, String>) -> Result<usize, String> {
         let id = id_field(form, "id")?;
+        if self.is_comment_removed(id) {
+            return Err("This comment is unavailable.".into());
+        }
         let index = self
             .comments
             .iter()
@@ -1488,10 +1500,7 @@ impl State {
             })
             .ok_or("Choose one of your own comments.")?;
         let comment = &self.comments[index];
-        if !self
-            .community_for_post(comment.post)
-            .is_some_and(|community| self.can_view_community(community))
-        {
+        if self.viewable_post_community(comment.post).is_none() {
             return Err("This comment is unavailable.".into());
         }
         Ok(index)
@@ -1971,13 +1980,13 @@ impl State {
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
         let id = id_field(form, "id")?;
-        if !self.comments.iter().any(|comment| {
-            comment.id == id
-                && comment.author == self.username
-                && self
-                    .community_for_post(comment.post)
-                    .is_some_and(|community| self.can_view_community(community))
-        }) {
+        if self.is_comment_removed(id)
+            || !self.comments.iter().any(|comment| {
+                comment.id == id
+                    && comment.author == self.username
+                    && self.viewable_post_community(comment.post).is_some()
+            })
+        {
             return Err("Choose one of your own comments to edit its profile visibility.".into());
         }
         if toggle(&mut self.profile_hidden_comments, id) {
@@ -2084,6 +2093,8 @@ impl State {
             .position(|post| post.id == id && post.author == self.username)
             .ok_or("You can delete posts from your own profile.")?;
         self.posts.remove(index);
+        self.content_removals
+            .retain(|removal| removal.post_id != id);
         self.votes.remove(&id);
         self.saved.remove(&id);
         self.hidden.remove(&id);
@@ -2365,9 +2376,10 @@ impl State {
                 read: number(read)?,
             }),
             ["notification", id, recipient, body, at, read, post, destination @ ..] => {
-                let appeal = match destination {
-                    [] => false,
-                    ["appeal"] if post.is_empty() => true,
+                let (appeal, moderation) = match destination {
+                    [] => (false, false),
+                    ["appeal"] if post.is_empty() => (true, false),
+                    ["moderation"] if post.is_empty() => (false, true),
                     _ => return None,
                 };
                 self.notifications.push(Notification {
@@ -2378,11 +2390,13 @@ impl State {
                     read: number(read)?,
                     post: optional_number(post)?,
                     appeal,
+                    moderation,
                 })
             }
             fields @ (["appeal-sequence", ..] | ["appeal", ..]) => {
                 self.read_appeal_record(fields)?
             }
+            fields @ ["content-removal", ..] => self.read_content_removal(fields)?,
             ["mod-mail", id, community, sender, subject, body, reply] => {
                 self.mod_mail.push(ModMail {
                     id: number(id)?,
@@ -2667,6 +2681,7 @@ impl State {
                 comment.deleted,
             )?;
         }
+        self.write_content_removals(file)?;
         for report in &self.reports {
             writeln!(
                 file,
@@ -2700,7 +2715,13 @@ impl State {
             let post = notification
                 .post
                 .map_or_else(String::new, |id| id.to_string());
-            let destination = if notification.appeal { "\tappeal" } else { "" };
+            let destination = if notification.appeal {
+                "\tappeal"
+            } else if notification.moderation {
+                "\tmoderation"
+            } else {
+                ""
+            };
             writeln!(
                 file,
                 "notification\t{}\t{}\t{}\t{}\t{}\t{post}{destination}",

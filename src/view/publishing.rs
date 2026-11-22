@@ -2,7 +2,10 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{action_fields, community, community_url, encode, escape, field, icon, is_sensitive};
+use super::{
+    action_fields, can_view_post, community, community_url, encode, escape, field, icon,
+    is_sensitive,
+};
 use crate::model::{Post, State};
 
 const TABS: &[(&str, &str)] = &[
@@ -264,9 +267,9 @@ fn source_selector(state: &State, selected: Option<u64>) -> String {
         .iter()
         .filter(|post| {
             post.repost_of.is_none()
-                && community(state, &post.community).is_some_and(|item| {
-                    item.visibility != "private" && state.can_view_community(item)
-                })
+                && can_view_post(state, post)
+                && community(state, &post.community)
+                    .is_some_and(|item| item.visibility != "private")
                 && (selected == Some(post.id)
                     || !state.hidden.contains(&post.id)
                         && !state.blocked.contains(&post.author)

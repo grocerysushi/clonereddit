@@ -497,6 +497,25 @@ impl State {
         post: Option<u64>,
         appeal: bool,
     ) -> Result<(), String> {
+        self.push_notification_record(recipient, body, post, appeal, false)
+    }
+
+    pub(super) fn push_moderation_notification(
+        &mut self,
+        recipient: &str,
+        body: String,
+    ) -> Result<(), String> {
+        self.push_notification_record(recipient, body, None, false, true)
+    }
+
+    fn push_notification_record(
+        &mut self,
+        recipient: &str,
+        body: String,
+        post: Option<u64>,
+        appeal: bool,
+        moderation: bool,
+    ) -> Result<(), String> {
         let id = next_id(&mut self.next_notification)?;
         self.notifications.push(Notification {
             id,
@@ -504,6 +523,7 @@ impl State {
             body,
             post,
             appeal,
+            moderation,
             at: unix_seconds(),
             read: false,
         });

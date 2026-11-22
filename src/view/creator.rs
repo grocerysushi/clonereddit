@@ -40,7 +40,10 @@ fn dashboard(state: &State, posts: &[&Post]) -> String {
         .comments
         .iter()
         .filter(|comment| {
-            comment.author == state.username && visible_post(state, comment.post).is_some()
+            comment.author == state.username
+                && !comment.deleted
+                && !state.is_comment_removed(comment.id)
+                && visible_post(state, comment.post).is_some()
         })
         .count();
     let joined = state
@@ -82,7 +85,7 @@ fn performance(state: &State, posts: &[&Post]) -> String {
             "<li class='creator-row'>{}<dl class='creator-row-details'><div><dt>Vote score</dt><dd>{}</dd></div><div><dt>Replies</dt><dd>{}</dd></div></dl></li>",
             post_details(state, post),
             score(state, post),
-            post.reply_count
+            state.visible_reply_count(post)
         )
         .unwrap();
     }
@@ -92,7 +95,7 @@ fn performance(state: &State, posts: &[&Post]) -> String {
 
 fn trends(state: &State) -> String {
     let mut totals: BTreeMap<&str, (usize, i64)> = BTreeMap::new();
-    for post in &state.posts {
+    for post in state.posts.iter().filter(|post| can_view_post(state, post)) {
         let (discussions, votes) = totals.entry(&post.community).or_default();
         *discussions += 1;
         *votes += i64::from(score(state, post));

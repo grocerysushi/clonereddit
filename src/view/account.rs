@@ -303,14 +303,21 @@ pub(super) fn notifications(state: &State) -> String {
             };
             let link = if item.appeal {
                 "<a class='subtle-link' href='/appeals'>View your appeals</a>".to_owned()
+            } else if item.moderation {
+                String::new()
             } else if let Some(id) = item.post {
                 format!("<a class='subtle-link' href='/thread?id={id}'>View discussion</a>")
             } else {
                 "<a class='subtle-link' href='/messages'>Open messages</a>".to_owned()
             };
+            let body_style = if item.moderation {
+                " class='account-message-body'"
+            } else {
+                ""
+            };
             write!(
                 html,
-                "<li class='account-notification'><div class='account-notification-meta'>{unread}{}</div><p>{}</p>{link}</li>",
+                "<li class='account-notification'><div class='account-notification-meta'>{unread}{}</div><p{body_style}>{}</p>{link}</li>",
                 time(item.at),
                 escape(&item.body)
             )

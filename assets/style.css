@@ -517,6 +517,16 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-appeal-decision summary::-webkit-details-marker { display: none; }
 .mod-appeal-decision[open] > summary { background: var(--light-lime); }
 .mod-appeal-record .moderation-reply { overflow-wrap: anywhere; }
+.mod-discussion-row { flex-wrap: wrap; }
+.mod-discussion-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mod-discussion-actions .button { margin: 0; font-size: .8rem; }
+.mod-content-controls, .mod-content-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 15px; }
+.mod-content-pagination { justify-content: center; margin-top: 12px; }
+.mod-content-search { margin-block: 10px; }
+.mod-content-search input { flex: 1; }
+.mod-content-detail :is(h2, p, .moderation-reply), .mod-content-list-item :is(h2, p, header), .mod-discussion-row { overflow-wrap: anywhere; }
+.mod-content-thread { margin-top: 10px; }
+.mod-content-action small { margin-top: -4px; }
 .scheduled-workspace { display: grid; gap: 11px; }
 .scheduled-upcoming, .scheduled-history, .scheduled-form-panel { min-width: 0; padding: 13px 15px; }
 .scheduled-workspace h2 { font-size: 1.1rem; }

@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::model::{Community, ModPermission, Post, Report, State};
+use crate::model::{Community, ContentKind, ModPermission, Post, Report, State};
 
 use super::{
     action_fields, action_form, community_icon, community_owner, community_url, encode, escape,
@@ -14,9 +14,12 @@ use super::{restricted, scheduled};
 
 #[path = "community_manage.rs"]
 mod community_manage;
+#[path = "moderate_content.rs"]
+mod moderate_content;
 
 const SCHEDULED_TITLE: &str = "Scheduled posts and events";
 const RESTRICTED_TITLE: &str = "Restricted Users";
+const CONTENT_TITLE: &str = "Posts & comments";
 
 const TOOLS: &[(&str, &str, &str, &str)] = &[
     (
@@ -48,6 +51,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Appeals",
         "log",
         "Review requests to lift community bans and mod mail mutes.",
+    ),
+    (
+        "content",
+        CONTENT_TITLE,
+        "chat",
+        "Review, remove, and restore community posts and comments.",
     ),
     (
         "discussions",
@@ -108,6 +117,7 @@ pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
         "appeals" => ModPermission::Appeals,
+        "content" => ModPermission::Content,
         _ => return false,
     };
     state.can_moderate(item, permission)
@@ -139,6 +149,7 @@ pub(super) fn render(
             "scheduled" => scheduled::render(state, item, query),
             "restricted-users" => restricted::render(state, item),
             "appeals" => community_manage::appeals(state, item, query, None),
+            "content" => moderate_content::render(state, item, &workspace.posts, query, None),
             "discussions" => workspace.discussions(state),
             "rules" => workspace.rules(state),
             "members" => workspace.members(state),
@@ -147,7 +158,7 @@ pub(super) fn render(
             "insights" => workspace.insights(state),
             "log" => workspace.log(state),
             "responses" => workspace.responses(state),
-            "queue" => workspace.queue(query),
+            "queue" => workspace.queue(state, query),
             _ => empty(
                 "Mod tools unavailable",
                 "Your account needs a moderator role to view these tools.",
@@ -163,6 +174,17 @@ pub(super) fn render(
         "Search tools"
     };
     workspace.frame(state, section, heading, search, &body)
+}
+
+pub(super) fn content_error(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let workspace = Workspace::new(state, item);
+    let body = moderate_content::render(state, item, &workspace.posts, form, Some(error));
+    workspace.frame(state, "content", CONTENT_TITLE, "", &body)
 }
 
 pub(super) fn role_error(
@@ -407,7 +429,7 @@ impl<'a> Workspace<'a> {
             .count()
     }
 
-    fn queue(&self, query: &BTreeMap<String, String>) -> String {
+    fn queue(&self, state: &State, query: &BTreeMap<String, String>) -> String {
         let status = match field(query, "status") {
             "reported" => "reported",
             "reviewed" => "reviewed",
@@ -493,7 +515,8 @@ impl<'a> Workspace<'a> {
                 "",
                 "button light",
             );
-            write!(html, "<article class='panel mod-record'><header><span class='flair'>{label}</span><span class='muted'>Report #{}</span></header><h2><a href='/thread?id={}'>{}</a></h2><p><strong>Region</strong> {}</p><p class='mod-record-detail'>{}</p><div class='form-actions'>{action}</div></article>", report.id, post.id, escape(&post.title), escape(&report.region), escape(&report.details)).unwrap();
+            let (title, review) = self.post_review_links(state, post);
+            write!(html, "<article class='panel mod-record'><header><span class='flair'>{label}</span><span class='muted'>Report #{}</span></header><h2>{title}</h2><p><strong>Region</strong> {}</p><p class='mod-record-detail'>{}</p><div class='form-actions'>{action}{review}</div></article>", report.id, escape(&report.region), escape(&report.details)).unwrap();
         }
         html
     }
@@ -562,10 +585,30 @@ impl<'a> Workspace<'a> {
             } else {
                 ""
             };
-            write!(html, "<li><div><a href='/thread?id={}'>{}</a><p class='muted'>u/{} · {} · {} net votes · {} replies</p></div>{pinned}</li>", post.id, escape(&post.title), escape(&post.author), escape(&post.age), score(state, post), post.reply_count).unwrap();
+            let (title, review) = self.post_review_links(state, post);
+            write!(html, "<li class='mod-discussion-row'><div>{title}<p class='muted'>u/{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}</div></li>", escape(&post.author), escape(&post.age), score(state, post), post.reply_count).unwrap();
         }
         html.push_str("</ul></section>");
         html
+    }
+
+    fn post_review_links(&self, state: &State, post: &Post) -> (String, String) {
+        let title = escape(&post.title);
+        let review = if state.can_moderate(self.item, ModPermission::Content) {
+            let url = moderate_content::detail_url(self.item, ContentKind::Post, post.id);
+            format!(
+                "<a class='button light' href='{}'>Review post</a>",
+                escape(&url)
+            )
+        } else {
+            String::new()
+        };
+        let title = if state.content_removal(ContentKind::Post, post.id).is_some() {
+            format!("<span>{title}</span> <span class='flair'>Removed</span>")
+        } else {
+            format!("<a href='/thread?id={}'>{title}</a>", post.id)
+        };
+        (title, review)
     }
 
     fn rules(&self, state: &State) -> String {

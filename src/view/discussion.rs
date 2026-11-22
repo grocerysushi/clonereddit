@@ -1,12 +1,19 @@
 use super::{action_fields, escape, icon};
 use crate::model::{Comment, State};
 
-pub(super) fn menu(state: &State, comment: &Comment, back: &str, can_edit: bool) -> String {
-    if comment.deleted || comment.author != state.username {
+pub(super) fn menu(
+    state: &State,
+    comment: &Comment,
+    back: &str,
+    can_edit: bool,
+    moderation: Option<&str>,
+) -> String {
+    let owns = comment.author == state.username;
+    if comment.deleted || (!owns && moderation.is_none()) {
         return String::new();
     }
 
-    let edit = if can_edit {
+    let edit = if owns && can_edit {
         format!(
             "<a class='menu-item' href='{}'>Edit comment</a>",
             escape(&action_url(back, "edit-comment", comment.id))
@@ -14,9 +21,20 @@ pub(super) fn menu(state: &State, comment: &Comment, back: &str, can_edit: bool)
     } else {
         String::new()
     };
-    let delete = escape(&action_url(back, "delete-comment", comment.id));
+    let delete = if owns {
+        let url = escape(&action_url(back, "delete-comment", comment.id));
+        format!("<a class='menu-item' href='{url}'>Delete comment</a>")
+    } else {
+        String::new()
+    };
+    let moderate = moderation.map_or_else(String::new, |url| {
+        format!(
+            "<a class='menu-item' href='{}'>Moderate comment</a>",
+            escape(url)
+        )
+    });
     format!(
-        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{edit}<a class='menu-item' href='{delete}'>Delete comment</a></div></details>",
+        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{edit}{delete}{moderate}</div></details>",
         icon("more")
     )
 }

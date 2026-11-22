@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use super::{
-    action_fields, action_form, community_owner, community_url, encode, escape, post_card,
+    action_fields, action_form, can_view_post, community_owner, community_url, encode, escape,
+    post_card,
 };
 use crate::model::{Community, ModMail, ModPermission, State};
 
@@ -53,7 +54,7 @@ fn queue(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
     entries.sort_by_key(|(report, _, _)| (report.reviewed, Reverse(report.id)));
 
     let mut html = String::from(
-        "<section class='panel standalone moderation-tool'><h1>Moderation queue</h1><p>Review legal reports in communities you moderate. Changing a report’s status leaves the discussion visible.</p>",
+        "<section class='panel standalone moderation-tool'><h1>Moderation queue</h1><p>Mark legal reports reviewed or reopen them for follow-up.</p>",
     );
     if entries.is_empty() {
         html.push_str("<p class='muted log-empty'>No reports from your communities.</p>");
@@ -72,11 +73,21 @@ fn queue(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
             "",
             "button light",
         );
+        let title = escape(&post.title);
+        let heading = if can_view_post(state, post) {
+            format!("<a href='/thread?id={}'>{title}</a>", post.id)
+        } else if state.can_moderate(item, ModPermission::Content) {
+            format!(
+                "<a href='/moderation/tools?community={}&amp;section=content&amp;kind=post&amp;id={}'>{title}</a>",
+                encode(&item.slug),
+                post.id
+            )
+        } else {
+            title
+        };
         write!(
             html,
-            "<article class='log-item moderation-record'><span class='flair'>{status}</span><h2><a href='/thread?id={}'>{}</a></h2><p><a class='subtle-link' href='{}'>{}</a> · <strong>Region</strong> {}</p><p>{}</p><div class='form-actions'>{update}</div></article>",
-            post.id,
-            escape(&post.title),
+            "<article class='log-item moderation-record'><span class='flair'>{status}</span><h2>{heading}</h2><p><a class='subtle-link' href='{}'>{}</a> · <strong>Region</strong> {}</p><p>{}</p><div class='form-actions'>{update}</div></article>",
             community_url(&item.slug),
             escape(&item.name),
             escape(&report.region),
@@ -182,6 +193,7 @@ fn mod_feed(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
     let mut posts: Vec<_> = state
         .posts
         .iter()
+        .filter(|post| can_view_post(state, post))
         .filter_map(|post| {
             owned
                 .get(post.community.as_str())
