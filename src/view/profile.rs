@@ -2,8 +2,9 @@ use std::cmp::Reverse;
 use std::fmt::Write;
 
 use super::{
-    can_view_post, community, community_url, encode, escape, icon, initials, post_card,
-    profile_name, profile_url, visible_post, PostView,
+    account_byline, action_form, can_view_post, community, community_url, discussion,
+    display_post_title, encode, escape, icon, initials, is_sensitive, post_card, profile_name,
+    profile_url, visible_post, PostView,
 };
 use crate::model::{Comment, Post, State};
 
@@ -94,19 +95,20 @@ pub(super) fn render(state: &State, requested: &str, public: bool, can_message: 
         }
         if !replies.is_empty() {
             write!(html, "<div class='profile-activity-heading'><h2>Recent comments</h2><a class='subtle-link' href='{}?tab=comments'>View comments</a></div>", escape(&base)).unwrap();
-            add_comments(&mut html, state, replies.into_iter().take(3));
+            add_comments(&mut html, state, replies.into_iter().take(3), None);
         }
     } else if tab == "comments" {
         let items = comments(state, public);
         if items.is_empty() {
             html.push_str("<section class='panel empty'><h2>No comments to show.</h2></section>");
         }
-        add_comments(&mut html, state, items.into_iter());
+        add_comments(&mut html, state, items.into_iter(), None);
+    } else if tab == "saved" {
+        add_saved(&mut html, state, &back);
     } else {
         let items = posts(state, tab, public);
         if items.is_empty() {
             let status = match tab {
-                "saved" => "No saved posts yet.",
                 "history" => "Discussions you open will appear here.",
                 "hidden" => "No hidden posts.",
                 "upvoted" => "No upvoted posts.",
@@ -122,6 +124,32 @@ pub(super) fn render(state: &State, requested: &str, public: bool, can_message: 
         add_posts(&mut html, state, items.into_iter(), &back, public);
     }
     html
+}
+
+fn add_saved(html: &mut String, state: &State, back: &str) {
+    let saved_posts = posts(state, "saved", false);
+    let mut saved_comments: Vec<_> = state
+        .comments
+        .iter()
+        .filter(|comment| {
+            state.saved_comments.contains(&comment.id) && state.comment_can_be_saved(comment)
+        })
+        .collect();
+    saved_comments.sort_by_key(|comment| Reverse(comment.id));
+
+    if saved_posts.is_empty() && saved_comments.is_empty() {
+        html.push_str("<section class='panel empty'><h2>No saved items yet.</h2></section>");
+    }
+    if !saved_comments.is_empty() {
+        html.push_str("<section class='profile-saved-comments' aria-labelledby='saved-comments-heading'><div class='profile-activity-heading'><h2 id='saved-comments-heading'>Saved comments</h2></div>");
+        add_comments(html, state, saved_comments.into_iter(), Some(back));
+        html.push_str("</section>");
+    }
+    if !saved_posts.is_empty() {
+        html.push_str("<section class='profile-saved-posts' aria-labelledby='saved-posts-heading'><div class='profile-activity-heading'><h2 id='saved-posts-heading'>Saved posts</h2></div>");
+        add_posts(html, state, saved_posts.into_iter(), back, false);
+        html.push_str("</section>");
+    }
 }
 
 fn public_post(state: &State, post: &Post) -> bool {
@@ -202,19 +230,53 @@ fn add_posts<'a>(
     }
 }
 
-fn add_comments<'a>(html: &mut String, state: &State, comments: impl Iterator<Item = &'a Comment>) {
+fn add_comments<'a>(
+    html: &mut String,
+    state: &State,
+    comments: impl Iterator<Item = &'a Comment>,
+    saved_back: Option<&str>,
+) {
     for item in comments {
         let Some(post) = visible_post(state, item.post) else {
             continue;
         };
-        let content = if post.sensitive
-            || post.spoiler
-            || community(state, &post.community).is_some_and(|group| group.mature)
-        {
+        let content = if post.spoiler || is_sensitive(state, post) {
             format!("<details class='sensitive-preview'><summary>Reveal comment</summary><p>{}</p></details>", escape(&item.body))
         } else {
             format!("<p>{}</p>", escape(&item.body))
         };
-        write!(html, "<article class='panel profile-item'><div class='profile-comment-meta'><a class='subtle-link' href='/thread?id={}#comment-{}'>{}</a><span class='muted'>{}</span></div>{content}</article>", post.id, item.id, escape(&post.title), escape(&item.age)).unwrap();
+        let age = escape(&item.age);
+        let (attributes, meta, actions) = if let Some(back) = saved_back {
+            let id = item.id.to_string();
+            let group = community(state, &post.community)
+                .map(|item| item.name.as_str())
+                .unwrap_or(&post.community);
+            let meta = format!(
+                "<span class='muted'>{} · {} · {age}</span>",
+                account_byline(&item.author),
+                escape(group)
+            );
+            let unsave = action_form(
+                "unsave-comment",
+                back,
+                &[("id", &id)],
+                "Unsave",
+                "save",
+                "action saved",
+            );
+            (
+                format!(" data-saved-comment-id='{id}'"),
+                meta,
+                format!("<div class='profile-saved-comment-actions'>{unsave}</div>"),
+            )
+        } else {
+            (
+                String::new(),
+                format!("<span class='muted'>{age}</span>"),
+                String::new(),
+            )
+        };
+        let permalink = discussion::comment_url(&format!("/thread?id={}", post.id), item.id);
+        write!(html, "<article class='panel profile-item'{attributes}><div class='profile-comment-meta'><a class='subtle-link' href='{}'>{}</a>{meta}</div>{content}{actions}</article>", escape(&permalink), escape(display_post_title(state, post))).unwrap();
     }
 }

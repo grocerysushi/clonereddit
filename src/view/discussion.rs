@@ -1,4 +1,4 @@
-use super::{action_fields, escape, icon, reporting};
+use super::{action_fields, action_form, escape, icon, reporting};
 use crate::model::{Comment, ContentKind, State};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +90,24 @@ pub(super) fn menu(
     let signed_in = !state.username.is_empty();
     let owns = signed_in && comment.author == state.username;
 
+    let save = if signed_in {
+        let (action, label) = if state.saved_comments.contains(&comment.id) {
+            ("unsave-comment", "Unsave")
+        } else {
+            ("save-comment", "Save")
+        };
+        action_form(
+            action,
+            &comment_url(back, comment.id),
+            &[("id", &comment.id.to_string())],
+            label,
+            "",
+            "menu-item",
+        )
+    } else {
+        String::new()
+    };
+
     let edit = if owns && can_edit {
         format!(
             "<a class='menu-item' href='{}'>Edit comment</a>",
@@ -118,7 +136,7 @@ pub(super) fn menu(
     };
     let share = share(comment, origin);
     format!(
-        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{share}{edit}{delete}{report}{moderate}</div></details>",
+        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{save}{share}{edit}{delete}{report}{moderate}</div></details>",
         icon("more")
     )
 }

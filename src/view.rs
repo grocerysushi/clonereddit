@@ -348,8 +348,13 @@ pub fn route(
                     _ => None,
                 }
                 .unwrap_or_else(|| back.to_owned());
-                let delimiter = if target.contains('?') { '&' } else { '?' };
-                Response::redirect(&format!("{target}{delimiter}notice={}", encode(notice)))
+                let (path, fragment) = target.split_once('#').unwrap_or((&target, ""));
+                let delimiter = if path.contains('?') { '&' } else { '?' };
+                let mut url = format!("{path}{delimiter}notice={}", encode(notice));
+                if !fragment.is_empty() {
+                    write!(url, "#{fragment}").unwrap();
+                }
+                Response::redirect(&url)
             }
             Err(error) if action == "create-community" && back == "/communities/start" => {
                 wizard_page(state, &request.form, &error)

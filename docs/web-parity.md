@@ -323,6 +323,12 @@ Workflow **046** is implemented. The **Share** action copies a direct link that 
 
 Chromium checks at 1440 and 390 CSS pixels verified clipboard contents and the manual copy fallback, then opened nested comments from separate accounts and guest sessions. HTTP checks covered private access, deleted and removed comments, surviving replies, and link targets after restart.
 
+## Saved comments update
+
+Workflow **049** is implemented. Signed-in users can save or unsave individual comments. Saved comments appear in the account’s profile **Saved** tab alongside saved posts and link back to the exact reply. The collection respects existing comment and community access. This brings the implementation count to **87 implemented, 5 partial, and 8 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered saving and unsaving in both places, jumping to a nested reply, and persistence across independent accounts and a restart. HTTP checks covered idempotent requests, older saved posts, private access changes, moderation, and public-profile privacy.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

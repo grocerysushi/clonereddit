@@ -98,6 +98,7 @@ Emails link back to the same localhost server. Keep local outbox files private b
 27. In **Text and link**, put the cursor where the image should appear. Choose a PNG, JPEG, WebP, or GIF, add a description for screen readers, and select **Insert image**. Move the image’s Markdown line to change its position. A post can have up to six inline images of 2 MiB each. Images saved to a draft carry over when you resume it.
 28. In **Creator tools → Performance**, open **Insights** beside one of your posts. Switch between **Last 7 days** and **Last 30 days** to see discussion views, net vote changes, and comments added by UTC day. Tracking starts when the updated server first runs. Past activity is unavailable for earlier days.
 29. In a discussion, open a comment’s **Comment actions → Share** and select **Copy link**. The link opens the discussion at that comment for anyone who already has access. You can also select the URL and copy it manually.
+30. Open a comment’s **Comment actions → Save** to bookmark it. Find it under **Saved comments** in your profile’s **Saved** tab and open it to jump back to the discussion. Select **Unsave** in either place to remove the bookmark.
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 

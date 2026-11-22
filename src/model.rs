@@ -346,6 +346,7 @@ pub struct State {
     pub votes: BTreeMap<u64, i8>,
     pub comment_votes: BTreeMap<u64, i8>,
     pub saved: BTreeSet<u64>,
+    pub saved_comments: BTreeSet<u64>,
     pub hidden: BTreeSet<u64>,
     pub joined: BTreeSet<String>,
     pub muted: BTreeSet<String>,
@@ -542,6 +543,7 @@ impl State {
             votes: BTreeMap::new(),
             comment_votes: BTreeMap::new(),
             saved: BTreeSet::new(),
+            saved_comments: BTreeSet::new(),
             hidden: BTreeSet::new(),
             joined: ["open-debate", "public-square", "technology"]
                 .map(String::from)
@@ -1002,6 +1004,23 @@ impl State {
                     Ok("Removed from your saved list.")
                 }
             }
+            "save-comment" => {
+                let id = id_field(form, "id")?;
+                if !self
+                    .comments
+                    .iter()
+                    .any(|comment| comment.id == id && self.comment_can_be_saved(comment))
+                {
+                    return Err("This comment is unavailable.".into());
+                }
+                self.saved_comments.insert(id);
+                Ok("Comment saved.")
+            }
+            "unsave-comment" => {
+                let id = id_field(form, "id")?;
+                self.saved_comments.remove(&id);
+                Ok("Comment removed from your saved list.")
+            }
             "hide" => {
                 let id = self.post_id(form, "id")?;
                 if toggle(&mut self.hidden, id) {
@@ -1187,6 +1206,13 @@ impl State {
     fn viewable_post_community(&self, id: u64) -> Option<&Community> {
         self.community_for_post(id)
             .filter(|community| self.can_view_community(community) && !self.is_post_removed(id))
+    }
+
+    pub fn comment_can_be_saved(&self, comment: &Comment) -> bool {
+        !comment.deleted
+            && !self.is_comment_removed(comment.id)
+            && !self.blocked.contains(&comment.author)
+            && self.viewable_post_community(comment.post).is_some()
     }
 
     fn community_slug(&self, form: &BTreeMap<String, String>) -> Result<String, String> {
@@ -1791,9 +1817,11 @@ impl State {
         comment.deleted = true;
         comment.score = 0;
         self.comment_votes.remove(&comment.id);
+        self.saved_comments.remove(&comment.id);
         self.profile_hidden_comments.remove(&comment.id);
         for profile in self.account_profiles.values_mut() {
             profile.comment_votes.remove(&comment.id);
+            profile.saved_comments.remove(&comment.id);
             profile.hidden_comments.remove(&comment.id);
         }
         if let Some(post) = self.posts.iter_mut().find(|post| post.id == comment.post) {
@@ -2440,9 +2468,11 @@ impl State {
             }
             self.locked_comments.remove(&comment.id);
             self.comment_votes.remove(&comment.id);
+            self.saved_comments.remove(&comment.id);
             self.profile_hidden_comments.remove(&comment.id);
             for profile in self.account_profiles.values_mut() {
                 profile.comment_votes.remove(&comment.id);
+                profile.saved_comments.remove(&comment.id);
                 profile.hidden_comments.remove(&comment.id);
             }
             false
@@ -2966,6 +2996,9 @@ impl State {
             }
             ["saved", id] => {
                 self.saved.insert(number(id)?);
+            }
+            ["saved-comment", id] => {
+                self.saved_comments.insert(number(id)?);
             }
             ["hidden", id] => {
                 self.hidden.insert(number(id)?);

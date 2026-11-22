@@ -13,6 +13,7 @@ pub(super) struct ProfileData {
     pub(super) votes: BTreeMap<u64, i8>,
     pub(super) comment_votes: BTreeMap<u64, i8>,
     pub(super) saved: BTreeSet<u64>,
+    pub(super) saved_comments: BTreeSet<u64>,
     pub(super) hidden: BTreeSet<u64>,
     pub(super) joined: BTreeSet<String>,
     muted: BTreeSet<String>,
@@ -62,6 +63,7 @@ impl ProfileData {
             votes: state.votes.clone(),
             comment_votes: state.comment_votes.clone(),
             saved: state.saved.clone(),
+            saved_comments: state.saved_comments.clone(),
             hidden: state.hidden.clone(),
             joined: state.joined.clone(),
             muted: state.muted.clone(),
@@ -97,6 +99,7 @@ impl ProfileData {
         state.votes = self.votes;
         state.comment_votes = self.comment_votes;
         state.saved = self.saved;
+        state.saved_comments = self.saved_comments;
         state.hidden = self.hidden;
         state.joined = self.joined;
         state.muted = self.muted;
@@ -147,6 +150,7 @@ impl ProfileData {
                 | "vote"
                 | "comment-vote"
                 | "saved"
+                | "saved-comment"
                 | "hidden"
                 | "profile-hidden-post"
                 | "profile-hidden-comment"
@@ -267,6 +271,7 @@ impl ProfileData {
         }
         for (label, ids) in [
             ("saved", &self.saved),
+            ("saved-comment", &self.saved_comments),
             ("hidden", &self.hidden),
             ("profile-hidden-post", &self.hidden_posts),
             ("profile-hidden-comment", &self.hidden_comments),
@@ -638,6 +643,140 @@ mod tests {
             .iter()
             .map(|&(key, value)| (key.into(), value.into()))
             .collect()
+    }
+
+    #[test]
+    fn saved_comments_are_private_idempotent_and_persist_across_access_changes() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "commonline-saved-comments-{}-{nonce}.state",
+            std::process::id()
+        )));
+        let path = &fixture.0;
+        let mut state = State::seeded();
+        let apply = |state: &mut State, action: &str, fields: &[(&str, &str)]| {
+            state.apply(action, &form(fields), path).unwrap();
+        };
+        let community = "private-bookmarks";
+        let owner = "bookmark_owner";
+        let reader = "bookmark_reader";
+        state.activate_profile(Some(owner));
+        apply(
+            &mut state,
+            "create-community",
+            &[
+                ("name", "Private bookmarks"),
+                ("slug", community),
+                ("visibility", "private"),
+            ],
+        );
+        apply(
+            &mut state,
+            "create",
+            &[("community", community), ("title", "Bookmark discussion")],
+        );
+        let post_id = state.posts.last().unwrap().id.to_string();
+        apply(
+            &mut state,
+            "comment",
+            &[("post", &post_id), ("body", "Bookmark this comment.")],
+        );
+        let comment_id = state.comments.last().unwrap().id;
+        let comment_key = comment_id.to_string();
+        let save = [("id", comment_key.as_str())];
+        let member = [("community", community), ("handle", reader)];
+        let removal = [
+            ("community", community),
+            ("kind", "comment"),
+            ("id", comment_key.as_str()),
+            ("reason", "Temporary removal"),
+        ];
+        state.activate_profile(Some(reader));
+        assert!(state.apply("save-comment", &form(&save), path).is_err());
+        state.activate_profile(Some(owner));
+        apply(&mut state, "approve-member", &member);
+        state.activate_profile(Some(reader));
+        apply(&mut state, "block", &[("author", owner)]);
+        assert!(state.apply("save-comment", &form(&save), path).is_err());
+        apply(&mut state, "block", &[("author", owner)]);
+        apply(&mut state, "save-comment", &save);
+        apply(&mut state, "save-comment", &save);
+        apply(&mut state, "save", &[("id", &post_id)]);
+        assert_eq!(state.saved_comments, BTreeSet::from([comment_id]));
+
+        state.activate_profile(Some(owner));
+        assert!(state.saved_comments.is_empty());
+        apply(&mut state, "remove-content", &removal);
+        let mut state = State::load(path).unwrap();
+        state.activate_profile(Some(reader));
+        assert!(state.saved_comments.contains(&comment_id));
+        assert!(!state.comment_can_be_saved(state.comments.last().unwrap()));
+        state.activate_profile(Some(owner));
+        apply(&mut state, "restore-content", &removal);
+        state.activate_profile(Some(reader));
+        assert!(state.comment_can_be_saved(state.comments.last().unwrap()));
+
+        state.activate_profile(Some(owner));
+        apply(&mut state, "revoke-approved-member", &member);
+        state.activate_profile(Some(reader));
+        assert!(!state.comment_can_be_saved(state.comments.last().unwrap()));
+        apply(&mut state, "unsave-comment", &save);
+        apply(&mut state, "unsave-comment", &save);
+        let state = State::load(path).unwrap();
+        assert!(state.saved_comments.is_empty());
+        assert_eq!(state.saved.len(), 1);
+    }
+
+    #[test]
+    fn deleting_comments_or_posts_clears_bookmarks_for_all_profiles() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "commonline-deleted-bookmarks-{}-{nonce}.state",
+            std::process::id()
+        )));
+        let path = &fixture.0;
+        let mut state = State::seeded();
+        let apply = |state: &mut State, action: &str, fields: &[(&str, &str)]| {
+            state.apply(action, &form(fields), path).unwrap();
+        };
+        state.activate_profile(Some("bookmark_author"));
+        apply(
+            &mut state,
+            "create",
+            &[("community", "open-debate"), ("title", "Bookmark cleanup")],
+        );
+        let post_id = state.posts.last().unwrap().id.to_string();
+        let mut comment_keys = Vec::new();
+        for body in ["First bookmarked comment", "Second bookmarked comment"] {
+            apply(&mut state, "comment", &[("post", &post_id), ("body", body)]);
+            comment_keys.push(state.comments.last().unwrap().id.to_string());
+        }
+        for handle in ["bookmark_author", "bookmark_other"] {
+            state.activate_profile(Some(handle));
+            for key in &comment_keys {
+                apply(&mut state, "save-comment", &[("id", key)]);
+            }
+        }
+        state.activate_profile(Some("bookmark_author"));
+        apply(&mut state, "delete-comment", &[("id", &comment_keys[0])]);
+        assert_eq!(state.saved_comments.len(), 1);
+        assert_eq!(
+            state.account_profiles["bookmark_other"]
+                .saved_comments
+                .len(),
+            1
+        );
+        apply(&mut state, "delete", &[("id", &post_id)]);
+        let mut state = State::load(path).unwrap();
+        assert!(state.saved_comments.is_empty());
+        state.activate_profile(Some("bookmark_other"));
+        assert!(state.saved_comments.is_empty());
     }
 
     #[test]

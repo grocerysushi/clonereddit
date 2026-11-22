@@ -544,6 +544,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .profile-item :is(h2, p) { margin-top: 3px; }
 .profile-item h2 a:hover { text-decoration: underline; }
 .profile-item p { white-space: pre-wrap; }
+.profile-saved-comments .profile-comment-meta { flex-wrap: wrap; overflow-wrap: anywhere; }
+.profile-saved-comment-actions { margin-top: 7px; }
 .search-tabs { margin-bottom: 12px; }
 .post-search-filters { gap: 10px; margin-top: 12px; padding: 12px 14px; }
 .post-search-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; }
