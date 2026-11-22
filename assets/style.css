@@ -314,7 +314,7 @@ main { min-width: 0; }
 .stack-form { display: grid; gap: 17px; margin-top: 20px; }
 .stack-form label { display: grid; gap: 5px; font-size: .9rem; font-weight: 650; }
 .stack-form small { color: var(--quiet); font-weight: 400; }
-.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .post-search-filters input[type="search"], .account-security input[type="email"], .restricted-form input[type="number"], .reply-form :is(textarea, input[type="text"]) { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
+.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .post-search-filters input[type="search"], .account-security input[type="email"], .restricted-form input[type="number"], .mod-automod-conditions input[type="number"], .reply-form :is(textarea, input[type="text"]) { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
 textarea { resize: vertical; }
 .stack-form .muted { margin: 0; }
 .stack-form button { justify-self: start; }
@@ -772,6 +772,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-automod-editor, .mod-automod-help { margin-bottom: 10px; }
 .mod-automod-help summary { cursor: pointer; font-weight: 650; }
 .mod-automod-help p { margin-top: 8px; color: var(--quiet); }
+.mod-automod-conditions { display: grid; min-width: 0; gap: 8px; }
 .mod-automod-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .mod-automod-rules > h2 { margin: 16px 0 6px; font-size: 1.1rem; }
 .mod-automod-rule h3 { margin: 0; font-size: 1.05rem; }

@@ -39,7 +39,7 @@ pub(super) fn rules(
         html.push_str(&error_notice("That rule is unavailable in this community."));
     }
 
-    write!(html, "<div class='mod-automod-intro'><p>AutoMod matches literal phrases, ignoring capitalization, on publication and text edits. Post rules check the title, text, and link. Comment rules check the comment text.</p><a class='button light' href='{flags_url}'>View AutoMod flags</a></div><details class='panel mod-section mod-automod-help'><summary>How rules apply</summary><p>Flag sends content to the queue while it stays visible. Remove hides content and sends the rule reason to its author. If several rules match, removals take priority. Among matching rules with the same action, the earliest rule wins. Scheduled posts are checked when they publish.</p></details>").unwrap();
+    write!(html, "<div class='mod-automod-intro'><p>AutoMod checks posts and comments when they’re published or edited. A rule applies when all the conditions you enter match.</p><a class='button light' href='{flags_url}'>View AutoMod flags</a></div><details class='panel mod-section mod-automod-help'><summary>How rules apply</summary><p>Flag sends content to the queue while it stays visible. Remove hides content and sends the rule reason to its author. If several rules match, removals take priority. Among matching rules with the same action, the earliest rule wins. Scheduled posts are checked when they publish.</p></details>").unwrap();
     let submitted = draft
         .filter(|(form, _)| {
             field(form, "action") == "save-automod-rule" && (edit.is_empty() || selected.is_some())
@@ -61,9 +61,39 @@ pub(super) fn rules(
             &base,
             &[("community", &item.slug), ("id", &id)],
         );
-        write!(html, "<article class='panel mod-record mod-automod-rule'><header><span class='flair'>{enabled}</span><span class='muted'>{} · {}</span></header><h3>{name}</h3><p class='mod-record-detail'>Match <q>{}</q></p><p class='muted mod-record-detail'>{}</p><div class='mod-automod-rule-actions'><a class='button light' href='{settings}' aria-label='Edit {name}'>Edit rule</a><details class='mod-automod-delete'><summary class='button light' aria-label='Delete {name}'>Delete rule</summary><form action='/action' method='post'>{delete}<button class='button dark' type='submit'>Confirm deletion</button></form></details></div></article>", rule.scope.label(), rule.action.label(), escape(&rule.phrase), escape(&rule.reason)).unwrap();
+        let conditions = summarize_conditions(rule);
+        write!(html, "<article class='panel mod-record mod-automod-rule'><header><span class='flair'>{enabled}</span><span class='muted'>{} · {}</span></header><h3>{name}</h3>{conditions}<p class='muted mod-record-detail'>{}</p><div class='mod-automod-rule-actions'><a class='button light' href='{settings}' aria-label='Edit {name}'>Edit rule</a><details class='mod-automod-delete'><summary class='button light' aria-label='Delete {name}'>Delete rule</summary><form action='/action' method='post'>{delete}<button class='button dark' type='submit'>Confirm deletion</button></form></details></div></article>", rule.scope.label(), rule.action.label(), escape(&rule.reason)).unwrap();
     }
     html.push_str("</section>");
+    html
+}
+
+fn summarize_conditions(rule: &AutoModRule) -> String {
+    let mut html = String::new();
+    if !rule.phrase.is_empty() {
+        write!(
+            html,
+            "<p class='mod-record-detail'>Match <q>{}</q></p>",
+            escape(&rule.phrase)
+        )
+        .unwrap();
+    }
+    if let Some(days) = rule.account_age_under_days {
+        let unit = if days == 1 { "day" } else { "days" };
+        write!(
+            html,
+            "<p class='mod-record-detail'>Account younger than {days} {unit}</p>"
+        )
+        .unwrap();
+    }
+    if !rule.domains.is_empty() {
+        write!(
+            html,
+            "<p class='mod-record-detail'>Links to {}</p>",
+            escape(&rule.domains.join(", "))
+        )
+        .unwrap();
+    }
     html
 }
 
@@ -102,6 +132,18 @@ fn rule_form(
             true,
         )
     };
+    let account_age = if let Some(form) = submitted {
+        field(form, "account_age_under_days").to_owned()
+    } else {
+        rule.and_then(|rule| rule.account_age_under_days)
+            .map(|days| days.to_string())
+            .unwrap_or_default()
+    };
+    let domains = if let Some(form) = submitted {
+        field(form, "domains").to_owned()
+    } else {
+        rule.map(|rule| rule.domains.join("\n")).unwrap_or_default()
+    };
     let check = if enabled { " checked" } else { "" };
     let fields = action_fields(
         "save-automod-rule",
@@ -129,7 +171,26 @@ fn rule_form(
     } else {
         ("Add rule", "Create rule", String::new())
     };
-    format!("<section id='automod-editor' class='panel mod-section mod-automod-editor'><h2>{title}</h2><form class='stack-form' action='/action' method='post'>{fields}<label>Rule name<input name='name' value='{}' maxlength='80' required></label><label>Phrase to match<input name='phrase' value='{}' maxlength='240' required></label><div class='mod-automod-choices'><label>Content type<select name='scope'>{scopes}</select></label><label>Action<select name='rule_action'>{actions}</select></label></div><label>Reason<textarea name='reason' rows='3' maxlength='1000' required>{}</textarea><small class='muted'>Authors receive this reason when AutoMod removes their content.</small></label><label class='checkbox'><input type='checkbox' name='enabled'{check}> Enabled</label><div class='form-actions'><button class='button dark' type='submit'>{button}</button>{cancel}</div></form></section>", escape(name), escape(phrase), escape(reason))
+    format!(
+        r#"<section id='automod-editor' class='panel mod-section mod-automod-editor'><h2>{title}</h2>
+<form class='stack-form' action='/action' method='post'>{fields}
+<label>Rule name<input name='name' value='{name}' maxlength='80' required></label>
+<fieldset class='mod-automod-conditions'><legend>Conditions <small>Enter at least one</small></legend>
+<label>Keyword or phrase<input name='phrase' value='{phrase}' maxlength='240'></label>
+<label>Account younger than (days)<input type='number' name='account_age_under_days' min='1' max='36500' step='1' value='{account_age}'></label>
+<label>Link domains<textarea name='domains' rows='2' maxlength='4096' aria-describedby='automod-domain-help'>{domains}</textarea></label>
+<small id='automod-domain-help' class='muted'>Enter up to 20 host names, such as example.com, separated by commas or new lines. Subdomains also match.</small>
+</fieldset><div class='mod-automod-choices'><label>Content type<select name='scope'>{scopes}</select></label><label>Action<select name='rule_action'>{actions}</select></label></div>
+<label>Reason<textarea name='reason' rows='3' maxlength='1000' required>{reason}</textarea></label>
+<small class='muted'>Authors receive this reason when AutoMod removes their content.</small>
+<label class='checkbox'><input type='checkbox' name='enabled'{check}> Enabled</label>
+<div class='form-actions'><button class='button dark' type='submit'>{button}</button>{cancel}</div></form></section>"#,
+        name = escape(name),
+        phrase = escape(phrase),
+        account_age = escape(&account_age),
+        domains = escape(&domains),
+        reason = escape(reason),
+    )
 }
 
 pub(super) fn flags(

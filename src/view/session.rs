@@ -114,7 +114,15 @@ pub(super) fn route(
         ),
     };
     match result {
-        Ok(grant) => signed_in(state, auth, grant, "/"),
+        Ok(grant) => {
+            let response = signed_in(state, auth, grant, "/");
+            if kind == "register" {
+                if let Err(error) = state.save(path) {
+                    eprintln!("ThreadPorch could not save the new account profile. {error}");
+                }
+            }
+            response
+        }
         Err(error) => form_page(state, &username, &error),
     }
 }

@@ -361,6 +361,12 @@ Workflow **093** is implemented. Moderators with scheduling permission can creat
 
 Chromium checks at 1440 and 390 CSS pixels covered native schedule creation, cadence and time changes, permission checks, restart catch-up, and cancellation with published history intact. HTTP and Rust checks covered legacy records, month-end and daylight saving time, and exactly-once publication across restart or a failed save.
 
+## Compound AutoMod rules update
+
+Workflow **095** is implemented. Moderators can combine a case-insensitive phrase, a maximum account age, and a list of link domains before flagging or removing posts or comments. All entered conditions must match. A link to any listed host or subdomain satisfies the domain condition. Earlier phrase-only rules carry over. This brings the implementation count to **93 implemented, 5 partial, and 2 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered creating and editing compound rules, near misses for each condition, flagging, removal notices, delegated permissions, and restart. HTTP and Rust checks covered actual link hosts, account creation dates, Markdown edits, the scheduled post author’s age, and rule priority.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

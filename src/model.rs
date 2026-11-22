@@ -897,7 +897,7 @@ impl State {
         }
         self.record_moderation(&community, message)
             .map_err(io::Error::other)?;
-        self.screen_post(id).map_err(io::Error::other)?;
+        self.screen_post_at(id, now).map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -1932,15 +1932,14 @@ impl State {
             required(form, "body", "Comment", 4_000)?
         };
         let markdown = comment_markdown(form, comment.markdown)?;
-        let body_changed = comment.body != body;
-        if !body_changed && comment.markdown == markdown {
+        if comment.body == body && comment.markdown == markdown {
             return Ok("Comment unchanged.");
         }
         comment.body = body.into();
         comment.markdown = markdown;
         comment.edited_at = Some(unix_seconds());
         let id = comment.id;
-        let removed = body_changed && self.screen_comment(id)?;
+        let removed = self.screen_comment(id)?;
         Ok(if removed {
             AUTOMOD_REMOVED_COMMENT
         } else {

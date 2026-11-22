@@ -2,9 +2,12 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use super::{
-    canonical_u64, decode, encode, next_id, number, required, unix_seconds, value, ContentKind,
-    ModPermission, State,
+    bounded, canonical_u64, decode, encode, next_id, number, required, unix_seconds, value,
+    ContentKind, ModPermission, State,
 };
+
+#[path = "automod_domains.rs"]
+mod domains;
 
 pub(super) const AUTOMOD_REMOVED_POST: &str =
     "AutoMod removed your post. Check Notifications for the reason.";
@@ -13,6 +16,8 @@ pub(super) const AUTOMOD_REMOVED_COMMENT: &str =
 const NAME_LIMIT: usize = 80;
 const PHRASE_LIMIT: usize = 240;
 const REASON_LIMIT: usize = 1_000;
+const AGE_LIMIT_DAYS: u32 = 36_500;
+const SECONDS_PER_DAY: u64 = 86_400;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AutoModScope {
@@ -94,6 +99,8 @@ pub struct AutoModRule {
     pub name: String,
     pub scope: AutoModScope,
     pub phrase: String,
+    pub account_age_under_days: Option<u32>,
+    pub domains: Vec<String>,
     pub action: AutoModAction,
     pub reason: String,
     pub enabled: bool,
@@ -111,6 +118,14 @@ pub struct AutoModFlag {
     pub created_at: u64,
 }
 
+struct AutoModContent<'a> {
+    author: &'a str,
+    title: &'a str,
+    body: &'a str,
+    url: &'a str,
+    markdown: bool,
+}
+
 impl State {
     pub(super) fn save_automod_rule(
         &mut self,
@@ -125,7 +140,19 @@ impl State {
         };
         let name = required(form, "name", "Rule name", NAME_LIMIT)?;
         let scope = AutoModScope::parse(value(form, "scope")).ok_or("Choose a content scope.")?;
-        let phrase = required(form, "phrase", "Trigger phrase", PHRASE_LIMIT)?;
+        let phrase = bounded(form, "phrase", "Trigger phrase", PHRASE_LIMIT)?;
+        let previous = existing.map(|index| &self.automod_rules[index]);
+        let account_age_under_days = match form.get("account_age_under_days") {
+            Some(days) => parse_account_age(days)?,
+            None => previous.and_then(|rule| rule.account_age_under_days),
+        };
+        let domains = match form.get("domains") {
+            Some(list) => domains::parse_list(list)?,
+            None => previous.map_or_else(Vec::new, |rule| rule.domains.clone()),
+        };
+        if phrase.is_empty() && account_age_under_days.is_none() && domains.is_empty() {
+            return Err("Enter at least one condition for this rule.".into());
+        }
         let action =
             AutoModAction::parse(value(form, "rule_action")).ok_or("Choose a rule action.")?;
         let reason = required(form, "reason", "Reason", REASON_LIMIT)?;
@@ -144,6 +171,8 @@ impl State {
             name: name.into(),
             scope,
             phrase: phrase.into(),
+            account_age_under_days,
+            domains,
             action,
             reason: reason.into(),
             enabled,
@@ -212,6 +241,10 @@ impl State {
     }
 
     pub(super) fn screen_post(&mut self, id: u64) -> Result<bool, String> {
+        self.screen_post_at(id, unix_seconds())
+    }
+
+    pub(super) fn screen_post_at(&mut self, id: u64, now: u64) -> Result<bool, String> {
         let post = self
             .posts
             .iter()
@@ -228,7 +261,14 @@ impl State {
             .matching_automod_rule(
                 &post.community,
                 ContentKind::Post,
-                &[title, &post.body, &post.url],
+                AutoModContent {
+                    author: &post.author,
+                    title,
+                    body: &post.body,
+                    url: &post.url,
+                    markdown: true,
+                },
+                now,
             )
             .cloned();
         self.apply_automod_match(ContentKind::Post, id, id, rule)
@@ -245,7 +285,18 @@ impl State {
             .community_for_post(post_id)
             .ok_or("Community unavailable for AutoMod.")?;
         let rule = self
-            .matching_automod_rule(&community.slug, ContentKind::Comment, &[&comment.body])
+            .matching_automod_rule(
+                &community.slug,
+                ContentKind::Comment,
+                AutoModContent {
+                    author: &comment.author,
+                    title: "",
+                    body: &comment.body,
+                    url: "",
+                    markdown: comment.markdown,
+                },
+                unix_seconds(),
+            )
             .cloned();
         self.apply_automod_match(ContentKind::Comment, id, post_id, rule)
     }
@@ -254,21 +305,52 @@ impl State {
         &self,
         community: &str,
         kind: ContentKind,
-        fields: &[&str],
+        content: AutoModContent<'_>,
+        now: u64,
     ) -> Option<&AutoModRule> {
-        let mut rules = self
-            .automod_rules
+        let mut lowercase = None;
+        let mut account_age_seconds = None;
+        let mut hosts = None;
+        self.automod_rules
             .iter()
             .filter(|rule| {
                 rule.enabled && rule.community == community && rule.scope.applies_to(kind)
             })
-            .peekable();
-        rules.peek()?;
-        let lowercase: Vec<_> = fields.iter().map(|field| field.to_lowercase()).collect();
-        rules
             .filter(|rule| {
-                let phrase = rule.phrase.to_lowercase();
-                lowercase.iter().any(|field| field.contains(&phrase))
+                if let Some(days) = rule.account_age_under_days {
+                    let age = account_age_seconds.get_or_insert_with(|| {
+                        self.profile_creation_time(content.author)
+                            .and_then(|created_at| now.checked_sub(created_at))
+                    });
+                    if !age.is_some_and(|seconds| seconds < u64::from(days) * SECONDS_PER_DAY) {
+                        return false;
+                    }
+                }
+                if !rule.phrase.is_empty() {
+                    let phrase = rule.phrase.to_lowercase();
+                    let fields = lowercase.get_or_insert_with(|| {
+                        [content.title, content.body, content.url].map(str::to_lowercase)
+                    });
+                    if !fields.iter().any(|field| field.contains(&phrase)) {
+                        return false;
+                    }
+                }
+                rule.domains.is_empty()
+                    || hosts
+                        .get_or_insert_with(|| {
+                            domains::linked_hosts(
+                                content.url,
+                                content.title,
+                                content.body,
+                                content.markdown,
+                            )
+                        })
+                        .iter()
+                        .any(|host| {
+                            rule.domains
+                                .iter()
+                                .any(|domain| domains::matches(host, domain))
+                        })
             })
             .min_by_key(|rule| (rule.action != AutoModAction::Remove, rule.id))
     }
@@ -317,19 +399,29 @@ impl State {
                 self.next_automod_rule = number(next_rule)?;
                 self.next_automod_flag = number(next_flag)?;
             }
-            ["automod-rule", id, community, name, scope, phrase, action, reason, enabled] => {
+            ["automod-rule", id, community, name, scope, phrase, action, reason, enabled, optional @ ..] =>
+            {
                 let id = number(id)?;
                 let community = decode(community)?;
                 let name = decode(name)?;
                 let phrase = decode(phrase)?;
                 let reason = decode(reason)?;
+                let (account_age_under_days, domains) = match optional {
+                    [] => (None, Vec::new()),
+                    ["conditions", days, domains] => (
+                        parse_account_age(days).ok()?,
+                        domains::parse_list(&decode(domains)?).ok()?,
+                    ),
+                    _ => return None,
+                };
                 if self.automod_rules.iter().any(|rule| rule.id == id)
                     || !self
                         .communities
                         .iter()
                         .any(|item| item.slug == community && item.owner.is_some())
                     || !valid_text(&name, NAME_LIMIT)
-                    || !valid_text(&phrase, PHRASE_LIMIT)
+                    || (!phrase.is_empty() && !valid_text(&phrase, PHRASE_LIMIT))
+                    || (phrase.is_empty() && account_age_under_days.is_none() && domains.is_empty())
                     || !valid_text(&reason, REASON_LIMIT)
                 {
                     return None;
@@ -340,6 +432,8 @@ impl State {
                     name,
                     scope: AutoModScope::parse(scope)?,
                     phrase,
+                    account_age_under_days,
+                    domains,
                     action: AutoModAction::parse(action)?,
                     reason,
                     enabled: number(enabled)?,
@@ -386,7 +480,7 @@ impl State {
             self.next_automod_rule, self.next_automod_flag
         )?;
         for rule in &self.automod_rules {
-            writeln!(
+            write!(
                 file,
                 "automod-rule\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 rule.id,
@@ -398,6 +492,18 @@ impl State {
                 encode(&rule.reason),
                 rule.enabled,
             )?;
+            if rule.account_age_under_days.is_some() || !rule.domains.is_empty() {
+                let days = rule
+                    .account_age_under_days
+                    .map(|days| days.to_string())
+                    .unwrap_or_default();
+                write!(
+                    file,
+                    "\tconditions\t{days}\t{}",
+                    encode(&rule.domains.join(","))
+                )?;
+            }
+            writeln!(file)?;
         }
         for flag in &self.automod_flags {
             writeln!(
@@ -414,6 +520,18 @@ impl State {
         }
         Ok(())
     }
+}
+
+fn parse_account_age(input: &str) -> Result<Option<u32>, String> {
+    let days = input.trim();
+    if days.is_empty() {
+        return Ok(None);
+    }
+    canonical_u64(days)
+        .and_then(|days| u32::try_from(days).ok())
+        .filter(|days| (1..=AGE_LIMIT_DAYS).contains(days))
+        .map(Some)
+        .ok_or_else(|| format!("Enter a whole number from 1 to {AGE_LIMIT_DAYS} for account age."))
 }
 
 fn valid_text(text: &str, limit: usize) -> bool {
@@ -496,6 +614,239 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    fn compound_rules_require_all_conditions_and_skip_unknown_age() {
+        let mut state = community_fixture();
+        let mut compound = rule("Compound flag", "both", "launch", "flag", "Check the offer");
+        compound.insert("account_age_under_days".into(), "7".into());
+        compound.insert("domains".into(), "Promo.Example, second.example".into());
+        state.save_automod_rule(&compound).unwrap();
+        state.activate_profile(Some("compound_author"));
+        let now = 1_700_000_000;
+        let boundary = now - 7 * SECONDS_PER_DAY;
+        state.profile_created = boundary + 1;
+        let matching = |state: &State, author, title, body, url, markdown| {
+            state
+                .matching_automod_rule(
+                    "automod-test",
+                    ContentKind::Post,
+                    AutoModContent {
+                        author,
+                        title,
+                        body,
+                        url,
+                        markdown,
+                    },
+                    now,
+                )
+                .is_some()
+        };
+        let matches_author = |state: &State, title, body, url, markdown| {
+            matching(state, "compound_author", title, body, url, markdown)
+        };
+        assert!(matches_author(
+            &state,
+            "LAUNCH",
+            "",
+            "https://shop.promo.example/cart",
+            true
+        ));
+        assert!(matches_author(
+            &state,
+            "",
+            "[Launch](https://second.example/)",
+            "",
+            true
+        ));
+        assert!(!matches_author(
+            &state,
+            "Offer",
+            "",
+            "https://promo.example/",
+            true
+        ));
+        assert!(!matches_author(
+            &state,
+            "Launch",
+            "",
+            "https://promo.example.other.test/",
+            true
+        ));
+        assert!(!matches_author(
+            &state,
+            "Launch",
+            "",
+            "https://other.test/promo.example/",
+            true
+        ));
+        assert!(!matches_author(
+            &state,
+            "Launch",
+            "[offer](https://promo.example/)",
+            "",
+            false
+        ));
+        assert!(!matching(
+            &state,
+            "unknown_author",
+            "Launch",
+            "",
+            "https://promo.example/",
+            true
+        ));
+        for invalid_age in [0, now + 1, boundary] {
+            state.profile_created = invalid_age;
+            assert!(!matches_author(
+                &state,
+                "Launch",
+                "",
+                "https://promo.example/",
+                true
+            ));
+        }
+    }
+
+    #[test]
+    fn compound_settings_round_trip_and_mode_only_edit_rescreens_comment() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        let legacy = rule(
+            "Legacy phrase",
+            "post",
+            "older phrase",
+            "flag",
+            "Original reason",
+        );
+        state
+            .apply("save-automod-rule", &legacy, &fixture.0)
+            .unwrap();
+        let mut compound = rule(
+            "Check review links",
+            "comment",
+            "",
+            "remove",
+            "Link review needed",
+        );
+        for (field, invalid) in [
+            ("account_age_under_days", "0"),
+            ("account_age_under_days", "36501"),
+            ("account_age_under_days", "1.5"),
+            ("domains", "https://review.example/"),
+        ] {
+            compound.insert(field.into(), invalid.into());
+            assert!(state
+                .apply("save-automod-rule", &compound, &fixture.0)
+                .is_err());
+            compound.remove(field);
+        }
+        assert!(state
+            .apply("save-automod-rule", &compound, &fixture.0)
+            .is_err());
+        compound.insert("account_age_under_days".into(), "7".into());
+        compound.insert("domains".into(), "Review.Example, review.example".into());
+        state
+            .apply("save-automod-rule", &compound, &fixture.0)
+            .unwrap();
+        let mut state = State::load(&fixture.0).unwrap();
+        assert_eq!(state.automod_rules[0].phrase, "older phrase");
+        assert!(state.automod_rules[0].domains.is_empty());
+        assert_eq!(state.automod_rules[0].account_age_under_days, None);
+        assert!(state.automod_rules[1].phrase.is_empty());
+        assert_eq!(state.automod_rules[1].domains, ["review.example"]);
+        assert_eq!(state.automod_rules[1].account_age_under_days, Some(7));
+
+        // A legacy editor omitting the new fields must not silently weaken a rule.
+        let id = state.automod_rules[1].id.to_string();
+        compound.insert("id".into(), id);
+        compound.remove("account_age_under_days");
+        compound.remove("domains");
+        compound.insert("name".into(), "Check links on edit".into());
+        state
+            .apply("save-automod-rule", &compound, &fixture.0)
+            .unwrap();
+        assert_eq!(state.automod_rules[1].domains, ["review.example"]);
+        assert_eq!(state.automod_rules[1].account_age_under_days, Some(7));
+
+        state
+            .create_post(&form(&[
+                ("community", "automod-test"),
+                ("title", "Comment here"),
+            ]))
+            .unwrap();
+        let post = state.posts.last().unwrap().id.to_string();
+        state.activate_profile(Some("new_poster"));
+        let body = "[offer](https://review.example/item)";
+        assert_eq!(
+            state
+                .apply(
+                    "comment",
+                    &form(&[("post", &post), ("body", body)]),
+                    &fixture.0
+                )
+                .unwrap(),
+            "Comment posted."
+        );
+        let comment = state.comments.last().unwrap().id;
+        assert_eq!(
+            state
+                .apply(
+                    "edit-comment",
+                    &form(&[
+                        ("id", &comment.to_string()),
+                        ("body", body),
+                        ("body_format", "markdown")
+                    ]),
+                    &fixture.0,
+                )
+                .unwrap(),
+            AUTOMOD_REMOVED_COMMENT
+        );
+        assert!(state.is_comment_removed(comment));
+        assert!(state.notifications.iter().any(|notice| {
+            notice.recipient == "new_poster" && notice.body.contains("Link review needed")
+        }));
+    }
+
+    #[test]
+    fn scheduled_post_age_uses_the_author_and_publication_time() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        let mut compound = rule(
+            "New poster link",
+            "post",
+            "schedule",
+            "remove",
+            "Review new posts",
+        );
+        compound.insert("account_age_under_days".into(), "7".into());
+        compound.insert("domains".into(), "review.example".into());
+        state.save_automod_rule(&compound).unwrap();
+        let boundary = unix_seconds() + 3_600;
+        state.profile_created = boundary - 30 * SECONDS_PER_DAY;
+        state.activate_profile(Some("test_mod"));
+        state.profile_created = boundary - 7 * SECONDS_PER_DAY;
+        for publish_at in [boundary - 1, boundary] {
+            state
+                .schedule_item(&form(&[
+                    ("community", "automod-test"),
+                    ("kind", "post"),
+                    ("title", "Schedule link"),
+                    ("url", "https://review.example/post"),
+                    ("publish_at", &publish_at.to_string()),
+                ]))
+                .unwrap();
+        }
+        state.activate_profile(Some("test_owner"));
+        assert_eq!(state.publish_due(&fixture.0, boundary - 1).unwrap(), 1);
+        let first = state.posts.last().unwrap();
+        assert_eq!(first.author, "test_mod");
+        assert!(state.is_post_removed(first.id));
+        assert_eq!(state.publish_due(&fixture.0, boundary).unwrap(), 1);
+        let second = state.posts.last().unwrap();
+        assert_eq!(second.author, "test_mod");
+        assert!(!state.is_post_removed(second.id));
     }
 
     #[test]

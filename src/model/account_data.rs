@@ -370,6 +370,18 @@ impl State {
         (!name.is_empty()).then_some(name)
     }
 
+    pub(super) fn profile_creation_time(&self, handle: &str) -> Option<u64> {
+        if handle.is_empty() || handle == DELETED_ACCOUNT {
+            return None;
+        }
+        let created_at = if handle == self.username {
+            self.profile_created
+        } else {
+            self.account_profiles.get(handle)?.created
+        };
+        (created_at > 0).then_some(created_at)
+    }
+
     pub fn profile_snapshot(&self, handle: &str) -> Option<Self> {
         let handle = checked_handle(handle).ok()?;
         let mut snapshot = self.clone();
