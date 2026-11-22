@@ -12,6 +12,7 @@ mod profile_panel;
 mod publishing;
 mod restricted;
 mod scheduled;
+mod search;
 mod session;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -229,7 +230,7 @@ pub fn route(
         ) {
             return automod_submission(state, path, action, &request.form);
         }
-        if matches!(action, "edit-comment" | "delete-comment") {
+        if matches!(action, "comment" | "edit-comment" | "delete-comment") {
             return comment_submission(state, path, action, &request.form);
         }
         let deleted_media = if action == "delete" {
@@ -299,6 +300,11 @@ pub fn route(
     let query = &request.query;
     let notice = field(query, "notice");
     let profile_tab = field(query, "tab");
+    let search_kind = if request.path == "/" && !field(query, "q").trim().is_empty() {
+        search::Kind::from_query(query)
+    } else {
+        search::Kind::Posts
+    };
     let (title, active, content) = match request.path.as_str() {
         "/" => {
             let current = field(query, "view");
@@ -319,7 +325,14 @@ pub fn route(
                 .map(|c| c.name.as_str())
                 .or_else(|| custom_feed(state, active).map(|item| item.name.as_str()))
                 .unwrap_or("The front page");
-            (title, active, feed(state, query, active))
+            let content = search::render(state, auth, active, query, search_kind)
+                .unwrap_or_else(|| feed(state, query, active));
+            let title = if search_kind == search::Kind::Posts {
+                title
+            } else {
+                "Search"
+            };
+            (title, active, content)
         }
         "/thread" => {
             if !state.username.is_empty() {
@@ -331,7 +344,12 @@ pub fn route(
                 Some(post) => (
                     display_post_title(state, post),
                     post.community.as_str(),
-                    thread(state, post, CommentAction::from_query(query)),
+                    thread(
+                        state,
+                        post,
+                        discussion::CommentSort::parse(field(query, "comment_sort")),
+                        CommentAction::from_query(query),
+                    ),
                 ),
                 None => return missing(state),
             }
@@ -520,6 +538,7 @@ pub fn route(
         field(query, "q"),
         notice,
         right,
+        search_kind,
     ))
 }
 
@@ -574,6 +593,7 @@ fn public_profile(
         "",
         "",
         Some(profile_panel::render(&profile, &request.origin, true, tab)),
+        search::Kind::Posts,
     ))
 }
 
@@ -583,50 +603,81 @@ fn comment_submission(
     action: &str,
     form: &BTreeMap<String, String>,
 ) -> Response {
-    let Ok(id) = field(form, "id").parse::<u64>() else {
-        return missing(state);
+    let posting = action == "comment";
+    let editing = action == "edit-comment";
+    let (post_id, existing, parent) = if posting {
+        let Ok(post_id) = field(form, "post").parse::<u64>() else {
+            return missing(state);
+        };
+        (post_id, None, field(form, "parent").parse::<u64>().ok())
+    } else {
+        let Ok(id) = field(form, "id").parse::<u64>() else {
+            return missing(state);
+        };
+        let Some(comment) = state.comments.iter().find(|comment| {
+            comment.id == id
+                && !comment.deleted
+                && comment.author == state.username
+                && !state.is_comment_removed(id)
+        }) else {
+            return missing(state);
+        };
+        (comment.post, Some(id), comment.parent)
     };
-    if state.is_comment_removed(id) {
-        return missing(state);
-    }
-    let Some(comment) = state
-        .comments
-        .iter()
-        .find(|comment| comment.id == id && !comment.deleted && comment.author == state.username)
-    else {
-        return missing(state);
-    };
-    let post_id = comment.post;
     let Some(post) = visible_post(state, post_id) else {
         return missing(state);
     };
-    let back = format!("/thread?id={post_id}");
-    let editing = action == "edit-comment";
-    let can_edit = can_write_here(state, &post.community);
+    let sort = discussion::CommentSort::parse(field(form, "comment_sort"));
+    let back = sort.thread_url(post_id);
+    let can_write = can_write_here(state, &post.community);
     match state.apply(action, form, path) {
         Ok(notice) => {
-            let anchor = if editing && !state.is_comment_removed(id) {
-                format!("comment-{id}")
+            let target = if posting {
+                state.comments.last().map(|comment| comment.id)
             } else {
-                "comments".into()
+                existing
             };
+            let visible =
+                target.filter(|id| (posting || editing) && !state.is_comment_removed(*id));
+            let anchor = visible
+                .or_else(|| {
+                    let branches = comment_branches(state, post_id, discussion::CommentSort::Old);
+                    [target, parent].into_iter().flatten().find(|id| {
+                        branches.values().flatten().any(|comment| {
+                            comment.id == *id && !state.blocked.contains(&comment.author)
+                        })
+                    })
+                })
+                .map_or_else(|| "comments".to_owned(), |id| format!("comment-{id}"));
             Response::redirect(&format!("{back}&notice={}#{anchor}", encode(notice)))
         }
-        Err(error) if editing && !can_edit => form_error(state, &error, &back),
+        Err(error) if (posting || editing) && !can_write => form_error(state, &error, &back),
         Err(error) => {
             let Some(post) = visible_post(state, post_id) else {
                 return missing(state);
             };
-            let interaction = if editing {
-                CommentAction::Edit {
+            let interaction = match existing {
+                Some(id) if editing => CommentAction::Edit {
                     id,
                     draft: Some(field(form, "body")),
                     error: &error,
-                }
-            } else {
-                CommentAction::Delete { id, error: &error }
+                },
+                Some(id) => CommentAction::Delete { id, error: &error },
+                None => CommentAction::Reply {
+                    parent: parent.filter(|id| {
+                        state.comments.iter().any(|comment| {
+                            comment.id == *id
+                                && comment.post == post_id
+                                && !comment.deleted
+                                && !state.is_comment_removed(*id)
+                                && !state.blocked.contains(&comment.author)
+                        })
+                    }),
+                    draft: field(form, "body"),
+                    error: &error,
+                },
             };
-            let body = thread(state, post, interaction);
+            let body = thread(state, post, sort, interaction);
             Response::html(layout(
                 state,
                 &post.community,
@@ -1242,7 +1293,16 @@ fn layout(
     query: &str,
     notice: &str,
 ) -> String {
-    layout_with_rail(state, active, title, body, query, notice, None)
+    layout_with_rail(
+        state,
+        active,
+        title,
+        body,
+        query,
+        notice,
+        None,
+        search::Kind::Posts,
+    )
 }
 
 fn layout_with_rail(
@@ -1253,6 +1313,7 @@ fn layout_with_rail(
     query: &str,
     notice: &str,
     right: Option<String>,
+    search_kind: search::Kind,
 ) -> String {
     let mut communities = String::new();
     for item in state.communities.iter().filter(|item| {
@@ -1468,6 +1529,11 @@ fn layout_with_rail(
             icon("plus")
         )
     };
+    let search_type = if search_kind == search::Kind::Posts {
+        String::new()
+    } else {
+        hidden("type", search_kind.code())
+    };
     format!(
         r##"<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1475,7 +1541,7 @@ fn layout_with_rail(
 <body><a class="skip" href="#content">Skip to content</a>
 <header class="topbar"><div class="top-inner">
 <a class="wordmark" href="/" aria-label="Commonline home"><span class="brand-mark">{brand}</span>commonline<span class="wordmark-period">.</span></a>
-<form class="search" action="/" role="search"><input type="hidden" name="view" value="{search_view}"><input type="search" name="q" aria-label="{search_label}" placeholder="{search_label}" value="{query}" maxlength="120"><button type="submit" aria-label="Run search">{search_icon}</button></form>
+<form class="search" action="/" role="search"><input type="hidden" name="view" value="{search_view}">{search_type}<input type="search" name="q" aria-label="{search_label}" placeholder="{search_label}" value="{query}" maxlength="120"><button type="submit" aria-label="Run search">{search_icon}</button></form>
 <div class="header-actions">{account_actions}</div>
 </div></header>
 <div class="page-shell{shell_class}">
@@ -1545,19 +1611,38 @@ fn masthead(title: &str, description: &str, label: &str) -> String {
     format!("<section class='masthead' aria-labelledby='page-title'><div class='mast-copy'><div class='overline'><span></span>{}</div><h1 id='page-title'>{}</h1><p>{}</p></div><div class='mast-art' aria-hidden='true'></div></section>", escape(label), escape(title), escape(description))
 }
 
-fn stream_url(active: &str, sort: &str, search: &str) -> String {
-    format!(
+const TOP_WINDOWS: &[(&str, &str, Option<u64>)] = &[
+    ("all", "All time", None),
+    ("hour", "Past hour", Some(3_600)),
+    ("day", "Past 24 hours", Some(86_400)),
+    ("week", "Past week", Some(7 * 86_400)),
+    ("month", "Past 30 days", Some(30 * 86_400)),
+    ("year", "Past year", Some(365 * 86_400)),
+];
+
+fn stream_url(active: &str, sort: &str, search: &str, top_window: &str) -> String {
+    let mut url = format!(
         "/?view={}&sort={}&q={}",
         encode(active),
         encode(sort),
         encode(search)
-    )
+    );
+    if sort == "top" && top_window != "all" {
+        write!(url, "&t={}", encode(top_window)).unwrap();
+    }
+    url
 }
 
 fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String {
     let selected = community(state, active);
     let custom = custom_feed(state, active);
     let search = field(query, "q").trim();
+    let kind = if search.is_empty() {
+        search::Kind::Posts
+    } else {
+        search::Kind::from_query(query)
+    };
+    let media_only = kind == search::Kind::Media;
     let sort = match field(query, "sort") {
         "best" => "best",
         "hot" => "hot",
@@ -1567,7 +1652,15 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         _ if active == "news" => "new",
         _ => "best",
     };
-    let back = stream_url(active, sort, search);
+    let (top_window, range_label, max_age) = TOP_WINDOWS
+        .iter()
+        .copied()
+        .find(|(key, _, _)| *key == field(query, "t"))
+        .unwrap_or(TOP_WINDOWS[0]);
+    let now = schedule_time::now();
+    let result_url =
+        |scope, sort, window| search::with_type(stream_url(scope, sort, search, window), kind);
+    let back = result_url(active, sort, top_window);
     let mut html = match (active, selected, search.is_empty()) {
         (_, _, false) => masthead("Search", &format!("Results for “{search}”"), "DISCUSSIONS"),
         ("saved", _, true) => masthead(
@@ -1616,6 +1709,9 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
             "THE COMMONLINE FEED",
         ),
     };
+    if !search.is_empty() {
+        html.push_str(&search::tabs(active, query, kind));
+    }
     if matches!(active, "home" | "following") && search.is_empty() {
         let tabs = [("home", "For You"), ("following", "Following")]
             .into_iter()
@@ -1627,7 +1723,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
                 };
                 format!(
                     "<a href='{}'{current}>{label}</a>",
-                    escape(&stream_url(key, sort, ""))
+                    escape(&stream_url(key, sort, "", top_window))
                 )
             })
             .collect::<String>();
@@ -1718,7 +1814,12 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         }
     }
     if let Some(item) = selected.filter(|_| !search.is_empty()) {
-        write!(html, "<div class='community-bar'><span>Searching {}</span><a class='button light' href='{}'>Search all discussions</a></div>", escape(&item.name), escape(&stream_url("all", sort, search))).unwrap();
+        let label = if media_only {
+            "Search all media"
+        } else {
+            "Search all discussions"
+        };
+        write!(html, "<div class='community-bar'><span>Searching {}</span><a class='button light' href='{}'>{label}</a></div>", escape(&item.name), escape(&result_url("all", sort, top_window))).unwrap();
     }
     let sort_options = [
         ("best", "Best"),
@@ -1737,15 +1838,38 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
             };
             format!(
                 "<a href='{}'{selection}>{label}</a>",
-                escape(&stream_url(active, key, search))
+                escape(&result_url(active, key, top_window))
             )
         })
         .collect::<String>();
+    let range = if sort == "top" {
+        let links = TOP_WINDOWS
+            .iter()
+            .map(|&(key, label, _)| {
+                let selected = if key == top_window {
+                    " class='on' aria-current='page'"
+                } else {
+                    ""
+                };
+                format!(
+                    "<a href='{}'{selected}>{label}</a>",
+                    escape(&result_url(active, sort, key))
+                )
+            })
+            .collect::<String>();
+        format!("<details class='sort-picker feed-time-picker'><summary><span class='sr-only'>Time range</span><strong>{range_label}</strong>{}</summary><nav class='sort' aria-label='Top time range'>{links}</nav></details>", icon("chevron"))
+    } else {
+        String::new()
+    };
     let needle = search.to_lowercase();
     let mut posts: Vec<&Post> = state
         .posts
         .iter()
         .filter(|post| !state.is_post_removed(post.id))
+        .filter(|post| !media_only || search::has_media(post))
+        .filter(|post| {
+            sort != "top" || max_age.is_none_or(|seconds| post.age_seconds(now) <= seconds)
+        })
         .filter(|post| {
             let group = community(state, &post.community);
             let viewable = group.is_some_and(|item| {
@@ -1793,14 +1917,18 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         let rank = match sort {
             "new" => 0,
             "top" => votes,
-            "hot" => 24 * (votes + replies) / (4 + age_hours(&post.age)),
+            "hot" => 1_440 * (votes + replies) / (240 + (post.age_seconds(now) / 60) as i64),
             _ => {
                 votes
                     + 2 * replies
                     + i64::from(active == "home" && state.joined.contains(&post.community)) * 125
             }
         };
-        (std::cmp::Reverse(rank), std::cmp::Reverse(post.id))
+        (
+            std::cmp::Reverse(rank),
+            std::cmp::Reverse(post.created_at),
+            std::cmp::Reverse(post.id),
+        )
     });
     let pinned = if search.is_empty() {
         selected.and_then(|item| item.pinned_post)
@@ -1810,7 +1938,12 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     if let Some(index) = posts.iter().position(|post| Some(post.id) == pinned) {
         posts[..=index].rotate_right(1);
     }
-    write!(html, "<div class='feed-tools'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details><span>{} discussion{}</span></div>", icon("chevron"), posts.len(), if posts.len() == 1 { "" } else { "s" }).unwrap();
+    let result_label = if media_only {
+        "media post"
+    } else {
+        "discussion"
+    };
+    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}</div><span>{} {result_label}{}</span></div>", icon("chevron"), posts.len(), if posts.len() == 1 { "" } else { "s" }).unwrap();
     if posts.is_empty()
         && search.is_empty()
         && selected.is_some_and(|item| {
@@ -1825,6 +1958,8 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         } else {
             html.push_str("<section class='panel empty'><h2>No discussions yet.</h2></section>");
         }
+    } else if posts.is_empty() && media_only {
+        html.push_str("<section class='panel empty'><h2>No matching media posts</h2></section>");
     } else if posts.is_empty() && active == "following" {
         html.push_str("<section class='panel empty'><h2>No posts from your communities yet.</h2><a class='button light' href='/?view=communities'>Explore communities</a></section>");
     } else if posts.is_empty() {
@@ -1840,16 +1975,6 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         ));
     }
     html
-}
-
-fn age_hours(age: &str) -> i64 {
-    if let Some(hours) = age.strip_suffix('h') {
-        hours.parse::<i64>().unwrap_or(0).clamp(0, 8_760)
-    } else if let Some(days) = age.strip_suffix('d') {
-        days.parse::<i64>().unwrap_or(0).clamp(0, 365) * 24
-    } else {
-        0
-    }
 }
 
 fn community_masthead(item: &Community) -> String {
@@ -2096,6 +2221,7 @@ fn votes(action: &str, id: u64, score: i32, vote: i8, back: &str) -> String {
 fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -> String {
     let id = post.id.to_string();
     let url = format!("/thread?id={id}");
+    let discussion_url = escape(if full { back } else { &url });
     let item = community(state, &post.community);
     let name = item.map(|c| c.name.as_str()).unwrap_or(&post.community);
     let mark = item.map(community_icon).unwrap_or_default();
@@ -2241,7 +2367,7 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
     };
     format!(
         r#"<article class="panel post{kind}">{pin_label}<div class="post-meta"><a class="post-community" href="/?view={slug}">{mark}{name}</a><span class="meta-dot">·</span>{author}<span class="meta-dot">·</span><span>{age}</span>{flair}<details class="post-menu"><summary aria-label="Post actions">{more}</summary><div class="menu-popover">{menu}</div></details></div>
-{wrapper}{event}{preview}<div class="post-actions">{votes}<a class="action comment-link" href="{url}#comments">{chat} <span>{comment_count} comments</span></a>{save}</div></article>"#,
+{wrapper}{event}{preview}<div class="post-actions">{votes}<a class="action comment-link" href="{discussion_url}#comments">{chat} <span>{comment_count} comments</span></a>{save}</div></article>"#,
         kind = if full { " full-post" } else { "" },
         slug = encode(&post.community),
         name = escape(name),
@@ -2254,7 +2380,7 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
         } else {
             format!("<span>u/{}</span>", escape(&post.author))
         },
-        age = escape(&post.age),
+        age = escape(&post.age_label(schedule_time::now())),
         more = icon("more"),
         votes = votes(
             "vote",
@@ -2421,7 +2547,11 @@ fn rich_text(mut remaining: &str) -> String {
 #[derive(Clone, Copy)]
 enum CommentAction<'a> {
     Read,
-    Reply(u64),
+    Reply {
+        parent: Option<u64>,
+        draft: &'a str,
+        error: &'a str,
+    },
     Edit {
         id: u64,
         draft: Option<&'a str>,
@@ -2444,23 +2574,40 @@ impl CommentAction<'_> {
         } else if let Ok(id) = field(query, "delete-comment").parse() {
             Self::Delete { id, error: "" }
         } else if let Ok(id) = field(query, "reply").parse() {
-            Self::Reply(id)
+            Self::Reply {
+                parent: Some(id),
+                draft: "",
+                error: "",
+            }
         } else {
             Self::Read
         }
     }
 }
 
-fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
-    let back = format!("/thread?id={}", post.id);
+fn thread(
+    state: &State,
+    post: &Post,
+    sort: discussion::CommentSort,
+    action: CommentAction<'_>,
+) -> String {
+    let back = sort.thread_url(post.id);
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
     let pinned =
         community(state, &post.community).is_some_and(|item| item.pinned_post == Some(post.id));
     html.push_str(&post_card(state, post, &back, true, pinned));
-    html.push_str("<section class='panel discussion' id='comments'><h2>Discussion</h2>");
+    write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort)).unwrap();
     let can_reply = can_write_here(state, &post.community);
     if can_reply {
-        html.push_str(&reply_form(post.id, None, &back));
+        let (draft, error) = match action {
+            CommentAction::Reply {
+                parent: None,
+                draft,
+                error,
+            } => (draft, error),
+            _ => ("", ""),
+        };
+        html.push_str(&reply_form(post.id, None, &back, sort, draft, error));
     } else if state.username.is_empty() {
         html.push_str("<p class='community-restriction-note muted'><a class='subtle-link' href='/account/login'>Sign in</a> to reply.</p>");
     } else if state.is_banned(&post.community, &state.username) {
@@ -2470,7 +2617,7 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
             "<p class='community-restriction-note muted'>Approved members and moderators can reply here.</p>",
         );
     }
-    let branches = comment_branches(state, post.id);
+    let branches = comment_branches(state, post.id, sort);
     if branches.is_empty() {
         html.push_str(if can_reply {
             "<p class='muted'>Be the first to reply.</p>"
@@ -2478,14 +2625,23 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
             "<p class='muted'>No replies yet.</p>"
         });
     }
+    enum Node<'a> {
+        Comment(&'a Comment, usize),
+        EndBranch,
+    }
     let mut stack: Vec<_> = branches
         .get(&None)
         .into_iter()
         .flatten()
         .rev()
-        .map(|comment| (*comment, 0usize))
+        .map(|comment| Node::Comment(comment, 0))
         .collect();
-    while let Some((comment, depth)) = stack.pop() {
+    while let Some(node) = stack.pop() {
+        let Node::Comment(comment, depth) = node else {
+            html.push_str("</details>");
+            continue;
+        };
+        let blocked = state.blocked.contains(&comment.author);
         if comment.deleted {
             write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
         } else if state.is_comment_removed(comment.id) {
@@ -2497,37 +2653,62 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
                     )
                 });
             write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment removed by moderators.{review}</p></article>", depth.min(3), comment.id).unwrap();
-        } else if !state.blocked.contains(&comment.author) {
+        } else if !blocked {
             html.push_str(&comment_card(
                 state,
                 &post.community,
                 comment,
                 depth,
                 &back,
+                sort,
                 action,
                 can_reply,
             ));
         }
         if let Some(children) = branches.get(&Some(comment.id)) {
-            stack.extend(children.iter().rev().map(|child| (*child, depth + 1)));
+            if !blocked {
+                html.push_str(&discussion::open_branch(comment.id, depth));
+                stack.push(Node::EndBranch);
+            }
+            stack.extend(
+                children
+                    .iter()
+                    .rev()
+                    .map(|child| Node::Comment(child, depth + 1)),
+            );
         }
     }
     html.push_str("</section>");
     html
 }
 
-fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comment>> {
+fn comment_branches(
+    state: &State,
+    post: u64,
+    sort: discussion::CommentSort,
+) -> BTreeMap<Option<u64>, Vec<&Comment>> {
+    use discussion::CommentSort;
+    use std::cmp::Reverse;
+
     let comments: BTreeMap<_, _> = state
         .comments
         .iter()
         .filter(|comment| comment.post == post)
         .map(|comment| (comment.id, comment))
         .collect();
-    let hidden = |comment: &Comment| comment.deleted || state.is_comment_removed(comment.id);
+    let hidden = |comment: &Comment| {
+        comment.deleted
+            || state.is_comment_removed(comment.id)
+            || state.blocked.contains(&comment.author)
+    };
     // Keep a placeholder only when it anchors a surviving reply.
     let mut ancestors = BTreeSet::new();
+    let mut reply_counts = BTreeMap::new();
     for comment in comments.values().filter(|comment| !hidden(comment)) {
         let mut parent = comment.parent;
+        if let Some(id) = parent.filter(|_| sort == CommentSort::Best) {
+            *reply_counts.entry(id).or_insert(0) += 1;
+        }
         while let Some(placeholder) = parent
             .and_then(|id| comments.get(&id))
             .filter(|item| hidden(item) && ancestors.insert(item.id))
@@ -2543,7 +2724,18 @@ fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comm
         branches.entry(comment.parent).or_default().push(comment);
     }
     for siblings in branches.values_mut() {
-        siblings.sort_by_key(|comment| std::cmp::Reverse(state.comment_score(comment)));
+        match sort {
+            CommentSort::Best => siblings.sort_by_cached_key(|comment| {
+                let score = i64::from(state.comment_score(comment));
+                // Give active branches a bounded bonus without letting replies dominate votes.
+                let replies = reply_counts.get(&comment.id).copied().unwrap_or(0).min(12);
+                (Reverse(score * 4 + replies), Reverse(score), comment.id)
+            }),
+            CommentSort::Top => siblings
+                .sort_by_cached_key(|comment| (Reverse(state.comment_score(comment)), comment.id)),
+            CommentSort::New => siblings.sort_by_key(|comment| Reverse(comment.id)),
+            CommentSort::Old => siblings.sort_by_key(|comment| comment.id),
+        }
     }
     branches
 }
@@ -2554,6 +2746,7 @@ fn comment_card(
     comment: &Comment,
     depth: usize,
     back: &str,
+    sort: discussion::CommentSort,
     action: CommentAction<'_>,
     can_reply: bool,
 ) -> String {
@@ -2571,16 +2764,20 @@ fn comment_card(
     let owns = comment.author == state.username;
     let (body, controls) = match action {
         CommentAction::Edit { id, draft, error } if id == comment.id && owns && can_reply => (
-            discussion::editor(comment, back, draft.unwrap_or(&comment.body), error),
+            discussion::editor(comment, back, sort, draft.unwrap_or(&comment.body), error),
             String::new(),
         ),
         _ => {
             let controls = match action {
-                CommentAction::Reply(id) if id == comment.id && can_reply => {
-                    reply_form(comment.post, Some(comment.id), back)
+                CommentAction::Reply {
+                    parent: Some(id),
+                    draft,
+                    error,
+                } if id == comment.id && can_reply => {
+                    reply_form(comment.post, Some(comment.id), back, sort, draft, error)
                 }
                 CommentAction::Delete { id, error } if id == comment.id && owns => {
-                    discussion::confirm_delete(comment, back, error)
+                    discussion::confirm_delete(comment, back, sort, error)
                 }
                 _ => String::new(),
             };
@@ -2601,25 +2798,34 @@ fn comment_card(
     let menu = discussion::menu(state, comment, back, can_reply, moderation.as_deref());
     let reply_link = if can_reply {
         format!(
-            "<a class='action' href='{back}&amp;reply={}#comment-{}'>{} Reply</a>",
-            comment.id,
-            comment.id,
+            "<a class='action' href='{}'>{} Reply</a>",
+            escape(&discussion::action_url(back, "reply", comment.id)),
             icon("chat")
         )
     } else {
         String::new()
     };
-    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<span>· {}</span>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_link}</div>{controls}</article>",
-        depth.min(3), comment.id, escape(&comment.age), votes("comment-vote", comment.id, state.comment_score(comment), vote, back)
+    let permalink = escape(&discussion::comment_url(back, comment.id));
+    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment, {}'>· {}</a>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_link}</div>{controls}</article>",
+        depth.min(3), comment.id, escape(&comment.age), escape(&comment.age), votes("comment-vote", comment.id, state.comment_score(comment), vote, back)
     )
 }
 
-fn reply_form(post: u64, parent: Option<u64>, back: &str) -> String {
+fn reply_form(
+    post: u64,
+    parent: Option<u64>,
+    back: &str,
+    sort: discussion::CommentSort,
+    draft: &str,
+    error: &str,
+) -> String {
     let id = post.to_string();
     let target = parent
         .map(|value| hidden("parent", &value.to_string()))
         .unwrap_or_default();
-    format!("<form class='reply-form' method='post' action='/action'>{}{target}<label><span class='sr-only'>Write a reply</span><textarea name='body' required maxlength='4000' rows='3' placeholder='Add to the discussion'></textarea></label><button class='button dark' type='submit'>Post reply</button></form>", action_fields("comment", back, &[("post", &id)]))
+    let fields = action_fields("comment", back, &[("post", &id), sort.form_field()]);
+    let alert = discussion::form_error(error);
+    format!("<form class='reply-form' method='post' action='/action'>{fields}{target}{alert}<label><span class='sr-only'>Write a reply</span><textarea name='body' required maxlength='4000' rows='3' placeholder='Add to the discussion'>{}</textarea></label><button class='button dark' type='submit'>Post reply</button></form>", escape(draft))
 }
 
 fn editor(state: &State, post: Option<&Post>, selected: &str, draft: Option<&PostDraft>) -> String {

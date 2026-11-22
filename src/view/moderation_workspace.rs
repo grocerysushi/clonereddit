@@ -641,7 +641,7 @@ impl<'a> Workspace<'a> {
                 ""
             };
             let (title, review) = self.post_review_links(state, post);
-            write!(html, "<li class='mod-discussion-row'><div>{title}<p class='muted'>u/{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}</div></li>", escape(&post.author), escape(&post.age), score(state, post), post.reply_count).unwrap();
+            write!(html, "<li class='mod-discussion-row'><div>{title}<p class='muted'>u/{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}</div></li>", escape(&post.author), escape(&post.age_label(crate::schedule_time::now())), score(state, post), state.visible_reply_count(post)).unwrap();
         }
         html.push_str("</ul></section>");
         html

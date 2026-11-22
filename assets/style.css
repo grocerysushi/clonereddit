@@ -121,7 +121,8 @@ main { min-width: 0; }
 .masthead h1 { margin: 2px 0 3px; font-family: var(--serif); font-size: clamp(2.7rem, 5.1vw, 4.9rem); line-height: 1.08; font-weight: 400; letter-spacing: -.073em; }
 .masthead p { color: var(--quiet); }
 .mast-art { position: absolute; inset: 0 0 0 auto; width: 56%; opacity: .62; background: repeating-radial-gradient(ellipse at 84% 122%, transparent 0 16px, #cdd6bb 17px 18px, transparent 19px 25px); mask-image: linear-gradient(100deg, transparent 8%, #000 75%); pointer-events: none; }
-.feed-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 17px 0 14px; }
+.feed-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 17px 0 14px; }
+.feed-sort-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .feed-tools > span, .community-bar > span { color: var(--quiet); font-size: .82rem; }
 .home-tabs { display: flex; align-items: center; gap: 20px; padding: 0 1px; border-bottom: 1px solid var(--line); }
 .home-tabs a { padding: 10px 3px 9px; color: var(--quiet); border-bottom: 3px solid transparent; margin-bottom: -1px; font-size: .95rem; font-weight: 650; }
@@ -259,6 +260,24 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment-delete-form .button.dark:hover { background: #8c4438; }
 .comment-form-error { margin: 0 0 5px; background: #f8e8de; border-color: #e7c5b4; color: #78382d; }
 .comment-deleted p { margin: 0; color: var(--quiet); font-style: italic; }
+.discussion-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 10px; }
+.comment-sort { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--quiet); font-size: .81rem; }
+.comment-sort > span { margin-right: 4px; }
+.comment-sort a { padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; font-weight: 650; }
+.comment-sort a:hover { background: var(--pale); }
+.comment-sort a[aria-current='page'] { border-color: #c5d7a9; color: var(--ink); background: var(--light-lime); }
+.comment-permalink { color: var(--quiet); text-decoration: none; white-space: nowrap; }
+.comment-permalink:hover { text-decoration: underline; }
+.comment-branch { --branch-indent: 0px; }
+.comment-branch.depth-1 { --branch-indent: 18px; }
+.comment-branch.depth-2 { --branch-indent: 36px; }
+.comment-branch.depth-3 { --branch-indent: 54px; }
+.comment-branch > summary { display: flex; align-items: center; gap: 5px; width: fit-content; min-height: 34px; padding: 3px 7px; margin: 0 0 5px var(--branch-indent); border-radius: 6px; list-style: none; cursor: pointer; color: var(--quiet); font-size: .81rem; font-weight: 650; }
+.comment-branch > summary:hover { background: var(--pale); color: var(--ink); }
+.comment-branch > summary::-webkit-details-marker { display: none; }
+.comment-branch > summary svg { width: 14px; height: 14px; }
+.comment-branch[open] > summary svg { rotate: 180deg; }
+.comment-branch[open] > summary .branch-expand-label, .comment-branch:not([open]) > summary .branch-collapse-label { display: none; }
 .directory { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .directory-tools { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; margin: 15px 0 10px; }
 .directory-tools .search { flex: 1; min-width: min(170px, 100%); }
@@ -378,6 +397,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .profile-item :is(h2, p) { margin-top: 3px; }
 .profile-item h2 a:hover { text-decoration: underline; }
 .profile-item p { white-space: pre-wrap; }
+.search-tabs { margin-bottom: 12px; }
+.search-comment .profile-comment-meta { flex-wrap: wrap; overflow-wrap: anywhere; }
 .profile-sidebar { display: grid; gap: 11px; min-width: 0; }
 .profile-card { min-width: 0; overflow: hidden; }
 .profile-cover { height: 87px; background: #31422b; overflow: hidden; }
@@ -649,4 +670,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
   .top-inner .header-actions > .button { padding-inline: 6px; font-size: .75rem; }
   .comment.depth-2 { margin-left: 22px; }
   .comment.depth-3 { margin-left: 30px; }
+  .comment-branch.depth-2 { --branch-indent: 22px; }
+  .comment-branch.depth-3 { --branch-indent: 30px; }
+  .comment-head { flex-wrap: wrap; gap: 5px; }
 }

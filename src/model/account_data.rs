@@ -301,6 +301,15 @@ impl State {
             .is_ok_and(|name| self.username == name || self.account_profiles.contains_key(&name))
     }
 
+    pub fn account_display_name(&self, handle: &str) -> Option<&str> {
+        let name = if handle == self.username {
+            self.display_name.as_str()
+        } else {
+            self.account_profiles.get(handle)?.display_name.as_str()
+        };
+        (!name.is_empty()).then_some(name)
+    }
+
     pub fn profile_snapshot(&self, handle: &str) -> Option<Self> {
         let handle = checked_handle(handle).ok()?;
         let mut snapshot = self.clone();

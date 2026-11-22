@@ -309,9 +309,11 @@ mod tests {
 
         state.activate_profile(Some("mod_test"));
         state.edit_scheduled_item(&scheduled).unwrap();
-        state.publish_scheduled_item(0).unwrap();
+        let published_at = state.scheduled[0].publish_at + 30;
+        state.publish_scheduled_item(0, published_at).unwrap();
         let post = state.posts.last().unwrap();
         assert_eq!(post.title, "Edited by moderator");
         assert_eq!(post.author, "mod_test");
+        assert_eq!(post.created_at, Some(published_at));
     }
 }

@@ -1,6 +1,81 @@
 use super::{action_fields, escape, icon};
 use crate::model::{Comment, State};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CommentSort {
+    Best,
+    Top,
+    New,
+    Old,
+}
+
+impl CommentSort {
+    pub(super) fn parse(value: &str) -> Self {
+        match value {
+            "top" => Self::Top,
+            "new" => Self::New,
+            "old" => Self::Old,
+            _ => Self::Best,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Best => "best",
+            Self::Top => "top",
+            Self::New => "new",
+            Self::Old => "old",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Best => "Best",
+            Self::Top => "Top",
+            Self::New => "New",
+            Self::Old => "Old",
+        }
+    }
+
+    pub(super) fn thread_url(self, post: u64) -> String {
+        format!("/thread?id={post}&comment_sort={}", self.key())
+    }
+
+    pub(super) fn form_field(self) -> (&'static str, &'static str) {
+        ("comment_sort", self.key())
+    }
+}
+
+pub(super) fn sort_tabs(post: u64, current: CommentSort) -> String {
+    let links: String = [
+        CommentSort::Best,
+        CommentSort::Top,
+        CommentSort::New,
+        CommentSort::Old,
+    ]
+    .into_iter()
+    .map(|sort| {
+        let selection = if sort == current {
+            " aria-current='page'"
+        } else {
+            ""
+        };
+        format!(
+            "<a href='{}#comments'{selection}>{}</a>",
+            escape(&sort.thread_url(post)),
+            sort.label()
+        )
+    })
+    .collect();
+    format!(
+        "<nav class='comment-sort' aria-label='Sort comments'><span>Sort by</span>{links}</nav>"
+    )
+}
+
+pub(super) fn open_branch(id: u64, depth: usize) -> String {
+    format!("<details class='comment-branch depth-{}' open data-comment='{id}'><summary>{}<span class='branch-collapse-label'>Hide replies</span><span class='branch-expand-label'>Show replies</span></summary>", depth.min(3), icon("chevron"))
+}
+
 pub(super) fn menu(
     state: &State,
     comment: &Comment,
@@ -39,8 +114,18 @@ pub(super) fn menu(
     )
 }
 
-pub(super) fn editor(comment: &Comment, back: &str, body: &str, error: &str) -> String {
-    let fields = action_fields("edit-comment", back, &[("id", &comment.id.to_string())]);
+pub(super) fn editor(
+    comment: &Comment,
+    back: &str,
+    sort: CommentSort,
+    body: &str,
+    error: &str,
+) -> String {
+    let fields = action_fields(
+        "edit-comment",
+        back,
+        &[("id", &comment.id.to_string()), sort.form_field()],
+    );
     let cancel = escape(&comment_url(back, comment.id));
     let body = escape(body);
     let alert = form_error(error);
@@ -51,9 +136,18 @@ pub(super) fn editor(comment: &Comment, back: &str, body: &str, error: &str) -> 
     )
 }
 
-pub(super) fn confirm_delete(comment: &Comment, back: &str, error: &str) -> String {
+pub(super) fn confirm_delete(
+    comment: &Comment,
+    back: &str,
+    sort: CommentSort,
+    error: &str,
+) -> String {
     let id = comment.id;
-    let fields = action_fields("delete-comment", back, &[("id", &id.to_string())]);
+    let fields = action_fields(
+        "delete-comment",
+        back,
+        &[("id", &id.to_string()), sort.form_field()],
+    );
     let cancel = escape(&comment_url(back, id));
     let alert = form_error(error);
     format!(
@@ -62,16 +156,16 @@ pub(super) fn confirm_delete(comment: &Comment, back: &str, error: &str) -> Stri
     )
 }
 
-fn action_url(back: &str, action: &str, id: u64) -> String {
+pub(super) fn action_url(back: &str, action: &str, id: u64) -> String {
     let separator = if back.contains('?') { '&' } else { '?' };
     format!("{back}{separator}{action}={id}#comment-{id}")
 }
 
-fn comment_url(back: &str, id: u64) -> String {
+pub(super) fn comment_url(back: &str, id: u64) -> String {
     format!("{back}#comment-{id}")
 }
 
-fn form_error(error: &str) -> String {
+pub(super) fn form_error(error: &str) -> String {
     if error.is_empty() {
         String::new()
     } else {

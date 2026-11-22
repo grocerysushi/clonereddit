@@ -64,6 +64,7 @@ pub struct Post {
     pub body: String,
     pub flair: String,
     pub age: String,
+    pub created_at: Option<u64>,
     pub url: String,
     pub score: i32,
     pub reply_count: u32,
@@ -75,6 +76,25 @@ pub struct Post {
     pub repost_of: Option<u64>,
     pub repost_title_from_source: bool,
     pub media: Vec<PostMedia>,
+}
+
+impl Post {
+    pub fn age_seconds(&self, now: u64) -> u64 {
+        self.created_at.map_or_else(
+            || legacy_age_seconds(&self.age),
+            |created| now.saturating_sub(created),
+        )
+    }
+
+    pub fn age_label(&self, now: u64) -> String {
+        let seconds = self.age_seconds(now);
+        match seconds {
+            0..=59 => "just now".into(),
+            60..=3_599 => format!("{}m", seconds / 60),
+            3_600..=86_399 => format!("{}h", seconds / 3_600),
+            _ => format!("{}d", seconds / 86_400),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -408,6 +428,7 @@ impl State {
         )
         .collect();
 
+        let seeded_at = unix_seconds();
         let mut posts: Vec<_> = [
             (1, "after-hours", "saturnreturns", "What is something you were wrong about for years?", "I used to think changing my mind meant I had lost an argument. What did it take for you to change yours?", "Discussion", "1d", 92, 17, true, false),
             (2, "culture", "irisarchive", "What should a public archive keep?", "A community radio station near me is digitizing its call-in tapes. Should it keep every call, or only the ones people still remember?", "Question", "12h", 174, 31, false, false),
@@ -418,11 +439,12 @@ impl State {
             (7, "open-debate", "marginnotes", "Should online communities be able to ban political topics?", "Some people want a place to talk about a hobby in peace. Others think broad topic bans can erase conversations that matter to that hobby. Where would you draw the line?", "Discussion", "2h", 486, 124, false, false),
         ].into_iter().map(|(id, community, author, title, body, flair, age, score, reply_count, sensitive, image)| Post {
             id, community: community.into(), author: author.into(), title: title.into(),
-            body: body.into(), flair: flair.into(), age: age.into(), url: String::new(),
+            body: body.into(), flair: flair.into(), age: age.into(),
+            created_at: Some(seeded_at.saturating_sub(legacy_age_seconds(age))), url: String::new(),
             score, reply_count, sensitive, spoiler: false, brand_affiliate: false, image,
             poll: None, repost_of: None, repost_title_from_source: false, media: Vec::new(),
         }).collect();
-        posts.extend(seed_news(8));
+        posts.extend(seed_news(8, seeded_at));
 
         let comments = [
             (1, 7, None, "westbound", "I want hobby spaces to be easy to browse. A topic filter I can turn off would get me most of the way there.", "1h", 43),
@@ -537,6 +559,20 @@ impl State {
                 )
             })?;
         }
+        if state.posts.iter().any(|post| post.created_at.is_none()) {
+            let now = unix_seconds();
+            let snapshot_at = fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map_or(now, |duration| duration.as_secs().min(now));
+            for post in &mut state.posts {
+                if post.created_at.is_none() {
+                    post.created_at =
+                        Some(snapshot_at.saturating_sub(legacy_age_seconds(&post.age)));
+                }
+            }
+        }
         if state.guest() {
             state.activate_profile(None);
         }
@@ -548,7 +584,7 @@ impl State {
                     "Too many posts to add the demo news samples",
                 )
             })?;
-            state.posts.extend(seed_news(first_id));
+            state.posts.extend(seed_news(first_id, unix_seconds()));
         }
         Ok(state)
     }
@@ -601,14 +637,14 @@ impl State {
         due.sort_unstable();
         let mut updated = self.clone();
         for &(_, _, index) in &due {
-            updated.publish_scheduled_item(index)?;
+            updated.publish_scheduled_item(index, now)?;
         }
         updated.save(path)?;
         *self = updated;
         Ok(due.len())
     }
 
-    fn publish_scheduled_item(&mut self, index: usize) -> io::Result<()> {
+    fn publish_scheduled_item(&mut self, index: usize, now: u64) -> io::Result<()> {
         let item = &mut self.scheduled[index];
         let owner = self
             .communities
@@ -636,6 +672,7 @@ impl State {
             url: item.url.clone(),
             flair: flair.into(),
             age: "just now".into(),
+            created_at: Some(now),
             score: 1,
             reply_count: 0,
             sensitive: item.sensitive,
@@ -1308,6 +1345,7 @@ impl State {
             body,
             flair: flair.into(),
             age: "just now".into(),
+            created_at: Some(unix_seconds()),
             url,
             score: 1,
             reply_count: 0,
@@ -2282,6 +2320,7 @@ impl State {
                     body: decode(body)?,
                     flair: decode(flair)?,
                     age: decode(age)?,
+                    created_at: None,
                     url: decode(url)?,
                     score: number(score)?,
                     reply_count: number(reply_count)?,
@@ -2294,6 +2333,14 @@ impl State {
                     repost_title_from_source: false,
                     media: Vec::new(),
                 });
+            }
+            ["post-created", id, created_at] => {
+                let id = number(id)?;
+                let post = self.posts.iter_mut().find(|post| post.id == id)?;
+                if post.created_at.is_some() {
+                    return None;
+                }
+                post.created_at = Some(number(created_at)?);
             }
             ["post-poll", id, closes_at, options @ ..] if (2..=6).contains(&options.len()) => {
                 let id = number(id)?;
@@ -2676,6 +2723,9 @@ impl State {
                 post.spoiler,
                 post.brand_affiliate,
             )?;
+            if let Some(created_at) = post.created_at {
+                writeln!(file, "post-created\t{}\t{created_at}", post.id)?;
+            }
             if let Some(poll) = &post.poll {
                 write!(file, "post-poll\t{}\t{}", post.id, poll.closes_at)?;
                 for option in &poll.options {
@@ -2848,13 +2898,69 @@ impl State {
     }
 }
 
-fn seed_news(first_id: u64) -> [Post; 2] {
+fn legacy_age_seconds(age: &str) -> u64 {
+    for (suffix, seconds) in [('m', 60), ('h', 3_600), ('d', 86_400)] {
+        if let Some(value) = age
+            .strip_suffix(suffix)
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            return value.saturating_mul(seconds);
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod post_timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_post_age_becomes_a_stable_publication_time() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "commonline-post-time-{}-{unique}.state",
+            std::process::id()
+        ));
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+        let fixture = Fixture(path);
+        let mut legacy = State::seeded();
+        for post in &mut legacy.posts {
+            post.created_at = None;
+        }
+        legacy.save(&fixture.0).unwrap();
+        let modified = fs::metadata(&fixture.0)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let migrated = State::load(&fixture.0).unwrap();
+        assert_eq!(migrated.posts[0].created_at, Some(modified - 86_400));
+        assert_eq!(migrated.posts[0].age_label(modified + 86_400), "2d");
+        migrated.save(&fixture.0).unwrap();
+        let reloaded = State::load(&fixture.0).unwrap();
+        assert_eq!(reloaded.posts[0].created_at, migrated.posts[0].created_at);
+    }
+}
+
+fn seed_news(first_id: u64, seeded_at: u64) -> [Post; 2] {
     [
         (first_id, "media-lab", "archivewire", "Copperfen community radio opens its archive to the public", "In this fictional local brief, the Copperfen volunteer station catalogued 400 hours of interviews, live music, and call-in shows. Listeners can browse by year or contribute episode notes.", "1h", 76),
         (first_id + 1, "public-square", "transitdesk", "Glassfern Ward opens a tool library inside its old tram depot", "In this fictional local brief, volunteers in Glassfern Ward started lending hand tools this week. Members can book a repair table on Saturdays.", "42m", 103),
     ].map(|(id, community, author, title, body, age, score)| Post {
         id, community: community.into(), author: author.into(), title: title.into(), body: body.into(),
-        flair: "News".into(), age: age.into(), url: String::new(), score, reply_count: 0,
+        flair: "News".into(), age: age.into(), created_at: Some(seeded_at.saturating_sub(legacy_age_seconds(age))),
+        url: String::new(), score, reply_count: 0,
         sensitive: false, spoiler: false, brand_affiliate: false, image: false,
         poll: None, repost_of: None, repost_title_from_source: false, media: Vec::new(),
     })

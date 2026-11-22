@@ -24,7 +24,7 @@ To claim a profile from a version that predates accounts, stop the server, keep 
 
 ## Try the demo
 
-1. On **Home**, browse **For You** or switch to **Following** for posts from joined communities. Try **Best**, **Hot**, **New**, and **Top**. **Popular** opens with a vote-based ranking, **News** contains fictional sample news posts, and **Explore** opens the community directory.
+1. On **Home**, browse **For You** or switch to **Following** for posts from joined communities. Try **Best**, **Hot**, **New**, and **Top**. **Hot** weighs activity against time since publication. **Top** offers time windows from the past hour through all time. **Popular** opens with a vote-based ranking, **News** contains fictional sample news posts, and **Explore** opens the community directory. Search from the header, then switch between posts, comments, communities, people, and media.
 2. Use **Start a community** to choose a topic and access level, then enter the community details. On **Details**, you can upload an icon and banner as PNG, JPEG, or WebP files up to 512 KiB each. **Review** shows the artwork with its published crop. Use **Edit details** to replace or remove an image before creating the community. Anyone can read a restricted community, while approved members and moderators can also post and comment. Private communities give viewing and posting access to approved members and moderators. The **Mature (18+)** label applies the viewer’s sensitive-content preferences to discussions.
 3. Join or leave communities, revisit your **Recent** communities, or create a **Custom feed** with a name, optional description, and any number of communities. Choose whether it appears in your profile preview. Private feeds stay in your own feed list.
 4. Open **New post** and choose **Text and link**, **Media**, **Poll**, or **Repost**. Media accepts up to six PNG, JPEG, WebP, or GIF images (2 MiB each), or one MP4 or WebM video (16 MiB). Polls accept two to six choices and close after one, three, or seven days. To repost, select an original discussion and a different community, or start from **Repost** in the discussion’s menu. Add topic flair and content tags when composing a text, media, or poll post. **Save draft** keeps one resumable text or link draft. Use **Creator tools** to see local vote and reply totals.
@@ -35,7 +35,7 @@ To claim a profile from a version that predates accounts, stop the server, keep 
 9. Open **Mod tools** from a community or **Manage communities** to see the tools available to your role. Owners assign, change, and revoke roles in **Moderator roles**. A **Moderator** can review reports, remove and restore content, manage AutoMod rules, answer mod mail, manage member approvals and restrictions, schedule posts, and decide appeals. An **Appeals reviewer** can handle the community’s appeals. Owners control community settings, pinning, and role assignments. Use **Mod log** to see moderation and role changes.
 10. In **Mod tools → Scheduled posts and events**, schedule a publication and edit or cancel it under **Upcoming**. An event includes a start time and an optional end time. Times default to Central time and support explicit UTC or Central offsets when needed. The server publishes due items while running and catches up on pending items after a restart.
 11. In **Mod tools → Restricted Users**, apply a ban or mod mail mute by username, with an optional moderator-only reason. A ban stops posting, editing, and replying in that community. A mute stops new mod mail there. Use **Lift ban** or **Lift mute** to restore access separately. Existing posts remain visible and legal reporting stays available.
-12. In a discussion, open **Comment actions** on your own reply to edit it in place or delete it after confirming. The thread keeps replies beneath a deleted comment and hides deleted comments that have no remaining replies.
+12. In a discussion, sort comments by **Best**, **Top**, **New**, or **Old** and collapse individual reply branches. Open **Comment actions** on your own reply to edit it in place or delete it after confirming. The thread keeps replies beneath a deleted comment and hides deleted comments that have no remaining replies.
 13. When a community bans you or mutes your mod mail, use **Your appeals** from the sidebar or restriction notification. Each active restriction can be appealed once, including restrictions from private communities. Moderators and Appeals reviewers use **Mod tools → Appeals** to approve or deny an appeal with a written decision. Approval lifts the specific ban or mute. If a moderator manually lifts a restriction while its appeal is pending, the case closes and the affected account is notified.
 14. In **Mod tools → Approved members**, enter a registered username and select **Approve member**. If the community is private or restricted, it appears under **Your communities** for that account. Approval grants member access independently of joining and moderator roles. Select **Revoke approval** next to the account to withdraw that access. Community bans and mod mail mutes continue to apply according to their own rules.
 15. In **Mod tools → Posts & comments**, open an item, enter a reason, and select **Remove content**. The author receives the reason privately in **Notifications**. A removed post and its attachments are hidden during removal. Replies below a removed comment stay in the thread. Open the **Removed** list and select **Restore content** to return the original item and notify its author. Both actions appear in **Mod log**.
@@ -49,7 +49,7 @@ The prototype serves accounts over a loopback connection. Passwords use salted A
 
 ## Feature inventory
 
-The long-term target is **90% parity across a defined set of Reddit-style workflows**. The table records the local prototype's scope and the work that would go into that comparison.
+The website target is **99 of 100 accepted workflows** on desktop and mobile web. The expanded benchmark lists each check, its current implementation status, and the evidence needed to count it. [Web parity benchmark](docs/web-parity.md)
 
 | Area | Current prototype | Further work |
 | --- | --- | --- |
@@ -59,9 +59,9 @@ The long-term target is **90% parity across a defined set of Reddit-style workfl
 | Identity and communication | Account creation, sign-in and one-time recovery codes, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications, private messages, and mod mail | Email recovery and live chat updates |
 | Community operations | Guided creation, topics and visibility, approved-member access, mature labels, artwork uploads and previews, authenticated owner settings and pinning, scoped moderator workspace and roles, post and comment removal and restoration with author notices, phrase-based AutoMod, community bans and mod mail mutes, restriction appeals and decisions, regional reports and review status, saved responses, activity log, and scheduled posts and events | Recurring schedules and additional AutoMod conditions |
 
-### Proposed parity benchmark
+### Original core workflows
 
-Target 27 of the 30 web workflows below. Count a workflow after it passes its end-to-end desktop and mobile acceptance checks, with persistent state and distinct signed-in accounts where needed. Track Commonline’s regional legal review policy separately from feature parity.
+These 30 workflows defined the original 90% milestone. The expanded benchmark breaks them down and adds acceptance checks for the rest of the website scope. Track Commonline’s regional legal review policy separately from feature parity.
 
 | Area | Five workflows to measure |
 | --- | --- |
