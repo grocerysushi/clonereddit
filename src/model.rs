@@ -168,6 +168,7 @@ pub struct Comment {
     pub parent: Option<u64>,
     pub author: String,
     pub body: String,
+    pub markdown: bool,
     pub image: Option<CommentImage>,
     pub age: String,
     pub score: i32,
@@ -536,7 +537,7 @@ impl State {
             (5, 5, None, "clearcache", "I want an on/off state for each term and a preview before applying a new filter.", "2h", 17),
             (6, 3, None, "openledger", "A public summary with no personal information would help me understand how often the process is used.", "5h", 11),
         ].into_iter().map(|(id, post, parent, author, body, age, score)| Comment {
-            id, post, parent, author: author.into(), body: body.into(), image: None, age: age.into(), score,
+            id, post, parent, author: author.into(), body: body.into(), markdown: false, image: None, age: age.into(), score,
             edited_at: None, deleted: false,
         }).collect();
 
@@ -1804,6 +1805,7 @@ impl State {
         } else {
             required(form, "body", "Comment", 4_000)?
         };
+        let markdown = comment_markdown(form, false)?;
         let parent = match value(form, "parent") {
             "" => None,
             _ => {
@@ -1829,6 +1831,7 @@ impl State {
             parent,
             author: self.username.clone(),
             body: body.into(),
+            markdown,
             image,
             age: "just now".into(),
             score: 1,
@@ -1879,13 +1882,16 @@ impl State {
         } else {
             required(form, "body", "Comment", 4_000)?
         };
-        if comment.body == body {
+        let markdown = comment_markdown(form, comment.markdown)?;
+        let body_changed = comment.body != body;
+        if !body_changed && comment.markdown == markdown {
             return Ok("Comment unchanged.");
         }
         comment.body = body.into();
+        comment.markdown = markdown;
         comment.edited_at = Some(unix_seconds());
         let id = comment.id;
-        let removed = self.screen_comment(id)?;
+        let removed = body_changed && self.screen_comment(id)?;
         Ok(if removed {
             AUTOMOD_REMOVED_COMMENT
         } else {
@@ -1898,6 +1904,7 @@ impl State {
         let comment = &mut self.comments[index];
         comment.author.clear();
         comment.body.clear();
+        comment.markdown = false;
         comment.image = None;
         comment.edited_at = None;
         comment.deleted = true;
@@ -2843,10 +2850,20 @@ impl State {
                 });
             }
             ["comment", id, post, parent, author, body, age, score, revision @ ..] => {
-                let (edited_at, deleted, image) = match revision {
-                    [] => (None, false, None),
-                    [edited_at, deleted] => (optional_number(edited_at)?, number(deleted)?, None),
-                    [edited_at, "false", "image", key, mime, alt] => {
+                let (edited_at, deleted, metadata) = match revision {
+                    [] => (None, false, revision),
+                    [edited_at, deleted, metadata @ ..] => {
+                        (optional_number(edited_at)?, number(deleted)?, metadata)
+                    }
+                    _ => return None,
+                };
+                let (markdown, image_record) = match metadata {
+                    ["markdown", image @ ..] if !deleted => (true, image),
+                    rest => (false, rest),
+                };
+                let image = match image_record {
+                    [] => None,
+                    ["image", key, mime, alt] if !deleted => {
                         let asset = PostMedia {
                             key: (*key).into(),
                             content_type: (*mime).into(),
@@ -2857,11 +2874,7 @@ impl State {
                         {
                             return None;
                         }
-                        (
-                            optional_number(edited_at)?,
-                            false,
-                            Some(CommentImage { asset, alt }),
-                        )
+                        Some(CommentImage { asset, alt })
                     }
                     _ => return None,
                 };
@@ -2871,6 +2884,7 @@ impl State {
                     parent: optional_number(parent)?,
                     author: decode(author)?,
                     body: decode(body)?,
+                    markdown,
                     image,
                     age: decode(age)?,
                     score: number(score)?,
@@ -3284,6 +3298,9 @@ impl State {
                 comment.score,
                 comment.deleted,
             )?;
+            if comment.markdown {
+                write!(file, "\tmarkdown")?;
+            }
             if let Some(image) = &comment.image {
                 write!(
                     file,
@@ -3550,8 +3567,17 @@ fn valid_comment_image(asset: &PostMedia) -> bool {
     crate::media::is_image_type(&asset.content_type) && valid_media_key(&asset.key)
 }
 
+fn comment_markdown(form: &BTreeMap<String, String>, default: bool) -> Result<bool, String> {
+    match form.get("body_format").map(String::as_str) {
+        None => Ok(default),
+        Some("markdown") => Ok(true),
+        Some("plain") => Ok(false),
+        Some(_) => Err("Choose Plain text or Markdown for your comment.".into()),
+    }
+}
+
 #[cfg(test)]
-mod comment_image_tests {
+mod comment_tests {
     use super::*;
     use crate::{http::Upload, media};
 
@@ -3571,6 +3597,36 @@ mod comment_image_tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn editing_comment_format_keeps_legacy_text_literal_until_converted() {
+        let mut state = State::seeded();
+        state
+            .read_record("comment\t101\t7\t\tjules\t**literal**\t1h\t1")
+            .unwrap();
+        let comment = state.comments.last().unwrap();
+        assert_eq!(comment.body, "**literal**");
+        assert!(!comment.markdown);
+
+        let mut edit = form(&[("id", "101"), ("body", "**literal**")]);
+        assert_eq!(state.edit_comment(&edit).unwrap(), "Comment unchanged.");
+        edit.insert("body_format".into(), "markdown".into());
+        assert_eq!(state.edit_comment(&edit).unwrap(), "Comment updated.");
+        assert!(state.comments.last().unwrap().markdown);
+        assert!(state.comments.last().unwrap().edited_at.is_some());
+
+        edit.remove("body_format");
+        edit.insert("body".into(), "Changed **literal**".into());
+        assert_eq!(state.edit_comment(&edit).unwrap(), "Comment updated.");
+        assert!(state.comments.last().unwrap().markdown);
+
+        edit.insert("body_format".into(), "html".into());
+        assert!(state.edit_comment(&edit).is_err());
+        assert!(state.comments.last().unwrap().markdown);
+        edit.insert("body_format".into(), "plain".into());
+        assert_eq!(state.edit_comment(&edit).unwrap(), "Comment updated.");
+        assert!(!state.comments.last().unwrap().markdown);
     }
 
     #[test]
@@ -3616,7 +3672,13 @@ mod comment_image_tests {
         let child = gif(&path);
         state
             .apply_comment(
-                &form(&[("post", &post), ("parent", &parent_id), ("body", "Reply")]),
+                &form(&[
+                    ("post", &post),
+                    ("parent", &parent_id),
+                    ("body", "**Reply**"),
+                    ("body_format", "markdown"),
+                    ("image_alt", "markdown"),
+                ]),
                 Some(child.clone()),
                 &path,
             )
@@ -3630,6 +3692,12 @@ mod comment_image_tests {
         assert_eq!(restored_image.asset.key, parent.key);
         assert_eq!(restored_image.alt, description);
         assert!(restored_parent.body.is_empty());
+        assert!(!restored_parent.markdown);
+        let restored_child = state.comments.last().unwrap();
+        assert!(restored_child.markdown);
+        assert_eq!(restored_child.body, "**Reply**");
+        assert_eq!(restored_child.image.as_ref().unwrap().asset.key, child.key);
+        assert_eq!(restored_child.image.as_ref().unwrap().alt, "markdown");
         assert!(state.comments.first().unwrap().image.is_none());
         let delete_parent = form(&[("id", &parent_id)]);
         let missing_path = fixture.0.join("missing").join("discussion.state");

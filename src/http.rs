@@ -72,6 +72,7 @@ const COMMENT_FIELDS: &[&str] = &[
     "parent",
     "comment_sort",
     "body",
+    "body_format",
     "image_alt",
 ];
 

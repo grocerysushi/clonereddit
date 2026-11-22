@@ -1,4 +1,8 @@
-use super::{action_fields, action_form, encode, escape, icon, reporting};
+use std::borrow::Cow;
+
+use pulldown_cmark::{Event, Parser, TagEnd};
+
+use super::{action_fields, action_form, comment_body_editor, encode, escape, icon, reporting};
 use crate::model::{Comment, ContentKind, State};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +162,7 @@ pub(super) fn editor(
     back: &str,
     sort: CommentSort,
     body: &str,
+    markdown: bool,
     error: &str,
 ) -> String {
     let fields = action_fields(
@@ -166,18 +171,34 @@ pub(super) fn editor(
         &[("id", &comment.id.to_string()), sort.form_field()],
     );
     let cancel = escape(&comment_url(back, comment.id));
-    let body = escape(body);
     let alert = form_error(error);
-    let required = if comment.image.is_none() {
-        " required"
-    } else {
-        ""
-    };
+    let editor = comment_body_editor::render(body, true, markdown, comment.image.is_none());
     format!(
         r#"<form class="stack-form comment-edit-form" method="post" action="/action" aria-label="Edit comment">{fields}{alert}
-<label>Edit comment<textarea name="body"{required} maxlength="4000" rows="4">{body}</textarea></label>
+{editor}
 <div class="form-actions comment-form-actions"><button class="button dark" type="submit">Save changes</button><a class="button light" href="{cancel}">Cancel</a></div></form>"#
     )
+}
+
+pub(super) fn body_text(comment: &Comment) -> Cow<'_, str> {
+    if !comment.markdown {
+        return Cow::Borrowed(&comment.body);
+    }
+    let mut body = String::new();
+    for event in Parser::new(&comment.body) {
+        match event {
+            Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
+                body.push_str(&text);
+            }
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::End(
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::CodeBlock,
+            ) => body.push('\n'),
+            _ => {}
+        }
+    }
+    Cow::Owned(body)
 }
 
 pub(super) fn confirm_delete(

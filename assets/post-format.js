@@ -1,4 +1,4 @@
-const commands = ['bold', 'italic', 'link', 'bullets', 'numbered', 'quote'];
+const commands = ['bold', 'italic', 'link', 'bullets', 'numbered', 'quote', 'code'];
 const imageKeyLength = 48;
 const maxDescriptionLength = 160;
 
@@ -99,6 +99,7 @@ function attach(editor, wasm) {
   const body = editor.querySelector('textarea[name=body]');
   const controls = editor.querySelector('[data-post-format-controls]');
   const status = editor.querySelector('[data-post-format-status]');
+  const format = editor.querySelector('[data-comment-format]');
   if (!body || !controls) return;
   const announce = (message) => { if (status) status.textContent = message; };
 
@@ -112,6 +113,7 @@ function attach(editor, wasm) {
       body.maxLength < 0 ? wasm.post_format_capacity() : body.maxLength);
     announce(result === 2 ? 'The formatting would exceed the body text limit.' : '');
     if (result !== 1) return;
+    if (format) format.value = 'markdown';
     applyEdit(body, wasm);
   });
   if (status) body.addEventListener('input', () => announce(''));

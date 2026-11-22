@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use super::{account_byline, discussion::CommentSort, escape, hidden};
+use super::{account_byline, discussion, discussion::CommentSort, escape, hidden};
 use crate::model::Comment;
 
 const MAX_QUERY_LENGTH: usize = 120;
@@ -40,7 +40,7 @@ pub(super) fn render<'a>(
     let mut results = String::new();
     let mut count = 0;
     for comment in comments {
-        if let Some(excerpt) = matching_excerpt(&comment.body, &needle) {
+        if let Some(excerpt) = matching_excerpt(&discussion::body_text(comment), &needle) {
             count += 1;
             write!(
                 results,

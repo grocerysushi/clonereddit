@@ -16,7 +16,7 @@ The server stores changes in `commonline.state` and credentials in `commonline.s
 
 ThreadPorch keeps the original `commonline.state` filename and `COMMONLINE_*` settings so existing installations can upgrade using their current files and configuration.
 
-The browser chat and post formatting controls are written in Rust and distributed as WebAssembly assets. Small browser bindings connect them to the page. After editing either Rust client, rebuild its asset from the project directory.
+The browser chat and writing controls are written in Rust and distributed as WebAssembly assets. Small browser bindings connect them to the page. After editing either Rust client, rebuild its asset from the project directory.
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -104,6 +104,7 @@ Emails link back to the same localhost server. Keep local outbox files private b
 31. Enter a word or phrase in **Search comments** inside a discussion. Select a result to jump to that comment in the thread, or select **Clear** to remove the results.
 32. While writing a comment or reply, open **Attach an image or GIF** and choose a PNG, JPEG, WebP, or GIF up to 2 MiB. You can add an image description for screen readers and post it with or without comment text. The attachment appears inline in the discussion.
 33. Type `c/technology` to link to a community, or `u/username` to link to a profile. The shorthand becomes clickable in published post text and comments. You can also open or share the short paths `/c/technology` and `/u/username` directly.
+34. In a comment or reply, select text and use **Bold**, **Italic**, **Link**, or **Code**. For a link, replace the selected example URL with your own HTTP or HTTPS address. **Formatting help** shows the Markdown syntax. Older comments keep their plain text until you choose Markdown or apply formatting when editing them.
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 

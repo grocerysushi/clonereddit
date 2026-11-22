@@ -5,6 +5,8 @@ const BODY_CAPACITY: usize = 8_000;
 const IMAGE_KEY_LENGTH: usize = 48;
 const IMAGE_ALT_CAPACITY: usize = 160;
 const NEWLINE: u16 = b'\n' as u16;
+const BACKTICK: u16 = b'`' as u16;
+const SPACE: u16 = b' ' as u16;
 
 enum Command {
     Bold,
@@ -13,6 +15,7 @@ enum Command {
     Bullets,
     Numbered,
     Quote,
+    Code,
 }
 
 impl Command {
@@ -24,6 +27,7 @@ impl Command {
             3 => Some(Self::Bullets),
             4 => Some(Self::Numbered),
             5 => Some(Self::Quote),
+            6 => Some(Self::Code),
             _ => None,
         }
     }
@@ -64,6 +68,7 @@ fn format(source: &[u16], selection: Range<usize>, command: Command) -> Option<E
             format!("{}. ", index + 1)
         }),
         Command::Quote => format_lines(source, selection, "Quote", |_| "> ".into()),
+        Command::Code => inline_code(source, selection),
     })
 }
 
@@ -121,6 +126,38 @@ fn link(source: &[u16], selection: Range<usize>) -> Edit {
     let end = replacement.len();
     replacement.push(b')' as u16);
     Edit::new(range, replacement, start..end)
+}
+
+fn inline_code(source: &[u16], selection: Range<usize>) -> Edit {
+    let code = &source[selection.clone()];
+    let delimiter_length = code
+        .split(|&unit| unit != BACKTICK)
+        .map(<[u16]>::len)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    // CommonMark strips one outer space from both sides unless the span is all spaces.
+    let padded = code.starts_with(&[BACKTICK])
+        || code.ends_with(&[BACKTICK])
+        || (code.starts_with(&[SPACE])
+            && code.ends_with(&[SPACE])
+            && code.iter().any(|&unit| unit != SPACE));
+    let mut replacement = vec![BACKTICK; delimiter_length];
+    if padded {
+        replacement.push(SPACE);
+    }
+    let start = replacement.len();
+    if code.is_empty() {
+        replacement.extend("code".encode_utf16());
+    } else {
+        replacement.extend_from_slice(code);
+    }
+    let end = replacement.len();
+    if padded {
+        replacement.push(SPACE);
+    }
+    replacement.resize(replacement.len() + delimiter_length, BACKTICK);
+    Edit::new(selection, replacement, start..end)
 }
 
 fn format_lines(
@@ -367,6 +404,25 @@ mod tests {
                 "a [\\[fish\\]](https://example.com)".to_owned(),
                 "https://example.com".to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn inline_code_keeps_unicode_spaces_and_literal_backticks_selected() {
+        for (source, markdown) in [
+            ("λ + 🐟", "`λ + 🐟`"),
+            ("`literal``", "``` `literal`` ```"),
+            (" padded ", "`  padded  `"),
+            ("   ", "`   `"),
+        ] {
+            assert_eq!(
+                edited(source, 0..source.encode_utf16().count(), Command::Code),
+                (markdown.to_owned(), source.to_owned())
+            );
+        }
+        assert_eq!(
+            edited("", 0..0, Command::Code),
+            ("`code`".to_owned(), "code".to_owned())
         );
     }
 

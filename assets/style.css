@@ -353,6 +353,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment-head > span:not(.avatar) { color: var(--quiet); }
 .comment-head :is(strong, .post-author) { min-width: 0; overflow-wrap: anywhere; }
 .comment p { white-space: pre-line; margin-top: 4px; }
+.comment .comment-body p { white-space: normal; }
+.comment-body { margin-top: 4px; }
 .comment .reference-link { color: #466123; text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
 .comment-attachment { margin: 8px 0 6px; }
 .comment-attachment img { display: block; max-width: min(100%, 480px); max-height: 400px; object-fit: contain; border-radius: 8px; }

@@ -1,6 +1,7 @@
 mod account;
 mod account_security;
 mod appeals;
+mod comment_body_editor;
 mod comment_image;
 mod community_appearance;
 mod community_setup;
@@ -692,6 +693,7 @@ pub fn route(
         "/new" => field(query, "drafts") != "1" && !query.contains_key("discard_draft"),
         "/edit" => true,
         "/moderation/tools" => field(query, "section") == "scheduled",
+        "/thread" => !state.username.is_empty(),
         _ => false,
     };
     if formatting_editor {
@@ -886,6 +888,11 @@ fn comment_submission(
                 Some(id) if editing => CommentAction::Edit {
                     id,
                     draft: Some(field(form, "body")),
+                    markdown: match field(form, "body_format") {
+                        "markdown" => Some(true),
+                        "plain" => Some(false),
+                        _ => None,
+                    },
                     error: &error,
                 },
                 Some(id) => CommentAction::Delete { id, error: &error },
@@ -916,7 +923,7 @@ fn comment_submission(
                 "",
                 "",
             ))
-            .with_script_client()
+            .with_wasm_client()
         }
     }
 }
@@ -3145,6 +3152,7 @@ enum CommentAction<'a> {
     Edit {
         id: u64,
         draft: Option<&'a str>,
+        markdown: Option<bool>,
         error: &'a str,
     },
     Delete {
@@ -3167,6 +3175,7 @@ impl CommentAction<'_> {
             Self::Edit {
                 id,
                 draft: None,
+                markdown: None,
                 error: "",
             }
         } else if let Ok(id) = field(query, "delete-comment").parse() {
@@ -3295,6 +3304,9 @@ fn thread(
     ));
     html.push_str(&replies);
     html.push_str("</section><script type='module' src='/comment-share.js'></script>");
+    if can_reply || (can_write && matches!(action, CommentAction::Edit { .. })) {
+        html.push_str("<script type='module' src='/post-format.js'></script>");
+    }
     html
 }
 
@@ -3386,8 +3398,20 @@ fn comment_card(
     };
     let owns = comment.author == state.username;
     let (body, controls) = match action {
-        CommentAction::Edit { id, draft, error } if id == comment.id && owns && can_write => (
-            discussion::editor(comment, back, sort, draft.unwrap_or(&comment.body), error),
+        CommentAction::Edit {
+            id,
+            draft,
+            markdown,
+            error,
+        } if id == comment.id && owns && can_write => (
+            discussion::editor(
+                comment,
+                back,
+                sort,
+                draft.unwrap_or(&comment.body),
+                markdown.unwrap_or(comment.markdown),
+                error,
+            ),
             String::new(),
         ),
         _ => {
@@ -3405,6 +3429,11 @@ fn comment_card(
             };
             let body = if comment.body.is_empty() {
                 String::new()
+            } else if comment.markdown {
+                format!(
+                    "<div class='post-body comment-body'>{}</div>",
+                    post_rich_text::render(&comment.body, |_| None)
+                )
             } else {
                 format!("<p>{}</p>", references::render_text(&comment.body))
             };
@@ -3462,7 +3491,8 @@ fn reply_form(
     let fields = action_fields("comment", back, &[("post", &id), sort.form_field()]);
     let alert = discussion::form_error(draft.error);
     let picker = comment_image::picker(draft.image_alt, draft.select_image_again);
-    format!("<form class='reply-form' method='post' action='/action' enctype='multipart/form-data'>{fields}{target}{alert}<label><span class='sr-only'>Write a reply</span><textarea name='body' maxlength='4000' rows='3' placeholder='Add to the discussion'>{}</textarea></label>{picker}<button class='button dark' type='submit'>Post reply</button></form>", escape(draft.body))
+    let editor = comment_body_editor::render(draft.body, false, true, false);
+    format!("<form class='reply-form' method='post' action='/action' enctype='multipart/form-data'>{fields}{target}{alert}{editor}{picker}<button class='button dark' type='submit'>Post reply</button></form>")
 }
 
 fn preferences(state: &State) -> String {

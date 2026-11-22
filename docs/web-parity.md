@@ -341,6 +341,14 @@ Workflow **051** is implemented. Readers can attach one PNG, JPEG, WebP, or GIF 
 
 Chromium checks at 1440 and 390 CSS pixels covered posting a still image and a nested animated GIF, preserving attachments across text edits, recovering a draft after an invalid file, and viewing attachments after restart. HTTP checks covered file type and size, malformed forms, read access, discussion locks, moderator removal and restoration, file cleanup on deletion, and upgrade.
 
+## Comment formatting update
+
+Workflow **052** is implemented. The comment and reply editors support bold, italics, links, and inline code. Readers can also enter fenced code blocks in Markdown. Older comments stay in plain text unless the author applies formatting or selects Markdown when editing. Existing image attachments stay attached during text edits. This brings the implementation count to **90 implemented, 5 partial, and 5 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered all four controls, nested replies, converting older comments, preserving attachments, and rendering after restart. HTTP checks covered safe link and HTML rendering, fenced code, persistence, and finding a phrase that spans formatted and unformatted words.
+
+Checks on the same release build passed at both browser widths for **46 workflows**. IDs covered were **002–007, 012–016, 019–020, 023–024, 033–034, 037–039, 044–046, 049–060, 066, 071–073, 079–083, and 088–089**.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

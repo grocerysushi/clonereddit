@@ -4,8 +4,8 @@ use std::fmt::Write;
 
 use super::{
     account_byline, can_view_post, community, community_icon, community_members, community_url,
-    custom_feed, display_post_title, encode, escape, field, hidden, initials, is_sensitive,
-    masthead,
+    custom_feed, discussion, display_post_title, encode, escape, field, hidden, initials,
+    is_sensitive, masthead,
 };
 use crate::auth::AuthStore;
 use crate::model::{Comment, Community, CustomFeed, Post, State};
@@ -248,10 +248,20 @@ fn comments(scope: &Scope<'_>, needle: &str, sort: &str) -> String {
         .state
         .comments
         .iter()
-        .filter(|comment| scope.visible_comment(comment) && matches_text(&comment.body, needle))
-        .filter_map(|comment| parents.get(&comment.post).map(|post| (comment, *post)))
+        .filter(|comment| scope.visible_comment(comment))
+        .filter_map(|comment| {
+            let post = *parents.get(&comment.post)?;
+            let body = discussion::body_text(comment);
+            let muted = comment.markdown
+                && scope
+                    .state
+                    .keywords
+                    .iter()
+                    .any(|keyword| matches_text(&body, &keyword.to_lowercase()));
+            (matches_text(&body, needle) && !muted).then_some((comment, post, body))
+        })
         .collect();
-    matches.sort_by_key(|(comment, _)| {
+    matches.sort_by_key(|(comment, _, _)| {
         let score = if sort == "top" {
             scope.state.comment_score(comment)
         } else {
@@ -265,13 +275,13 @@ fn comments(scope: &Scope<'_>, needle: &str, sort: &str) -> String {
     }
     let state = scope.state;
     let mut html = String::from("<section class='search-comments' aria-label='Matching comments'>");
-    for (comment, post) in matches {
+    for (comment, post, body) in matches {
         let title = escape(display_post_title(state, post));
         let location = format!("/thread?id={}#comment-{}", post.id, comment.id);
         let author = account_byline(&comment.author);
         let group = community(state, &post.community)
             .map_or(post.community.as_str(), |item| item.name.as_str());
-        let excerpt = escape(&excerpt(&comment.body));
+        let excerpt = escape(&excerpt(&body));
         write!(html, "<article class='panel profile-item search-comment'><div class='profile-comment-meta'><a class='subtle-link' href='{}'>{}</a><span class='muted'>{author} · {}</span></div><h2><a href='{location}'>Comment on {title}</a></h2>", community_url(&post.community), escape(group), escape(&comment.age)).unwrap();
         if post.spoiler || (state.sensitive != "show" && is_sensitive(state, post)) {
             let label = if post.spoiler {
