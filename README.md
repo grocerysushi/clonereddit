@@ -27,6 +27,7 @@ The server stores demo changes in `commonline.state` in the working directory. S
 9. Open **Mod tools** on a community you own to switch between its scoped queue, messages, discussions, rules, members, and insights. Use **Saved responses** for reusable mail replies and **Mod log** to see changes to settings, pins, appearances, and review status.
 10. In **Mod tools → Scheduled posts and events**, schedule a publication and edit or cancel it under **Upcoming**. An event includes a start time and an optional end time. Times default to Central time and support explicit UTC or Central offsets when needed. The server publishes due items while running and catches up on pending items after a restart.
 11. In **Mod tools → Restricted Users**, apply a ban or mod mail mute by username, with an optional moderator-only reason. A ban stops posting, editing, and replying in that community. A mute stops new mod mail there. Use **Lift ban** or **Lift mute** to restore access separately. Existing posts remain visible and legal reporting stays available.
+12. In a discussion, open **Comment actions** on your own reply to edit it in place or delete it after confirming. The thread keeps replies beneath a deleted comment and hides deleted comments that have no remaining replies.
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 
@@ -41,7 +42,7 @@ The long-term target is **90% parity across a defined set of Reddit-style workfl
 | Area | Current prototype | Further work |
 | --- | --- | --- |
 | Discovery and feeds | For You, Following, Popular, fictional News, Explore, All discussions, community and custom feeds, Recent, site-wide and community search, Best/Hot/New/Top | Saved searches, richer ranking and filters |
-| Posting and discussion | Title-only, text, link, image gallery and video posts, polls, cross-community reposts, post tags, one local text/link draft, post editing and deletion, threaded replies, votes, save and hide | Comment editing and deletion, richer editing, and media transcoding |
+| Posting and discussion | Title-only, text, link, image gallery and video posts, polls, cross-community reposts, post tags, one local text/link draft, post and comment editing and deletion, threaded replies, votes, save and hide | Richer editing and media transcoding |
 | Creator tools | Dashboard, per-post vote and reply totals, community trends, and publishing links | Impression counts, reach, and analytics over time |
 | Identity and communication | Editable profile, avatar and cover uploads, activity and history, curated profile preview, keyword mutes, account blocking, and local mod mail | Account creation, sign-in and recovery, multi-user profiles, personal chat, and notifications |
 | Community operations | Guided creation, topics and visibility, mature labels, artwork uploads and previews, owner settings and pinning, scoped moderator workspace, community bans and mod mail mutes, regional reports and review status, saved responses, activity log, and scheduled posts and events | Authenticated ownership, delegated roles, case decisions, appeals, recurring schedules, and automated moderation |

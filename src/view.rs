@@ -2,6 +2,7 @@ mod community_appearance;
 mod community_setup;
 mod creator;
 mod custom;
+mod discussion;
 mod moderation;
 mod moderation_workspace;
 mod profile;
@@ -10,7 +11,7 @@ mod publishing;
 mod restricted;
 mod scheduled;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
 
@@ -167,6 +168,9 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
         if matches!(action, "restrict-user" | "lift-restriction") {
             return restriction_submission(state, path, action, &request.form);
         }
+        if matches!(action, "edit-comment" | "delete-comment") {
+            return comment_submission(state, path, action, &request.form);
+        }
         let deleted_media = if action == "delete" {
             find_post(state, &request.form)
                 .map(|post| post.media.clone())
@@ -256,7 +260,7 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
                 Some(post) => (
                     display_post_title(state, post),
                     post.community.as_str(),
-                    thread(state, post, field(query, "reply").parse().ok()),
+                    thread(state, post, CommentAction::from_query(query)),
                 ),
                 None => return missing(state),
             }
@@ -425,6 +429,68 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
         notice,
         right,
     ))
+}
+
+fn comment_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let Ok(id) = field(form, "id").parse::<u64>() else {
+        return missing(state);
+    };
+    let Some(comment) = state
+        .comments
+        .iter()
+        .find(|comment| comment.id == id && !comment.deleted && comment.author == state.username)
+    else {
+        return missing(state);
+    };
+    let post_id = comment.post;
+    let Some(post) = state.posts.iter().find(|post| post.id == post_id) else {
+        return missing(state);
+    };
+    if !community(state, &post.community).is_some_and(|item| state.can_view_community(item)) {
+        return missing(state);
+    }
+    let back = format!("/thread?id={post_id}");
+    let editing = action == "edit-comment";
+    let can_edit = can_write_here(state, &post.community);
+    match state.apply(action, form, path) {
+        Ok(notice) => {
+            let anchor = if editing {
+                format!("comment-{id}")
+            } else {
+                "comments".into()
+            };
+            Response::redirect(&format!("{back}&notice={}#{anchor}", encode(notice)))
+        }
+        Err(error) if editing && !can_edit => form_error(state, &error, &back),
+        Err(error) => {
+            let Some(post) = state.posts.iter().find(|post| post.id == post_id) else {
+                return missing(state);
+            };
+            let interaction = if editing {
+                CommentAction::Edit {
+                    id,
+                    draft: Some(field(form, "body")),
+                    error: &error,
+                }
+            } else {
+                CommentAction::Delete { id, error: &error }
+            };
+            let body = thread(state, post, interaction);
+            Response::html(layout(
+                state,
+                &post.community,
+                display_post_title(state, post),
+                &body,
+                "",
+                "",
+            ))
+        }
+    }
 }
 
 fn media_submission(request: Request, state: &mut State, path: &Path) -> Response {
@@ -1957,7 +2023,40 @@ fn rich_text(mut remaining: &str) -> String {
     html
 }
 
-fn thread(state: &State, post: &Post, reply: Option<u64>) -> String {
+#[derive(Clone, Copy)]
+enum CommentAction<'a> {
+    Read,
+    Reply(u64),
+    Edit {
+        id: u64,
+        draft: Option<&'a str>,
+        error: &'a str,
+    },
+    Delete {
+        id: u64,
+        error: &'a str,
+    },
+}
+
+impl CommentAction<'_> {
+    fn from_query(query: &BTreeMap<String, String>) -> Self {
+        if let Ok(id) = field(query, "edit-comment").parse() {
+            Self::Edit {
+                id,
+                draft: None,
+                error: "",
+            }
+        } else if let Ok(id) = field(query, "delete-comment").parse() {
+            Self::Delete { id, error: "" }
+        } else if let Ok(id) = field(query, "reply").parse() {
+            Self::Reply(id)
+        } else {
+            Self::Read
+        }
+    }
+}
+
+fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
     let back = format!("/thread?id={}", post.id);
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
     let pinned =
@@ -1974,47 +2073,69 @@ fn thread(state: &State, post: &Post, reply: Option<u64>) -> String {
             "<p class='community-restriction-note muted'>This community limits who can reply.</p>",
         );
     }
-    let mut comments: Vec<&Comment> = state
-        .comments
-        .iter()
-        .filter(|comment| comment.post == post.id)
-        .collect();
-    comments.sort_by_key(|comment| {
-        std::cmp::Reverse(
-            comment.score + i32::from(*state.comment_votes.get(&comment.id).unwrap_or(&0)),
-        )
-    });
-    if comments.is_empty() {
+    let branches = comment_branches(state, post.id);
+    if branches.is_empty() {
         html.push_str(if can_reply {
             "<p class='muted'>Be the first to reply.</p>"
         } else {
             "<p class='muted'>No replies yet.</p>"
         });
     }
-    let mut stack = Vec::new();
-    stack.extend(
-        comments
-            .iter()
-            .rev()
-            .filter(|comment| comment.parent.is_none())
-            .map(|comment| (*comment, 0usize)),
-    );
+    let mut stack: Vec<_> = branches
+        .get(&None)
+        .into_iter()
+        .flatten()
+        .rev()
+        .map(|comment| (*comment, 0usize))
+        .collect();
     while let Some((comment, depth)) = stack.pop() {
-        if !state.blocked.contains(&comment.author) {
+        if comment.deleted {
+            write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
+        } else if !state.blocked.contains(&comment.author) {
             html.push_str(&comment_card(
-                state, comment, depth, &back, reply, can_reply,
+                state, comment, depth, &back, action, can_reply,
             ));
         }
-        stack.extend(
-            comments
-                .iter()
-                .rev()
-                .filter(|child| child.parent == Some(comment.id))
-                .map(|child| (*child, depth + 1)),
-        );
+        if let Some(children) = branches.get(&Some(comment.id)) {
+            stack.extend(children.iter().rev().map(|child| (*child, depth + 1)));
+        }
     }
     html.push_str("</section>");
     html
+}
+
+fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comment>> {
+    let comments: BTreeMap<_, _> = state
+        .comments
+        .iter()
+        .filter(|comment| comment.post == post)
+        .map(|comment| (comment.id, comment))
+        .collect();
+    // Keep a deleted ancestor only when it anchors a surviving reply.
+    let mut ancestors = BTreeSet::new();
+    for comment in comments.values().filter(|comment| !comment.deleted) {
+        let mut parent = comment.parent;
+        while let Some(placeholder) = parent
+            .and_then(|id| comments.get(&id))
+            .filter(|item| item.deleted && ancestors.insert(item.id))
+        {
+            parent = placeholder.parent;
+        }
+    }
+    let mut branches: BTreeMap<_, Vec<&Comment>> = BTreeMap::new();
+    for comment in comments
+        .values()
+        .filter(|comment| !comment.deleted || ancestors.contains(&comment.id))
+    {
+        branches.entry(comment.parent).or_default().push(comment);
+    }
+    for siblings in branches.values_mut() {
+        siblings.sort_by_key(|comment| {
+            let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
+            std::cmp::Reverse(comment.score.saturating_add(i32::from(vote)))
+        });
+    }
+    branches
 }
 
 fn comment_card(
@@ -2022,16 +2143,41 @@ fn comment_card(
     comment: &Comment,
     depth: usize,
     back: &str,
-    reply: Option<u64>,
+    action: CommentAction<'_>,
     can_reply: bool,
 ) -> String {
     let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
     let avatar = escape(&initials(&comment.author));
-    let active_reply = if can_reply && reply == Some(comment.id) {
-        reply_form(comment.post, Some(comment.id), back)
-    } else {
-        String::new()
+    let owns = comment.author == state.username;
+    let (body, controls) = match action {
+        CommentAction::Edit { id, draft, error } if id == comment.id && owns && can_reply => (
+            discussion::editor(comment, back, draft.unwrap_or(&comment.body), error),
+            String::new(),
+        ),
+        _ => {
+            let controls = match action {
+                CommentAction::Reply(id) if id == comment.id && can_reply => {
+                    reply_form(comment.post, Some(comment.id), back)
+                }
+                CommentAction::Delete { id, error } if id == comment.id && owns => {
+                    discussion::confirm_delete(comment, back, error)
+                }
+                _ => String::new(),
+            };
+            (format!("<p>{}</p>", escape(&comment.body)), controls)
+        }
     };
+    let edited = comment
+        .edited_at
+        .map(|timestamp| {
+            format!(
+                "<time class='comment-edited' datetime='{}Z' title='{}'>Edited</time>",
+                schedule_time::to_local(timestamp, "UTC"),
+                escape(&schedule_time::display(timestamp, "America/Chicago"))
+            )
+        })
+        .unwrap_or_default();
+    let menu = discussion::menu(state, comment, back, can_reply);
     let reply_link = if can_reply {
         format!(
             "<a class='action' href='{back}&amp;reply={}#comment-{}'>{} Reply</a>",
@@ -2042,8 +2188,8 @@ fn comment_card(
     } else {
         String::new()
     };
-    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span><strong>u/{}</strong><span>· {}</span></div><p>{}</p><div class='post-actions'>{}{reply_link}</div>{active_reply}</article>",
-        depth.min(3), comment.id, escape(&comment.author), escape(&comment.age), escape(&comment.body), votes("comment-vote", comment.id, comment.score + i32::from(vote), vote, back)
+    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span><strong>u/{}</strong><span>· {}</span>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_link}</div>{controls}</article>",
+        depth.min(3), comment.id, escape(&comment.author), escape(&comment.age), votes("comment-vote", comment.id, comment.score.saturating_add(i32::from(vote)), vote, back)
     )
 }
 

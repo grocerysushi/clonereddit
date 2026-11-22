@@ -244,7 +244,7 @@ impl<'a> Workspace<'a> {
         let comments = state
             .comments
             .iter()
-            .filter(|comment| posts.contains_key(&comment.post))
+            .filter(|comment| !comment.deleted && posts.contains_key(&comment.post))
             .count();
         let upcoming = state
             .scheduled

@@ -152,7 +152,7 @@ fn contributor_suggestions(state: &State, item: &Community) -> String {
         state
             .comments
             .iter()
-            .filter(|comment| posts.contains(&comment.post))
+            .filter(|comment| !comment.deleted && posts.contains(&comment.post))
             .map(|comment| comment.author.as_str()),
     );
     contributors.remove(state.username.as_str());

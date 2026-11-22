@@ -212,9 +212,23 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment.depth-2 { margin-left: 36px; }
 .comment.depth-3 { margin-left: 54px; }
 .comment-head { display: flex; align-items: center; gap: 8px; font-size: .86rem; }
-.comment-head span:last-child { color: var(--quiet); }
+.comment-head > span:not(.avatar) { color: var(--quiet); }
+.comment-head strong { min-width: 0; overflow-wrap: anywhere; }
 .comment p { white-space: pre-line; margin-top: 4px; }
 .comment .post-actions { margin-top: 5px; }
+.comment-edited { color: var(--quiet); font-size: .74rem; }
+.comment-menu { position: relative; margin-left: auto; flex: none; }
+.comment-menu summary { display: grid; place-items: center; padding: 3px; width: 34px; list-style: none; }
+.comment-menu summary::-webkit-details-marker { display: none; }
+.comment-menu-popover { min-width: 143px; }
+.comment-edit-form, .comment-delete-confirm { margin: 9px 0 5px; padding: 9px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--paper); }
+.comment-edit-form { gap: 8px; }
+.comment-delete-confirm h3 { font-size: .98rem; margin: 0; }
+.comment-form-actions { margin-top: 5px; flex-wrap: wrap; }
+.comment-delete-form .button.dark { background: #74362e; }
+.comment-delete-form .button.dark:hover { background: #8c4438; }
+.comment-form-error { margin: 0 0 5px; background: #f8e8de; border-color: #e7c5b4; color: #78382d; }
+.comment-deleted p { margin: 0; color: var(--quiet); font-style: italic; }
 .directory { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .directory-tools { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; margin: 15px 0 10px; }
 .directory-tools .search { flex: 1; min-width: min(170px, 100%); }

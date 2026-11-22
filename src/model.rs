@@ -79,6 +79,8 @@ pub struct Comment {
     pub body: String,
     pub age: String,
     pub score: i32,
+    pub edited_at: Option<u64>,
+    pub deleted: bool,
 }
 
 #[derive(Clone)]
@@ -370,6 +372,7 @@ impl State {
             (6, 3, None, "openledger", "A public summary with no personal information would help me understand how often the process is used.", "5h", 11),
         ].into_iter().map(|(id, post, parent, author, body, age, score)| Comment {
             id, post, parent, author: author.into(), body: body.into(), age: age.into(), score,
+            edited_at: None, deleted: false,
         }).collect();
 
         Self {
@@ -752,6 +755,7 @@ impl State {
                 let id = id_field(form, "id")?;
                 if !self.comments.iter().any(|comment| {
                     comment.id == id
+                        && !comment.deleted
                         && self
                             .community_for_post(comment.post)
                             .is_some_and(|community| self.can_view_community(community))
@@ -808,6 +812,8 @@ impl State {
                 Ok("Draft discarded.")
             }
             "comment" => self.create_comment(form),
+            "edit-comment" => self.edit_comment(form),
+            "delete-comment" => self.delete_comment(form),
             "report" => self.create_report(form),
             "review-report" => self.review_report(form),
             "send-mod-mail" => self.send_mod_mail(form),
@@ -1329,12 +1335,13 @@ impl State {
             "" => None,
             _ => {
                 let id = id_field(form, "parent")?;
-                if !self
+                let parent = self
                     .comments
                     .iter()
-                    .any(|comment| comment.id == id && comment.post == post_id)
-                {
-                    return Err("This reply must belong to the same discussion.".into());
+                    .find(|comment| comment.id == id && comment.post == post_id)
+                    .ok_or("This reply must belong to the same discussion.")?;
+                if parent.deleted {
+                    return Err("This comment is no longer open for replies.".into());
                 }
                 Some(id)
             }
@@ -1348,11 +1355,66 @@ impl State {
             body: body.into(),
             age: "just now".into(),
             score: 1,
+            edited_at: None,
+            deleted: false,
         });
         if let Some(post) = self.posts.iter_mut().find(|post| post.id == post_id) {
             post.reply_count = post.reply_count.saturating_add(1);
         }
         Ok("Comment posted.")
+    }
+
+    fn own_visible_comment_index(&self, form: &BTreeMap<String, String>) -> Result<usize, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .comments
+            .iter()
+            .position(|comment| {
+                comment.id == id && !comment.deleted && comment.author == self.username
+            })
+            .ok_or("Choose one of your own comments.")?;
+        let comment = &self.comments[index];
+        if !self
+            .community_for_post(comment.post)
+            .is_some_and(|community| self.can_view_community(community))
+        {
+            return Err("This comment is unavailable.".into());
+        }
+        Ok(index)
+    }
+
+    fn edit_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.own_visible_comment_index(form)?;
+        if !self
+            .community_for_post(self.comments[index].post)
+            .is_some_and(|community| self.can_contribute(community))
+        {
+            return Err("This community limits who can edit a comment.".into());
+        }
+        let body = required(form, "body", "Comment", 4_000)?;
+        let comment = &mut self.comments[index];
+        if comment.body == body {
+            return Ok("Comment unchanged.");
+        }
+        comment.body = body.into();
+        comment.edited_at = Some(unix_seconds());
+        Ok("Comment updated.")
+    }
+
+    fn delete_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.own_visible_comment_index(form)?;
+        let comment = &mut self.comments[index];
+        comment.author.clear();
+        comment.body.clear();
+        comment.edited_at = None;
+        comment.deleted = true;
+        comment.score = 0;
+        self.comment_votes.remove(&comment.id);
+        self.profile_hidden_comments.remove(&comment.id);
+        if let Some(post) = self.posts.iter_mut().find(|post| post.id == comment.post) {
+            post.reply_count = post.reply_count.saturating_sub(1);
+        }
+        Ok("Comment deleted.")
     }
 
     fn create_report(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -2044,19 +2106,22 @@ impl State {
                     brand_affiliate: number(brand_affiliate)?,
                 });
             }
-            ["comment", id, post, parent, author, body, age, score] => {
+            ["comment", id, post, parent, author, body, age, score, revision @ ..] => {
+                let (edited_at, deleted) = match revision {
+                    [] => (None, false),
+                    [edited_at, deleted] => (optional_number(edited_at)?, number(deleted)?),
+                    _ => return None,
+                };
                 self.comments.push(Comment {
                     id: number(id)?,
                     post: number(post)?,
-                    parent: if parent.is_empty() {
-                        None
-                    } else {
-                        Some(number(parent)?)
-                    },
+                    parent: optional_number(parent)?,
                     author: decode(author)?,
                     body: decode(body)?,
                     age: decode(age)?,
                     score: number(score)?,
+                    edited_at,
+                    deleted,
                 });
             }
             ["report", id, post, region, details, status @ ..] => {
@@ -2369,16 +2434,20 @@ impl State {
         }
         for comment in &self.comments {
             let parent = comment.parent.map_or_else(String::new, |id| id.to_string());
+            let edited_at = comment
+                .edited_at
+                .map_or_else(String::new, |time| time.to_string());
             writeln!(
                 file,
-                "comment\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "comment\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{edited_at}\t{}",
                 comment.id,
                 comment.post,
                 parent,
                 encode(&comment.author),
                 encode(&comment.body),
                 encode(&comment.age),
-                comment.score
+                comment.score,
+                comment.deleted,
             )?;
         }
         for report in &self.reports {
