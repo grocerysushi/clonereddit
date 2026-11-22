@@ -197,7 +197,7 @@ fn mod_feed(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
         .filter_map(|post| {
             owned
                 .get(post.community.as_str())
-                .map(|item| (post, item.pinned_post == Some(post.id)))
+                .map(|item| (post, item.is_highlighted(post.id)))
         })
         .collect();
     posts.sort_by_key(|(post, _)| Reverse(post.id));

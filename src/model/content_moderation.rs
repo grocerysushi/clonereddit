@@ -482,7 +482,10 @@ mod tests {
         assert_eq!(post.title, "Original title");
         assert_eq!(post.media.len(), 1);
         assert_eq!(state.post_score(post), 2);
-        assert_eq!(state.community_for_post(id).unwrap().pinned_post, Some(id));
+        assert_eq!(
+            state.community_for_post(id).unwrap().highlighted_posts(),
+            &[id]
+        );
         assert!(state.notifications.iter().any(|item| item.moderation
             && item.recipient == "post_author"
             && item.body.starts_with("Moderators restored your post")));

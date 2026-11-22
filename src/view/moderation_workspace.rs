@@ -8,7 +8,7 @@ use crate::model::{Community, ContentKind, ModPermission, Post, Report, State};
 
 use super::{
     account_byline, action_fields, action_form, can_view_post, community_icon, community_owner,
-    community_url, encode, escape, field, hidden, icon, score,
+    community_url, display_post_title, encode, escape, field, hidden, icon, score,
 };
 use super::{restricted, scheduled};
 
@@ -22,6 +22,7 @@ mod moderate_content;
 const SCHEDULED_TITLE: &str = "Scheduled posts and events";
 const RESTRICTED_TITLE: &str = "Restricted Users";
 const CONTENT_TITLE: &str = "Posts & comments";
+const HIGHLIGHTS_TITLE: &str = "Community Highlights";
 const AUTOMOD_TITLE: &str = "AutoMod";
 
 const TOOLS: &[(&str, &str, &str, &str)] = &[
@@ -72,6 +73,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Discussions",
         "chat",
         "Browse discussions in this community.",
+    ),
+    (
+        "highlights",
+        HIGHLIGHTS_TITLE,
+        "pin",
+        "Pin posts and set their order on the community feed.",
     ),
     (
         "rules",
@@ -126,7 +133,7 @@ pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
         "appeals" => ModPermission::Appeals,
-        "content" | "automod" => ModPermission::Content,
+        "content" | "automod" | "highlights" => ModPermission::Content,
         _ => return false,
     };
     state.can_moderate(item, permission)
@@ -161,6 +168,7 @@ pub(super) fn render(
             "content" => moderate_content::render(state, item, &workspace.posts, query, None),
             "automod" => automod::rules(state, item, field(query, "edit"), None),
             "discussions" => workspace.discussions(state),
+            "highlights" => workspace.highlights(state),
             "rules" => workspace.rules(state),
             "members" => workspace.members(state),
             "approved-members" => community_manage::approved_members(state, item, registered, None),
@@ -216,6 +224,16 @@ pub(super) fn content_error(
     let workspace = Workspace::new(state, item);
     let body = moderate_content::render(state, item, &workspace.posts, form, Some(error));
     workspace.frame(state, "content", CONTENT_TITLE, "", &body)
+}
+
+pub(super) fn highlights_error(state: &State, item: &Community, error: &str) -> String {
+    let workspace = Workspace::new(state, item);
+    let body = format!(
+        "<p class='notice setup-error' role='alert'>{}</p>{}",
+        escape(error),
+        workspace.highlights(state)
+    );
+    workspace.frame(state, "highlights", HIGHLIGHTS_TITLE, "", &body)
 }
 
 pub(super) fn role_error(
@@ -730,7 +748,7 @@ impl<'a> Workspace<'a> {
             String::from("<section class='panel mod-section'><ul class='mod-discussions-list'>");
         let back = tools_url(self.item, "discussions");
         for post in self.posts.values().rev() {
-            let pinned = if self.item.pinned_post == Some(post.id) {
+            let pinned = if self.item.highlighted_posts().contains(&post.id) {
                 "<span class='flair'>Pinned</span>"
             } else {
                 ""
@@ -740,6 +758,99 @@ impl<'a> Workspace<'a> {
             write!(html, "<li class='mod-discussion-row' data-post-id='{}'><div>{title}<p class='muted'>{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}{lock}</div></li>", post.id, account_byline(&post.author), escape(&post.age_label(crate::schedule_time::now())), score(state, post), state.visible_reply_count(post)).unwrap();
         }
         html.push_str("</ul></section>");
+        html
+    }
+
+    fn highlights(&self, state: &State) -> String {
+        let back = tools_url(self.item, "highlights");
+        let highlighted = self.item.highlighted_posts();
+        let mut options = String::new();
+        for post in self
+            .posts
+            .values()
+            .rev()
+            .filter(|post| !state.is_post_removed(post.id) && !highlighted.contains(&post.id))
+        {
+            write!(
+                options,
+                "<option value='{}'>{} · {}</option>",
+                post.id,
+                escape(display_post_title(state, post)),
+                account_byline(&post.author)
+            )
+            .unwrap();
+        }
+        let picker = if options.is_empty() {
+            let message = if self
+                .posts
+                .values()
+                .any(|post| !state.is_post_removed(post.id))
+            {
+                "All available posts are already highlighted."
+            } else {
+                "Publish or restore a post to highlight it."
+            };
+            format!("<p class='muted'>{message}</p>")
+        } else {
+            let fields = action_fields("highlight-post", &back, &[("community", &self.item.slug)]);
+            format!(
+                "<form class='stack-form mod-highlight-add' method='post' action='/action'>{fields}<label>Post to pin<select name='post' required><option value=''>Choose a post</option>{options}</select></label><button class='button dark' type='submit'>Pin post</button></form>"
+            )
+        };
+        let mut html = format!(
+            "<section class='panel mod-section mod-highlight-panel' aria-labelledby='highlight-order'><h2 id='highlight-order'>Pinned posts</h2><p class='muted'>Posts appear at the top of the community feed in this order.</p>{picker}"
+        );
+        if highlighted.is_empty() {
+            html.push_str(
+                "<p class='mod-highlight-empty muted'>No posts pinned yet.</p></section>",
+            );
+            return html;
+        }
+
+        html.push_str("<ol class='mod-highlight-list' aria-label='Pinned posts in display order'>");
+        for (index, id) in highlighted.iter().copied().enumerate() {
+            let post = self.posts.get(&id).copied();
+            let title =
+                escape(post.map_or("Unavailable post", |post| display_post_title(state, post)));
+            let title_link = if post.is_some_and(|post| can_view_post(state, post)) {
+                format!("<a href='/thread?id={id}'>{title}</a>")
+            } else {
+                title.clone()
+            };
+            let status = if state.is_post_removed(id) {
+                " <span class='flair'>Removed</span>"
+            } else {
+                ""
+            };
+            let id_field = id.to_string();
+            let fields = [
+                ("community", self.item.slug.as_str()),
+                ("post", id_field.as_str()),
+            ];
+            let move_button = |direction, label, neighbor: Option<&u64>| {
+                let expected = neighbor.map(u64::to_string).unwrap_or_default();
+                let fields = action_fields(
+                    "move-highlight",
+                    &back,
+                    &[
+                        fields[0],
+                        fields[1],
+                        ("direction", direction),
+                        ("neighbor", &expected),
+                    ],
+                );
+                let disabled = if neighbor.is_none() { " disabled" } else { "" };
+                format!(
+                    "<form class='inline' method='post' action='/action'>{fields}<button class='button light' type='submit' aria-label='{label} {title}'{disabled}>{label}</button></form>"
+                )
+            };
+            let previous = index.checked_sub(1).and_then(|i| highlighted.get(i));
+            let move_up = move_button("up", "Move up", previous);
+            let move_down = move_button("down", "Move down", highlighted.get(index + 1));
+            let unpin = action_fields("unhighlight-post", &back, &fields);
+            write!(html, "<li data-post-id='{id}'><div class='mod-highlight-row'><strong>{title_link}{status}</strong><div class='mod-highlight-actions'>{move_up}{move_down}<form class='inline' method='post' action='/action'>{unpin}<button class='button light' type='submit' aria-label='Unpin {title}'>Unpin</button></form></div></div></li>").unwrap();
+        }
+        html.push_str("</ol></section>");
         html
     }
 

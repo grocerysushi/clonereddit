@@ -208,6 +208,14 @@ main { min-width: 0; }
 .community-guidelines { margin-top: 10px; padding: 9px 12px; }
 .community-guidelines summary { font-size: .91rem; font-weight: 650; }
 .community-guidelines p { padding-top: 8px; color: var(--quiet); white-space: pre-wrap; }
+.community-highlights { margin-top: 16px; padding: 13px 15px 15px; }
+.community-highlights h2 { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 1rem; }
+.community-highlights h2 svg { color: #47652a; width: 17px; height: 17px; }
+.community-highlights-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.community-highlights-list a { display: grid; align-content: space-between; min-height: 100%; gap: 4px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.community-highlights-list a:hover { border-color: #afc39b; background: var(--light-lime); }
+.community-highlights-list strong { overflow-wrap: anywhere; font-size: .92rem; line-height: 1.35; }
+.community-highlight-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--quiet); font-size: .78rem; }
 .pinned-label { display: flex; align-items: center; gap: 4px; margin-bottom: 7px; color: #47652a; font-size: .77rem; font-weight: 750; }
 .pinned-label svg { width: 15px; height: 15px; }
 
@@ -610,6 +618,21 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-appeal-decision[open] > summary { background: var(--light-lime); }
 .mod-appeal-record .moderation-reply { overflow-wrap: anywhere; }
 .mod-discussion-row { flex-wrap: wrap; }
+.mod-highlight-panel > .muted { margin: 5px 0 0; }
+.mod-highlight-add { grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; margin-top: 12px; }
+.mod-highlight-add label, .mod-highlight-add select { min-width: 0; }
+.mod-highlight-add .button { margin: 0; }
+.mod-highlight-panel > .mod-highlight-empty { margin-top: 15px; }
+.mod-highlight-list { padding-inline-start: 1.6rem; margin: 12px 0 0; }
+.mod-highlight-list li { padding: 8px 0; border-top: 1px solid var(--line); }
+.mod-highlight-list li::marker { color: var(--quiet); font-size: .84rem; font-variant-numeric: tabular-nums; }
+.mod-highlight-row, .mod-highlight-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; }
+.mod-highlight-row { justify-content: space-between; }
+.mod-highlight-row strong { min-width: 0; overflow-wrap: anywhere; }
+.mod-highlight-row a:hover { text-decoration: underline; }
+.mod-highlight-actions { gap: 5px; }
+.mod-highlight-actions .button { margin: 0; min-height: 34px; padding: 4px 8px; font-size: .8rem; }
+.mod-highlight-actions .button:disabled { opacity: .55; cursor: default; }
 .mod-discussion-actions, .mod-discussion-lock-controls, .mod-comment-lock-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .mod-discussion-actions .button { margin: 0; font-size: .8rem; }
 .mod-discussion-lock-controls[data-discussion-locked='true'] .mod-discussion-lock-status,

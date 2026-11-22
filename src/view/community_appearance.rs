@@ -94,7 +94,7 @@ pub(super) fn settings_content(state: &State, item: &Community, reference: &str)
     } else {
         ""
     };
-    community_editor(state, Some(item)) + &settings_panel(item, draft, error)
+    community_editor(Some(item)) + &settings_panel(item, draft, error)
 }
 
 pub(super) fn error_page(

@@ -26,6 +26,8 @@ mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
 #[path = "model/discussion_locks.rs"]
 mod discussion_locks;
+#[path = "model/highlights.rs"]
+mod highlights;
 #[path = "model/moderation_appeals.rs"]
 mod moderation_appeals;
 pub use moderation_appeals::{Appeal, AppealStatus};
@@ -66,7 +68,7 @@ pub struct Community {
     pub banner_image: Option<ProfileAvatar>,
     pub members: u32,
     pub owner: Option<String>,
-    pub pinned_post: Option<u64>,
+    highlighted_posts: Vec<u64>,
     pub topic: String,
     pub visibility: String,
     pub mature: bool,
@@ -449,7 +451,7 @@ impl State {
                 banner_image: None,
                 members,
                 owner: None,
-                pinned_post: None,
+                highlighted_posts: Vec::new(),
                 topic: String::new(),
                 visibility: "public".into(),
                 mature: false,
@@ -1004,6 +1006,9 @@ impl State {
             "remove-moderator-role" => self.remove_moderator_role(form),
             "approve-member" => self.approve_member(form),
             "revoke-approved-member" => self.revoke_approved_member(form),
+            "highlight-post" => self.set_highlight(form, true),
+            "unhighlight-post" => self.set_highlight(form, false),
+            "move-highlight" => self.move_highlight(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
             "lock-discussion" => self.set_reply_lock(form, ContentKind::Post, true),
@@ -1196,7 +1201,7 @@ impl State {
             banner_image,
             members: 1,
             owner: Some(self.username.clone()),
-            pinned_post: None,
+            highlighted_posts: Vec::new(),
             topic,
             visibility,
             mature,
@@ -1236,24 +1241,6 @@ impl State {
         self.pending_artwork
             .retain(|preview| preview.community.as_deref() != Some(slug.as_str()));
         self.record_moderation(&slug, "Community artwork updated.")
-    }
-
-    fn pin_community(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let index = self.owned_community_index(form)?;
-        let slug = self.communities[index].slug.clone();
-        if value(form, "post").is_empty() {
-            self.communities[index].pinned_post = None;
-            return self.record_moderation(&slug, "Discussion unpinned.");
-        }
-        let id = id_field(form, "post")?;
-        if self
-            .viewable_post_community(id)
-            .is_none_or(|community| community.slug != slug)
-        {
-            return Err("Choose a discussion from this community to pin.".into());
-        }
-        self.communities[index].pinned_post = Some(id);
-        self.record_moderation(&slug, "Discussion pinned.")
     }
 
     fn update_preferences(
@@ -2281,9 +2268,9 @@ impl State {
         if let Some(community) = self
             .communities
             .iter_mut()
-            .find(|community| community.pinned_post == Some(id))
+            .find(|community| community.slug == post.community)
         {
-            community.pinned_post = None;
+            community.highlighted_posts.retain(|&post_id| post_id != id);
         }
         self.comments.retain(|comment| {
             if comment.post != id {
@@ -2343,7 +2330,7 @@ impl State {
                     _ => return None,
                 }
             }
-            ["community", slug, name, description, guidelines, color, icon, members, owner, pinned_post, settings @ ..] =>
+            ["community", slug, name, description, guidelines, color, icon, members, owner, highlights, settings @ ..] =>
             {
                 let slug = decode(slug)?;
                 if self
@@ -2372,11 +2359,7 @@ impl State {
                     banner_image: None,
                     members: number(members)?,
                     owner: Some(decode(owner)?),
-                    pinned_post: if pinned_post.is_empty() {
-                        None
-                    } else {
-                        Some(number(pinned_post)?)
-                    },
+                    highlighted_posts: highlights::read_order(highlights)?,
                     topic,
                     visibility,
                     mature,
@@ -2796,9 +2779,6 @@ impl State {
             let Some(owner) = &community.owner else {
                 continue;
             };
-            let pinned_post = community
-                .pinned_post
-                .map_or_else(String::new, |id| id.to_string());
             writeln!(
                 file,
                 "community\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -2810,7 +2790,7 @@ impl State {
                 encode(&community.icon),
                 community.members,
                 encode(owner),
-                pinned_post,
+                highlights::write_order(community.highlighted_posts()),
                 encode(&community.topic),
                 encode(&community.visibility),
                 community.mature,

@@ -237,6 +237,12 @@ Moderators can also lock or unlock direct replies to an individual comment from 
 
 Chromium checks at 1440 and 390 CSS pixels covered the Mod Tools comment list, the thread’s **Moderate comment** shortcut, and replying to other comments while the target was locked. The tests also checked moderator permissions, both lock states across restarts, and the effect of a discussion-wide lock after reopening an individual comment.
 
+## Community Highlights update
+
+Workflow **089** is implemented. Owners and moderators with content permissions can pin multiple community posts, reorder them, and unpin them in **Mod Tools → Community Highlights**. The community feed shows their saved order before the sorted discussions. The previous single pin carries over. This brings the implementation count to **76 implemented, 11 partial, and 13 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered pinning, reordering, unpinning, scoped permissions, the Settings shortcut, and feed order after restart. A stale reorder kept the newer order and showed a refresh message. Server checks also covered migration from a single pin, older pinned posts in time-filtered feeds, private access, personal filters, and post removal, restoration, and deletion.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

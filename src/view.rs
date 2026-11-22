@@ -250,6 +250,12 @@ pub fn route(
         }
         if matches!(
             action,
+            "highlight-post" | "unhighlight-post" | "move-highlight"
+        ) {
+            return highlight_submission(state, path, action, &request.form);
+        }
+        if matches!(
+            action,
             "remove-content"
                 | "restore-content"
                 | "lock-discussion"
@@ -411,7 +417,7 @@ pub fn route(
         "/communities/new" => (
             "Create community",
             "start-community",
-            community_editor(state, None),
+            community_editor(None),
         ),
         "/communities/settings" => match community(state, field(query, "community")) {
             Some(item) if community_owner(state, item) => (
@@ -910,6 +916,39 @@ fn community_management_submission(
                 ),
             };
             Response::html(layout(state, "mod-workspace", title, &body, "", ""))
+        }
+    }
+}
+
+fn highlight_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let slug = field(form, "community");
+    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Content)) {
+        return missing(state);
+    }
+    match state.apply(action, form, path) {
+        Ok(notice) => Response::redirect(&format!(
+            "/moderation/tools?community={}&section=highlights&notice={}",
+            encode(slug),
+            encode(notice)
+        )),
+        Err(error) => {
+            let Some(item) = community(state, slug) else {
+                return missing(state);
+            };
+            let body = moderation_workspace::highlights_error(state, item, &error);
+            Response::html(layout(
+                state,
+                "mod-workspace",
+                "Community Highlights",
+                &body,
+                "",
+                "",
+            ))
         }
     }
 }
@@ -1995,14 +2034,18 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         String::new()
     };
     let needle = search.to_lowercase();
-    let mut posts: Vec<&Post> = state
+    let highlight_positions: BTreeMap<_, _> = selected
+        .filter(|_| search.is_empty())
+        .into_iter()
+        .flat_map(Community::highlighted_posts)
+        .enumerate()
+        .map(|(position, &id)| (id, position))
+        .collect();
+    let (mut highlights, mut posts): (Vec<_>, Vec<_>) = state
         .posts
         .iter()
         .filter(|post| !state.is_post_removed(post.id))
         .filter(|post| !media_only || search::has_media(post))
-        .filter(|post| {
-            sort != "top" || max_age.is_none_or(|seconds| post.age_seconds(now) <= seconds)
-        })
         .filter(|post| {
             let group = community(state, &post.community);
             let viewable = group.is_some_and(|item| {
@@ -2043,7 +2086,16 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
                 });
             viewable && in_view && matches && visible
         })
-        .collect();
+        .partition(|post| highlight_positions.contains_key(&post.id));
+    if !highlights.is_empty() {
+        highlights.sort_unstable_by_key(|post| highlight_positions[&post.id]);
+        html.push_str(&community_highlights(state, &highlights));
+    }
+    if sort == "top" {
+        if let Some(seconds) = max_age {
+            posts.retain(|post| post.age_seconds(now) <= seconds);
+        }
+    }
     posts.sort_by_key(|post| {
         let votes = i64::from(score(state, post));
         let replies = i64::from(state.visible_reply_count(post).min(100));
@@ -2063,21 +2115,14 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
             std::cmp::Reverse(post.id),
         )
     });
-    let pinned = if search.is_empty() {
-        selected.and_then(|item| item.pinned_post)
-    } else {
-        None
-    };
-    if let Some(index) = posts.iter().position(|post| Some(post.id) == pinned) {
-        posts[..=index].rotate_right(1);
-    }
     let result_label = if media_only {
         "media post"
     } else {
         "discussion"
     };
-    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}</div><span>{} {result_label}{}</span></div>", icon("chevron"), posts.len(), if posts.len() == 1 { "" } else { "s" }).unwrap();
-    if posts.is_empty()
+    let total = posts.len() + highlights.len();
+    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}</div><span>{total} {result_label}{}</span></div>", icon("chevron"), if total == 1 { "" } else { "s" }).unwrap();
+    if total == 0
         && search.is_empty()
         && selected.is_some_and(|item| {
             !state
@@ -2091,22 +2136,35 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         } else {
             html.push_str("<section class='panel empty'><h2>No discussions yet.</h2></section>");
         }
-    } else if posts.is_empty() && media_only {
+    } else if total == 0 && media_only {
         html.push_str("<section class='panel empty'><h2>No matching media posts</h2></section>");
-    } else if posts.is_empty() && active == "following" {
+    } else if total == 0 && active == "following" {
         html.push_str("<section class='panel empty'><h2>No posts from your communities yet.</h2><a class='button light' href='/?view=communities'>Explore communities</a></section>");
-    } else if posts.is_empty() {
+    } else if total == 0 {
         html.push_str("<section class='panel empty'><h2>No discussions here yet.</h2><p>Try a different search or check your feed controls.</p><a class='button light' href='/settings'>Feed controls</a></section>");
     }
     for post in posts {
-        html.push_str(&post_card(
-            state,
-            post,
-            &back,
-            false,
-            Some(post.id) == pinned,
-        ));
+        html.push_str(&post_card(state, post, &back, false, false));
     }
+    html
+}
+
+fn community_highlights(state: &State, posts: &[&Post]) -> String {
+    let mut html = format!(
+        "<section class='panel community-highlights' aria-labelledby='community-highlights-heading'><h2 id='community-highlights-heading'>{} Community Highlights</h2><ol class='community-highlights-list' role='list'>",
+        icon("pin")
+    );
+    for post in posts {
+        let title = escape(display_post_title(state, post));
+        let replies = state.visible_reply_count(post);
+        let sensitive = if is_sensitive(state, post) {
+            nsfw_badge()
+        } else {
+            ""
+        };
+        write!(html, "<li data-post-id='{}'><a href='/thread?id={}'><strong>{title}</strong><span class='community-highlight-meta'>{replies} comment{}{sensitive}</span></a></li>", post.id, post.id, if replies == 1 { "" } else { "s" }).unwrap();
+    }
+    html.push_str("</ol></section>");
     html
 }
 
@@ -2210,7 +2268,7 @@ fn topic_options(selected: &str) -> String {
         .collect()
 }
 
-fn community_editor(state: &State, existing: Option<&Community>) -> String {
+fn community_editor(existing: Option<&Community>) -> String {
     let (heading, action, back, cancel, field_markup, name, description, guidelines) = match existing {
         Some(item) => (
             "Community settings", "edit-community", format!("/communities/settings?community={}", encode(&item.slug)), community_url(&item.slug),
@@ -2273,27 +2331,7 @@ fn community_editor(state: &State, existing: Option<&Community>) -> String {
         topics = topic_options(topic),
     );
     if let Some(item) = existing {
-        let mut options = String::from("<option value=''>No pinned discussion</option>");
-        for post in state
-            .posts
-            .iter()
-            .rev()
-            .filter(|post| post.community == item.slug && !state.is_post_removed(post.id))
-        {
-            write!(
-                options,
-                "<option value='{}'{}>{}</option>",
-                post.id,
-                if item.pinned_post == Some(post.id) {
-                    " selected"
-                } else {
-                    ""
-                },
-                escape(&post.title)
-            )
-            .unwrap();
-        }
-        write!(html, "<section class='preference-list'><h2>Pinned discussion</h2><p class='muted'>Choose a discussion to keep at the top of the community feed.</p><form class='stack-form community-pin-form' method='post' action='/action'>{}<label>Discussion<select name='post'>{options}</select></label><button class='button dark' type='submit'>Save pin</button></form></section>", action_fields("pin-community", &back, &[("community", &item.slug)])).unwrap();
+        write!(html, "<section class='preference-list'><h2>Community Highlights</h2><a class='button light' href='/moderation/tools?community={}&amp;section=highlights'>Manage highlights</a></section>", encode(&item.slug)).unwrap();
     }
     html.push_str("</section>");
     html
@@ -2734,8 +2772,7 @@ fn thread(
 ) -> String {
     let back = sort.thread_url(post.id);
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
-    let pinned =
-        community(state, &post.community).is_some_and(|item| item.pinned_post == Some(post.id));
+    let pinned = community(state, &post.community).is_some_and(|item| item.is_highlighted(post.id));
     html.push_str(&post_card(state, post, &back, true, pinned));
     write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort)).unwrap();
     let can_write = can_write_here(state, &post.community);
