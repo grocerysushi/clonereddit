@@ -293,6 +293,12 @@ Workflow **023** is implemented. Feeds and post search offer **Card** and **Comp
 
 Chromium checks at 1440 and 390 CSS pixels covered both layouts, account and guest isolation, old accounts defaulting to Card, and preference retention after reload and restart. They also checked sorting, flair filtering, search, post actions, and full discussion content from Compact.
 
+## Home recommendations update
+
+Workflow **024** is implemented. In **Feed controls**, signed-in users can turn off recommendations from unjoined communities. This makes Home’s **For You** use current community membership and the viewer’s existing access and feed preferences. Existing accounts keep recommendations on by default. This brings the implementation count to **82 implemented, 8 partial, and 10 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered disabling and re-enabling recommendations, joining and leaving communities, private access changes, and persistence across independent accounts and a restart. HTTP checks covered all sorts, existing visibility filters and other feeds, and earlier settings submissions that lack the new field.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

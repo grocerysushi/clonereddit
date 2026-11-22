@@ -343,6 +343,7 @@ pub struct State {
     pub keywords: Vec<String>,
     pub sensitive: String,
     pub feed_layout: FeedLayout,
+    pub home_joined_only: bool,
     pub reports: Vec<Report>,
     pub messages: Vec<DirectMessage>,
     chat_request_permission: ChatRequestPermission,
@@ -538,6 +539,7 @@ impl State {
             keywords: Vec::new(),
             sensitive: "blur".into(),
             feed_layout: FeedLayout::default(),
+            home_joined_only: false,
             reports: Vec::new(),
             messages: Vec::new(),
             chat_request_permission: ChatRequestPermission::default(),
@@ -1312,6 +1314,15 @@ impl State {
         if !matches!(sensitive, "show" | "blur" | "hide") {
             return Err("Choose how to display sensitive posts.".into());
         }
+        let home_joined_only = match (
+            form.get("home_recommendations_present").map(String::as_str),
+            form.get("home_recommendations").map(String::as_str),
+        ) {
+            (None, None | Some("on")) => self.home_joined_only,
+            (Some("1"), None) => true,
+            (Some("1"), Some("on")) => false,
+            _ => return Err("Choose whether to show Home feed recommendations.".into()),
+        };
         let mut seen = BTreeSet::new();
         let keywords = bounded(form, "keywords", "Muted keywords", 2_000)?;
         let keywords: Vec<String> = keywords
@@ -1326,6 +1337,7 @@ impl State {
         }
         self.sensitive = sensitive.into();
         self.keywords = keywords;
+        self.home_joined_only = home_joined_only;
         Ok("Feed controls updated.")
     }
 
@@ -2723,6 +2735,9 @@ impl State {
             }
             ["feed-layout", layout] => {
                 self.feed_layout = FeedLayout::parse(layout)?;
+            }
+            ["home-joined-only", joined_only] => {
+                self.home_joined_only = number(joined_only)?;
             }
             fields @ (["chat-request-sequence", ..]
             | ["chat-request", ..]

@@ -1998,6 +1998,8 @@ fn feed(
     let custom = custom_feed(state, active);
     let search = field(query, "q").trim();
     let searching = search::active(query);
+    let home_joined_only = active == "home" && !searching && state.home_joined_only;
+    let joined_only = active == "following" || home_joined_only;
     let community_feed = selected.filter(|_| !searching);
     let flair = community_feed.map_or("", |_| field(query, "flair"));
     let kind = if searching {
@@ -2075,6 +2077,11 @@ fn feed(
                 },
             )
         }
+        ("home", _, true) if home_joined_only => masthead(
+            "The front page.",
+            "Posts from communities you’ve joined.",
+            "THE COMMONLINE FEED",
+        ),
         _ => masthead(
             "The front page.",
             "Independent communities. Open discussion.",
@@ -2267,11 +2274,12 @@ fn feed(
                     && (item.visibility != "private"
                         || selected.is_some()
                         || custom.is_some()
-                        || matches!(active, "following" | "saved"))
+                        || joined_only
+                        || active == "saved")
             });
             let in_view = match active {
+                _ if joined_only => state.joined.contains(&post.community),
                 "saved" => state.saved.contains(&post.id),
-                "following" => state.joined.contains(&post.community),
                 "news" => post.flair.eq_ignore_ascii_case("news"),
                 _ => {
                     selected.is_none_or(|item| item.slug == post.community)
@@ -2362,7 +2370,7 @@ fn feed(
         html.push_str("<section class='panel empty'><h2>No matching media posts</h2></section>");
     } else if total == 0 && searching {
         html.push_str("<section class='panel empty'><h2>No matching posts</h2><p>Try different search terms or filters.</p></section>");
-    } else if total == 0 && active == "following" {
+    } else if total == 0 && joined_only {
         html.push_str("<section class='panel empty'><h2>No posts from your communities yet.</h2><a class='button light' href='/?view=communities'>Explore communities</a></section>");
     } else if total == 0 {
         html.push_str("<section class='panel empty'><h2>No discussions here yet.</h2><p>Try a different search or check your feed controls.</p><a class='button light' href='/settings'>Feed controls</a></section>");
@@ -3314,7 +3322,17 @@ fn preferences(state: &State) -> String {
     let radios = [("show", "Show"), ("blur", "Collapse previews"), ("hide", "Hide")].into_iter().map(|(option, label)| {
         format!("<label class='checkbox'><input type='radio' name='sensitive' value='{option}'{}> {label}</label>", if state.sensitive == option { " checked" } else { "" })
     }).collect::<String>();
-    write!(html, "<form class='stack-form' method='post' action='/action'>{}<fieldset><legend>Sensitive posts</legend>{radios}</fieldset><label>Muted keywords <small>One per line</small><textarea name='keywords' rows='4' maxlength='2000' placeholder='Enter a word or phrase'>{}</textarea></label><button class='button dark' type='submit'>Save preferences</button></form>", action_fields("preferences", "/settings", &[]), escape(&state.keywords.join("\n"))).unwrap();
+    let home_recommendations = if state.home_joined_only {
+        ""
+    } else {
+        " checked"
+    };
+    write!(
+        html,
+        "<form class='stack-form' method='post' action='/action'>{}<fieldset><legend>Home feed</legend><label class='checkbox'><input type='checkbox' name='home_recommendations' value='on'{home_recommendations}> Recommend posts from communities you haven’t joined</label></fieldset><fieldset><legend>Sensitive posts</legend>{radios}</fieldset><label>Muted keywords <small>One per line</small><textarea name='keywords' rows='4' maxlength='2000' placeholder='Enter a word or phrase'>{}</textarea></label><button class='button dark' type='submit'>Save preferences</button></form>",
+        action_fields("preferences", "/settings", &[("home_recommendations_present", "1")]),
+        escape(&state.keywords.join("\n"))
+    ).unwrap();
     html.push_str("<div class='preference-list'><h2>Muted communities</h2>");
     let mut muted = state
         .muted

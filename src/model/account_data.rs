@@ -20,6 +20,7 @@ pub(super) struct ProfileData {
     keywords: Vec<String>,
     pub(super) sensitive: String,
     feed_layout: FeedLayout,
+    home_joined_only: bool,
     pub(super) custom_feeds: Vec<CustomFeed>,
     recent: Vec<String>,
     pub(super) history: Vec<u64>,
@@ -68,6 +69,7 @@ impl ProfileData {
             keywords: state.keywords.clone(),
             sensitive: state.sensitive.clone(),
             feed_layout: state.feed_layout,
+            home_joined_only: state.home_joined_only,
             custom_feeds: state.custom_feeds.clone(),
             recent: state.recent.clone(),
             history: state.history.clone(),
@@ -102,6 +104,7 @@ impl ProfileData {
         state.keywords = self.keywords;
         state.sensitive = self.sensitive;
         state.feed_layout = self.feed_layout;
+        state.home_joined_only = self.home_joined_only;
         state.custom_feeds = self.custom_feeds;
         state.recent = self.recent;
         state.history = self.history;
@@ -137,6 +140,7 @@ impl ProfileData {
                 | "notification-preferences"
                 | "chat-request-permission"
                 | "feed-layout"
+                | "home-joined-only"
                 | "F"
                 | "V"
                 | "H"
@@ -190,6 +194,9 @@ impl ProfileData {
         }
         if self.feed_layout != FeedLayout::default() {
             writeln!(file, "feed-layout\t{}", self.feed_layout.code())?;
+        }
+        if self.home_joined_only {
+            writeln!(file, "home-joined-only\ttrue")?;
         }
         for (kind, image) in [("avatar", &self.avatar), ("cover", &self.cover)] {
             if let Some(image) = image {
@@ -613,7 +620,7 @@ enum NotificationKind {
 }
 
 #[cfg(test)]
-mod draft_tests {
+mod tests {
     use std::{fs, path::PathBuf, time::SystemTime};
 
     use super::*;
@@ -631,6 +638,80 @@ mod draft_tests {
             .iter()
             .map(|&(key, value)| (key.into(), value.into()))
             .collect()
+    }
+
+    #[test]
+    fn home_recommendations_default_on_and_persist_per_account() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "commonline-home-recommendations-{}-{nonce}.state",
+            std::process::id()
+        )));
+        let path = &fixture.0;
+        let mut state = State::seeded();
+        state.activate_profile(Some("recommendation_owner"));
+        state.save(path).unwrap();
+
+        let mut state = State::load(path).unwrap();
+        assert!(!state.home_joined_only);
+        state
+            .apply("set-feed-layout", &form(&[("layout", "compact")]), path)
+            .unwrap();
+        state
+            .apply(
+                "preferences",
+                &form(&[("sensitive", "hide"), ("home_recommendations_present", "1")]),
+                path,
+            )
+            .unwrap();
+        assert!(state.home_joined_only);
+        assert_eq!(state.feed_layout, FeedLayout::Compact);
+        for invalid in [
+            form(&[("sensitive", "show"), ("home_recommendations_present", "")]),
+            form(&[
+                ("sensitive", "show"),
+                ("home_recommendations_present", "1"),
+                ("home_recommendations", "off"),
+            ]),
+        ] {
+            assert!(state.apply("preferences", &invalid, path).is_err());
+            assert!(state.home_joined_only);
+            assert_eq!(state.sensitive, "hide");
+        }
+        state
+            .apply(
+                "preferences",
+                &form(&[("sensitive", "blur"), ("keywords", "quiet")]),
+                path,
+            )
+            .unwrap();
+        assert!(state.home_joined_only);
+
+        state.activate_profile(Some("recommendation_other"));
+        assert!(!state.home_joined_only);
+        state.save(path).unwrap();
+        let mut state = State::load(path).unwrap();
+        assert!(!state.home_joined_only);
+        state.activate_profile(Some("recommendation_owner"));
+        assert!(state.home_joined_only);
+        assert_eq!(state.keywords, ["quiet"]);
+        state
+            .apply(
+                "preferences",
+                &form(&[
+                    ("sensitive", "blur"),
+                    ("home_recommendations_present", "1"),
+                    ("home_recommendations", "on"),
+                ]),
+                path,
+            )
+            .unwrap();
+        let state = State::load(path).unwrap();
+        assert!(!state.home_joined_only);
+        assert_eq!(state.feed_layout, FeedLayout::Compact);
     }
 
     #[test]
