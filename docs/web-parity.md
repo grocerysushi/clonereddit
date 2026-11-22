@@ -279,6 +279,8 @@ Workflow **037** is implemented. Moderators manage labels in **Mod Tools → Pos
 
 Chromium checks at 1440 and 390 CSS pixels covered label management, a delegated moderator and an approved author, missing and valid flair in the composer, and persistence after restart. HTTP checks covered all post types, foreign and retired flair rejection, draft migration, and editing or canceling a blocked schedule while unrelated items publish.
 
+Community feeds can filter posts and highlights by flair, including labels preserved on older visible posts. Chromium checks at both widths covered selecting, switching, and clearing a flair, preserving the sort and time range, and reopening filtered feeds after restart. HTTP checks covered viewer-specific visibility, private-community access, and preservation of the filter after a feed action.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

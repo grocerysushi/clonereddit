@@ -1922,10 +1922,58 @@ fn stream_url(active: &str, sort: &str, search: &str, top_window: &str) -> Strin
     url
 }
 
+fn flair_url(mut url: String, flair: &str) -> String {
+    if !flair.is_empty() {
+        write!(url, "&flair={}", encode(flair)).unwrap();
+    }
+    url
+}
+
+fn community_flair_filter(base: &str, flair: &str, options: &BTreeSet<&str>) -> String {
+    if options.is_empty() && flair.is_empty() {
+        return String::new();
+    }
+    let current = if flair.is_empty() {
+        "All"
+    } else if options.contains(flair) {
+        flair
+    } else {
+        "Unavailable"
+    };
+    let mut links = String::new();
+    for label in std::iter::once("").chain(options.iter().copied()) {
+        let url = flair_url(base.to_owned(), label);
+        let selected = if label == flair {
+            " class='on' aria-current='page'"
+        } else {
+            ""
+        };
+        let text = if label.is_empty() { "All flair" } else { label };
+        write!(
+            links,
+            "<a href='{}'{selected}>{}</a>",
+            escape(&url),
+            escape(text)
+        )
+        .unwrap();
+    }
+    let clear = if flair.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<a class='clear-flair-filter subtle-link' href='{}'>Clear flair</a>",
+            escape(base)
+        )
+    };
+    format!("<details class='sort-picker community-flair-filter'><summary>Flair <strong>{}</strong>{}</summary><nav class='sort' aria-label='Filter by post flair'>{links}</nav></details>{clear}", escape(current), icon("chevron"))
+}
+
 fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String {
     let selected = community(state, active);
     let custom = custom_feed(state, active);
     let search = field(query, "q").trim();
+    let community_feed = selected.filter(|_| search.is_empty());
+    let flair = community_feed.map_or("", |_| field(query, "flair"));
     let kind = if search.is_empty() {
         search::Kind::Posts
     } else {
@@ -1947,8 +1995,14 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         .find(|(key, _, _)| *key == field(query, "t"))
         .unwrap_or(TOP_WINDOWS[0]);
     let now = schedule_time::now();
-    let result_url =
+    let unfiltered_url =
         |scope, sort, window| search::with_type(stream_url(scope, sort, search, window), kind);
+    let result_url = |scope, sort, window| {
+        flair_url(
+            unfiltered_url(scope, sort, window),
+            if scope == active { flair } else { "" },
+        )
+    };
     let back = result_url(active, sort, top_window);
     let mut html = match (active, selected, search.is_empty()) {
         (_, _, false) => masthead("Search", &format!("Results for “{search}”"), "DISCUSSIONS"),
@@ -2040,7 +2094,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
             .count();
         write!(html, "<div class='community-bar'><span>{count} {}</span>{share}<a class='button light' href='/feeds/settings?id={}'>{} Custom feed settings</a></div>", if count == 1 { "community" } else { "communities" }, item.id, icon("sliders")).unwrap();
     }
-    if let Some(item) = selected.filter(|_| search.is_empty()) {
+    if let Some(item) = community_feed {
         let joined = state.joined.contains(&item.slug);
         let label = if joined {
             "Leave community"
@@ -2154,12 +2208,16 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         String::new()
     };
     let needle = search.to_lowercase();
-    let highlight_positions: BTreeMap<_, _> = selected
-        .filter(|_| search.is_empty())
+    let highlight_positions: BTreeMap<_, _> = community_feed
         .into_iter()
         .flat_map(Community::highlighted_posts)
         .enumerate()
         .map(|(position, &id)| (id, position))
+        .collect();
+    let mut available_flair: BTreeSet<_> = community_feed
+        .into_iter()
+        .flat_map(Community::post_flairs)
+        .map(|option| option.label.as_str())
         .collect();
     let (mut highlights, mut posts): (Vec<_>, Vec<_>) = state
         .posts
@@ -2206,11 +2264,13 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
                 });
             viewable && in_view && matches && visible
         })
+        .inspect(|post| {
+            if community_feed.is_some() && !post.flair.is_empty() {
+                available_flair.insert(post.flair.as_str());
+            }
+        })
+        .filter(|post| flair.is_empty() || post.flair == flair)
         .partition(|post| highlight_positions.contains_key(&post.id));
-    if !highlights.is_empty() {
-        highlights.sort_unstable_by_key(|post| highlight_positions[&post.id]);
-        html.push_str(&community_highlights(state, &highlights));
-    }
     if sort == "top" {
         if let Some(seconds) = max_age {
             posts.retain(|post| post.age_seconds(now) <= seconds);
@@ -2241,8 +2301,19 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         "discussion"
     };
     let total = posts.len() + highlights.len();
-    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}</div><span>{total} {result_label}{}</span></div>", icon("chevron"), if total == 1 { "" } else { "s" }).unwrap();
-    if total == 0
+    let flair_filter = community_flair_filter(
+        &unfiltered_url(active, sort, top_window),
+        flair,
+        &available_flair,
+    );
+    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}{flair_filter}</div><span>{total} {result_label}{}</span></div>", icon("chevron"), if total == 1 { "" } else { "s" }).unwrap();
+    if !highlights.is_empty() {
+        highlights.sort_unstable_by_key(|post| highlight_positions[&post.id]);
+        html.push_str(&community_highlights(state, &highlights));
+    }
+    if total == 0 && !flair.is_empty() {
+        html.push_str("<section class='panel empty'><h2>No posts with this flair</h2><p>Choose another flair or clear the filter.</p></section>");
+    } else if total == 0
         && search.is_empty()
         && selected.is_some_and(|item| {
             !state
