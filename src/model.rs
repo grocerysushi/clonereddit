@@ -5,6 +5,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::schedule_time::{self, Cadence};
+
 #[path = "model/account_data.rs"]
 mod account_data;
 use account_data::ProfileData;
@@ -62,6 +64,9 @@ use post_insights::PostInsights;
 #[path = "model/reporting.rs"]
 mod reporting;
 pub use reporting::{ReportReason, ReportedRule};
+#[cfg(test)]
+#[path = "model/recurring_schedules_tests.rs"]
+mod recurring_schedules_tests;
 #[path = "model/timed_restrictions.rs"]
 mod timed_restrictions;
 use timed_restrictions::{representable_expiration, restriction_expiration};
@@ -326,10 +331,17 @@ pub struct ScheduledItem {
     pub brand_affiliate: bool,
     pub publish_at: u64,
     pub zone: String,
+    pub recurrence: Option<RecurringSchedule>,
     pub event_start: Option<u64>,
     pub event_end: Option<u64>,
     pub status: String,
     pub post_id: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+pub struct RecurringSchedule {
+    pub cadence: Cadence,
+    pub anchor_at: u64,
 }
 
 #[derive(Clone)]
@@ -862,10 +874,27 @@ impl State {
         item.post_id = Some(id);
         let message = if item.kind == "event" {
             "Scheduled event published."
+        } else if item.recurrence.is_some() {
+            "Recurring post published."
         } else {
             "Scheduled post published."
         };
         let community = item.community.clone();
+        if let Some(next) = item.recurrence.and_then(|recurrence| {
+            schedule_time::next_occurrence(
+                recurrence.anchor_at,
+                &item.zone,
+                recurrence.cadence,
+                now.max(item.publish_at),
+            )
+        }) {
+            let mut occurrence = item.clone();
+            occurrence.id = next_id(&mut self.next_scheduled).map_err(io::Error::other)?;
+            item.publish_at = next;
+            item.status = "pending".into();
+            item.post_id = None;
+            self.scheduled.push(occurrence);
+        }
         self.record_moderation(&community, message)
             .map_err(io::Error::other)?;
         self.screen_post(id).map_err(io::Error::other)?;
@@ -1465,17 +1494,13 @@ impl State {
     fn schedule_item(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let index = self.moderated_community_index(form, ModPermission::Schedule)?;
         let id = next_id(&mut self.next_scheduled)?;
-        let mut item = scheduled_item(
-            form,
-            id,
-            &self.communities[index],
-            "America/Chicago",
-            unix_seconds(),
-        )?;
+        let mut item = scheduled_item(form, id, &self.communities[index], None, unix_seconds())?;
         item.author = Some(self.username.clone());
         let community = item.community.clone();
         let message = if item.kind == "event" {
             "Event scheduled."
+        } else if item.recurrence.is_some() {
+            "Recurring post scheduled."
         } else {
             "Post scheduled."
         };
@@ -1491,7 +1516,7 @@ impl State {
         let (index, community_index) = self.pending_scheduled_index(form, now)?;
         let previous = &self.scheduled[index];
         let community = &self.communities[community_index];
-        let mut updated = scheduled_item(form, previous.id, community, &previous.zone, now)?;
+        let mut updated = scheduled_item(form, previous.id, community, Some(previous), now)?;
         updated.author = Some(self.username.clone());
         let slug = updated.community.clone();
         self.scheduled[index] = updated;
@@ -1506,7 +1531,12 @@ impl State {
         let item = &mut self.scheduled[index];
         item.status = "canceled".into();
         let community = item.community.clone();
-        self.record_moderation(&community, "Scheduled item canceled.")
+        let notice = if item.recurrence.is_some() {
+            "Future posts canceled."
+        } else {
+            "Scheduled item canceled."
+        };
+        self.record_moderation(&community, notice)
     }
 
     fn pending_scheduled_index(
@@ -3038,6 +3068,22 @@ impl State {
             }
             ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id, details @ ..] =>
             {
+                let kind = decode(kind)?;
+                let publish_at = number(publish_at)?;
+                let (details, recurrence) = match details {
+                    [details @ .., "repeat", cadence, anchor_at] => {
+                        let anchor_at = number(anchor_at)?;
+                        if kind != "post" || anchor_at > publish_at {
+                            return None;
+                        }
+                        let recurrence = RecurringSchedule {
+                            cadence: Cadence::parse(cadence)?,
+                            anchor_at,
+                        };
+                        (details, Some(recurrence))
+                    }
+                    _ => (details, None),
+                };
                 let (author, flair_id) = match details {
                     [] => ("", None),
                     [author] => (*author, None),
@@ -3058,7 +3104,7 @@ impl State {
                     id: number(id)?,
                     community: decode(community)?,
                     author,
-                    kind: decode(kind)?,
+                    kind,
                     title: decode(title)?,
                     body: decode(body)?,
                     url: decode(url)?,
@@ -3067,8 +3113,9 @@ impl State {
                     sensitive: number(sensitive)?,
                     spoiler: number(spoiler)?,
                     brand_affiliate: number(brand_affiliate)?,
-                    publish_at: number(publish_at)?,
+                    publish_at,
                     zone: decode(zone)?,
+                    recurrence,
                     event_start: optional_number(event_start)?,
                     event_end: optional_number(event_end)?,
                     status: decode(status)?,
@@ -3448,6 +3495,14 @@ impl State {
                 item.publish_at, encode(&item.zone), encode(&item.status), encode(item.author.as_deref().unwrap_or_default()))?;
             if let Some(flair_id) = item.flair_id {
                 write!(file, "\tflair\t{flair_id}")?;
+            }
+            if let Some(recurrence) = item.recurrence {
+                write!(
+                    file,
+                    "\trepeat\t{}\t{}",
+                    recurrence.cadence.code(),
+                    recurrence.anchor_at
+                )?;
             }
             writeln!(file)?;
         }
@@ -3892,7 +3947,7 @@ fn scheduled_item(
     form: &BTreeMap<String, String>,
     id: u64,
     community: &Community,
-    default_zone: &str,
+    previous: Option<&ScheduledItem>,
     now: u64,
 ) -> Result<ScheduledItem, String> {
     let kind = value(form, "kind");
@@ -3902,7 +3957,7 @@ fn scheduled_item(
     let (title, body, url) = post_content(form)?;
     let (flair, flair_id) = community.publication_flair(form, "", "")?;
     let zone = match value(form, "zone") {
-        "" => default_zone,
+        "" => previous.map_or("America/Chicago", |item| item.zone.as_str()),
         zone => zone,
     };
     if !matches!(
@@ -3916,6 +3971,22 @@ fn scheduled_item(
     if publish_at <= now {
         return Err("Choose a publishing time in the future.".into());
     }
+    let cadence = match form.get("repeat").map(|setting| setting.trim()) {
+        None => previous.and_then(|item| item.recurrence.map(|recurrence| recurrence.cadence)),
+        Some("" | "none") => None,
+        Some(code) => Some(Cadence::parse(code).ok_or("Choose a valid repeat schedule.")?),
+    };
+    if kind == "event" && cadence.is_some() {
+        return Err("Only scheduled posts can repeat.".into());
+    }
+    let recurrence = cadence.map(|cadence| {
+        let anchor_at = previous
+            .filter(|item| item.publish_at == publish_at && item.zone == zone)
+            .and_then(|item| item.recurrence)
+            .filter(|recurrence| recurrence.cadence == cadence)
+            .map_or(publish_at, |recurrence| recurrence.anchor_at);
+        RecurringSchedule { cadence, anchor_at }
+    });
     let (event_start, event_end) = if kind == "event" {
         let start =
             canonical_u64(value(form, "event_start")).ok_or("Choose a valid event start time.")?;
@@ -3948,6 +4019,7 @@ fn scheduled_item(
         brand_affiliate: value(form, "brand_affiliate") == "on",
         publish_at,
         zone: zone.into(),
+        recurrence,
         event_start,
         event_end,
         status: "pending".into(),

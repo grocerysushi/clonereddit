@@ -106,6 +106,9 @@ Emails link back to the same localhost server. Keep local outbox files private b
 33. Type `c/technology` to link to a community, or `u/username` to link to a profile. The shorthand becomes clickable in published post text and comments. You can also open or share the short paths `/c/technology` and `/u/username` directly.
 34. In a comment or reply, select text and use **Bold**, **Italic**, **Link**, or **Code**. For a link, replace the selected example URL with your own HTTP or HTTPS address. **Formatting help** shows the Markdown syntax. Older comments keep their plain text until you choose Markdown or apply formatting when editing them.
 35. Open another user’s profile and select **Follow**. Posts they show on their public profile appear in **Following** alongside posts from your joined communities. Choose **Unfollow** from their profile to remove them as a source. Your community memberships and feed preferences still apply.
+36. In **Mod Tools → Scheduled posts and events**, choose **Post**, set a publish time, and select **Daily**, **Weekly**, or **Monthly** under **Repeat**. **Edit** changes the next post and future schedule. **Cancel future posts** ends the series and keeps its published entries in **History**.
+
+Recurring posts follow the selected time zone. Monthly schedules use the last day of shorter months and return to the original day when possible. In America/Chicago, a skipped hour moves that occurrence one hour later, and a repeated hour uses the earlier time. If the server misses several runs, it publishes one overdue post and advances to the next future slot.
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 

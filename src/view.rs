@@ -1353,10 +1353,11 @@ fn scheduled_submission(
     form: &BTreeMap<String, String>,
 ) -> Response {
     let slug = field(form, "community");
-    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Schedule))
-    {
+    let Some(item) =
+        community(state, slug).filter(|item| state.can_moderate(item, ModPermission::Schedule))
+    else {
         return missing(state);
-    }
+    };
 
     let back = format!(
         "/moderation/tools?community={}&section=scheduled",
@@ -1365,7 +1366,13 @@ fn scheduled_submission(
     let result = if action == "cancel-scheduled-item" {
         state.apply(action, form, path)
     } else {
-        normalize_schedule_times(form).and_then(|normalized| state.apply(action, &normalized, path))
+        let existing = if action == "edit-scheduled-item" {
+            scheduled::pending_item(state, item, field(form, "id"))
+        } else {
+            None
+        };
+        normalize_schedule_times(form, existing)
+            .and_then(|normalized| state.apply(action, &normalized, path))
     };
     match result {
         Ok(notice) => Response::redirect(&format!("{back}&notice={}", encode(notice))),
@@ -1390,6 +1397,7 @@ fn scheduled_submission(
 
 fn normalize_schedule_times(
     form: &BTreeMap<String, String>,
+    existing: Option<&crate::model::ScheduledItem>,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut normalized = form.clone();
     let zone = field(form, "zone");
@@ -1398,8 +1406,17 @@ fn normalize_schedule_times(
     } else {
         zone
     };
-    let publish_at = schedule_time::parse_local(field(form, "publish_at"), zone)
-        .map_err(|error| format!("Publish time. {error}"))?;
+    let local = field(form, "publish_at");
+    // A generated occurrence can occupy the repeated hour when Central Time changes.
+    let publish_at = if let Some(existing) = existing.filter(|item| {
+        item.recurrence.is_some()
+            && item.zone == zone
+            && schedule_time::to_local(item.publish_at, zone) == local
+    }) {
+        existing.publish_at
+    } else {
+        schedule_time::parse_local(local, zone).map_err(|error| format!("Publish time. {error}"))?
+    };
     normalized.insert("publish_at".into(), publish_at.to_string());
     normalized.insert("zone".into(), zone.into());
     for (key, label) in [("event_start", "Event start"), ("event_end", "Event end")] {

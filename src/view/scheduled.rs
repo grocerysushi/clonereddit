@@ -6,7 +6,7 @@ use super::{
     action_fields, action_form, content_tool_url, encode, escape, field, icon, post_flair,
 };
 use crate::model::{Community, ContentKind, ModPermission, ScheduledItem, State};
-use crate::schedule_time::{display, to_local};
+use crate::schedule_time::{display, to_local, Cadence};
 
 const CHICAGO: &str = "America/Chicago";
 const ZONES: &[(&str, &str)] = &[
@@ -58,7 +58,7 @@ fn schedule_url(item: &Community) -> String {
     )
 }
 
-fn pending_item<'a>(
+pub(super) fn pending_item<'a>(
     state: &'a State,
     item: &Community,
     reference: &str,
@@ -168,7 +168,16 @@ fn schedule_row(
         _ if needs_flair => "<span class='flair scheduled-status'>Needs post flair</span>",
         _ => "",
     };
-    let publish_label = if upcoming && !needs_flair {
+    let repeat = entry.recurrence.as_ref().map(|rule| rule.cadence);
+    let cadence_label = repeat.map_or_else(String::new, |cadence| {
+        format!(
+            "<span class='flair scheduled-repeat'>{}</span>",
+            cadence.label()
+        )
+    });
+    let publish_label = if upcoming && repeat.is_some() {
+        "Next post"
+    } else if upcoming && !needs_flair {
         "Publishes"
     } else {
         "Scheduled for"
@@ -178,12 +187,17 @@ fn schedule_row(
     } else {
         ""
     };
-    let mut times = time_row(publish_label, entry.publish_at);
+    let zone = if repeat.is_some() {
+        entry.zone.as_str()
+    } else {
+        CHICAGO
+    };
+    let mut times = time_row(publish_label, entry.publish_at, zone);
     if let Some(start) = entry.event_start {
-        times.push_str(&time_row("Event starts", start));
+        times.push_str(&time_row("Event starts", start, CHICAGO));
     }
     if let Some(end) = entry.event_end {
-        times.push_str(&time_row("Event ends", end));
+        times.push_str(&time_row("Event ends", end, CHICAGO));
     }
     let actions = if upcoming {
         let edit = format!("{back}&edit={}#scheduled-editor", entry.id);
@@ -191,7 +205,11 @@ fn schedule_row(
             "cancel-scheduled-item",
             back,
             &[("community", &item.slug), ("id", &entry.id.to_string())],
-            "Cancel schedule",
+            if repeat.is_some() {
+                "Cancel future posts"
+            } else {
+                "Cancel schedule"
+            },
             "",
             "button light",
         );
@@ -208,16 +226,16 @@ fn schedule_row(
         String::new()
     };
     format!(
-        "<li class='scheduled-row'><header class='scheduled-row-heading'><h3>{}</h3><div class='scheduled-labels'><span class='flair scheduled-kind'>{kind}</span>{status}</div></header><dl class='scheduled-meta'>{times}</dl>{flair_notice}{actions}</li>",
+        "<li class='scheduled-row'><header class='scheduled-row-heading'><h3>{}</h3><div class='scheduled-labels'><span class='flair scheduled-kind'>{kind}</span>{cadence_label}{status}</div></header><dl class='scheduled-meta'>{times}</dl>{flair_notice}{actions}</li>",
         escape(&entry.title)
     )
 }
 
-fn time_row(label: &str, timestamp: u64) -> String {
+fn time_row(label: &str, timestamp: u64, zone: &str) -> String {
     format!(
         "<div><dt>{label}</dt><dd><time datetime='{}Z'>{}</time></dd></div>",
         to_local(timestamp, "UTC"),
-        escape(&display(timestamp, CHICAGO))
+        escape(&display(timestamp, zone))
     )
 }
 
@@ -230,6 +248,7 @@ struct Editor<'a> {
     flair: &'a str,
     flair_id: Option<u64>,
     zone: &'a str,
+    repeat: Option<Cadence>,
     publish_at: String,
     event_start: String,
     event_end: String,
@@ -249,6 +268,7 @@ impl<'a> Editor<'a> {
             flair: "",
             flair_id: None,
             zone: CHICAGO,
+            repeat: None,
             publish_at: String::new(),
             event_start: String::new(),
             event_end: String::new(),
@@ -270,6 +290,7 @@ impl<'a> Editor<'a> {
             flair: &entry.flair,
             flair_id: entry.flair_id,
             zone,
+            repeat: entry.recurrence.as_ref().map(|rule| rule.cadence),
             publish_at: convert(entry.publish_at),
             event_start: entry.event_start.map_or_else(String::new, convert),
             event_end: entry.event_end.map_or_else(String::new, convert),
@@ -289,6 +310,7 @@ impl<'a> Editor<'a> {
             flair: field(form, "flair"),
             flair_id: field(form, "flair_id").trim().parse().ok(),
             zone: known_zone(field(form, "zone")),
+            repeat: Cadence::parse(field(form, "repeat")),
             publish_at: field(form, "publish_at").to_owned(),
             event_start: field(form, "event_start").to_owned(),
             event_end: field(form, "event_end").to_owned(),
@@ -322,6 +344,20 @@ impl<'a> Editor<'a> {
                 )
             })
             .collect();
+        let mut repeat_options = format!(
+            "<option value='none'{}>Does not repeat</option>",
+            selection(self.repeat.is_none())
+        );
+        for cadence in [Cadence::Daily, Cadence::Weekly, Cadence::Monthly] {
+            write!(
+                repeat_options,
+                "<option value='{}'{}>{}</option>",
+                cadence.code(),
+                selection(self.repeat == Some(cadence)),
+                cadence.label()
+            )
+            .unwrap();
+        }
         let alert = if error.is_empty() {
             String::new()
         } else {
@@ -349,6 +385,7 @@ impl<'a> Editor<'a> {
 <fieldset class="scheduled-dates"><legend>Date and time</legend>
 <label>Time zone<select name="zone" aria-describedby="schedule-zone-help">{zone_options}</select></label><p id="schedule-zone-help" class="muted">All dates use the selected time zone. Choose an explicit Central offset if a clock change repeats the hour.</p>
 <label>Publish at<input type="datetime-local" name="publish_at" value="{publish_at}" required></label>
+<label>Repeat<select name="repeat" aria-describedby="schedule-repeat-help">{repeat_options}</select></label><p id="schedule-repeat-help" class="muted">Posts can repeat in the selected time zone. Monthly posts use the last day of shorter months.</p>
 <label>Event starts <small>Required for events</small><input type="datetime-local" name="event_start" value="{event_start}"></label>
 <label>Event ends <small>Optional for events</small><input type="datetime-local" name="event_end" value="{event_end}"></label>
 </fieldset>

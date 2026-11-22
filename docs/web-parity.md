@@ -355,6 +355,12 @@ Workflow **064** is implemented. Signed-in users can follow and unfollow profile
 
 Chromium checks at 1440 and 390 CSS pixels covered following and unfollowing, mixed feed ordering, duplicate prevention, privacy, blocking, account isolation, and restart. Server checks covered profile visibility changes, private membership and approval, moderation and deletion, Following-scoped search, and the joined-only Home preference.
 
+## Recurring scheduled posts update
+
+Workflow **093** is implemented. Moderators with scheduling permission can create daily, weekly, or monthly post series, edit the next publication and cadence, and cancel future posts. Published occurrences have their own entries in **History**. Schedules use the selected time zone and resume with the next future slot after one overdue publication. This brings the implementation count to **92 implemented, 5 partial, and 3 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered native schedule creation, cadence and time changes, permission checks, restart catch-up, and cancellation with published history intact. HTTP and Rust checks covered legacy records, month-end and daylight saving time, and exactly-once publication across restart or a failed save.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
