@@ -6,6 +6,7 @@ mod community_setup;
 mod creator;
 mod custom;
 mod discussion;
+mod feed_layout;
 mod moderation;
 mod moderation_workspace;
 mod post_composer;
@@ -32,8 +33,8 @@ use crate::http::{Request, Response};
 use crate::mail::AccountMail;
 use crate::media;
 use crate::model::{
-    Comment, Community, ContentKind, CustomFeed, ModPermission, Post, ProfileAvatar, State,
-    DELETED_ACCOUNT,
+    Comment, Community, ContentKind, CustomFeed, FeedLayout, ModPermission, Post, ProfileAvatar,
+    State, DELETED_ACCOUNT,
 };
 use crate::schedule_time;
 
@@ -46,6 +47,9 @@ pub fn route(
 ) -> Response {
     if request.path.starts_with("/account/") {
         return session::route(&request, state, path, auth, mail);
+    }
+    if request.method == "POST" && request.path == "/feeds/layout" {
+        return feed_layout_submission(state, path, &request.form);
     }
     if state.username.is_empty()
         && (request.method == "POST" || session::requires_account(&request))
@@ -388,8 +392,15 @@ pub fn route(
                 .map(|c| c.name.as_str())
                 .or_else(|| custom_feed(state, active).map(|item| item.name.as_str()))
                 .unwrap_or("The front page");
-            let content = search::render(state, auth, active, query, search_kind)
-                .unwrap_or_else(|| feed(state, query, active));
+            let content =
+                search::render(state, auth, active, query, search_kind).unwrap_or_else(|| {
+                    let layout = if state.username.is_empty() {
+                        request.browser_feed_layout()
+                    } else {
+                        state.feed_layout
+                    };
+                    feed(state, query, active, layout)
+                });
             let title = if searching { "Search" } else { title };
             (title, active, content)
         }
@@ -1304,6 +1315,32 @@ fn image_response(image: Option<&ProfileAvatar>) -> Response {
     }
 }
 
+fn feed_layout_submission(
+    state: &mut State,
+    path: &Path,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let requested_back = field(form, "back");
+    let back = if (matches!(requested_back, "/" | "/settings") || requested_back.starts_with("/?"))
+        && !requested_back.contains('\\')
+        && requested_back.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        requested_back
+    } else {
+        "/"
+    };
+    let Some(layout) = FeedLayout::parse(field(form, "layout")) else {
+        return form_error(state, "Choose Card or Compact.", back);
+    };
+    if state.username.is_empty() {
+        return Response::redirect(back).with_feed_layout_cookie(layout);
+    }
+    match state.apply("set-feed-layout", form, path) {
+        Ok(_) => Response::redirect(back),
+        Err(error) => form_error(state, &error, back),
+    }
+}
+
 fn form_error(state: &State, error: &str, back: &str) -> Response {
     Response::html(layout(state, "", "Check your submission", &format!(
         "<section class='panel standalone'><h1>Check your submission</h1><p>{}</p><a class='button dark' href='{}'>Go back</a></section>", escape(error), escape(back)
@@ -1951,7 +1988,12 @@ fn community_flair_filter(base: &str, flair: &str, options: &BTreeSet<&str>) -> 
     format!("<details class='sort-picker community-flair-filter'><summary>Flair <strong>{}</strong>{}</summary><nav class='sort' aria-label='Filter by post flair'>{links}</nav></details>{clear}", escape(current), icon("chevron"))
 }
 
-fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String {
+fn feed(
+    state: &State,
+    query: &BTreeMap<String, String>,
+    active: &str,
+    layout: FeedLayout,
+) -> String {
     let selected = community(state, active);
     let custom = custom_feed(state, active);
     let search = field(query, "q").trim();
@@ -2294,7 +2336,8 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         flair,
         &available_flair,
     );
-    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}{flair_filter}</div><span>{total} {result_label}{}</span></div>", icon("chevron"), if total == 1 { "" } else { "s" }).unwrap();
+    let layout_options = feed_layout::switcher(layout, &back);
+    write!(html, "<div class='feed-tools'><div class='feed-sort-options'><details class='sort-picker'><summary>Sort by <strong>{sort_label}</strong>{}</summary><nav class='sort' aria-label='Sort discussions'>{sort_links}</nav></details>{range}{flair_filter}{layout_options}</div><span>{total} {result_label}{}</span></div>", icon("chevron"), if total == 1 { "" } else { "s" }).unwrap();
     if !highlights.is_empty() {
         highlights.sort_unstable_by_key(|post| highlight_positions[&post.id]);
         html.push_str(&community_highlights(state, &highlights));
@@ -2324,8 +2367,12 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     } else if total == 0 {
         html.push_str("<section class='panel empty'><h2>No discussions here yet.</h2><p>Try a different search or check your feed controls.</p><a class='button light' href='/settings'>Feed controls</a></section>");
     }
+    let view = match layout {
+        FeedLayout::Card => PostView::Card,
+        FeedLayout::Compact => PostView::Compact,
+    };
     for post in posts {
-        html.push_str(&post_card(state, post, &back, false, false));
+        html.push_str(&post_card(state, post, &back, view, false));
     }
     html
 }
@@ -2583,7 +2630,16 @@ fn votes(action: &str, id: u64, score: i32, vote: i8, back: &str) -> String {
     )
 }
 
-fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -> String {
+#[derive(Clone, Copy)]
+enum PostView {
+    Card,
+    Compact,
+    Thread,
+}
+
+fn post_card(state: &State, post: &Post, back: &str, view: PostView, pinned: bool) -> String {
+    let full = matches!(view, PostView::Thread);
+    let compact = matches!(view, PostView::Compact);
     let id = post.id.to_string();
     let url = format!("/thread?id={id}");
     let discussion_url = escape(if full { back } else { &url });
@@ -2596,41 +2652,11 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
     } else {
         format!("<h2><a href='{url}'>{title}</a></h2>")
     };
-    let body_excerpt = if full || post.body.chars().count() <= 300 {
-        post.body.clone()
-    } else {
-        format!("{}…", post.body.chars().take(297).collect::<String>())
-    };
-    let body = if body_excerpt.is_empty() {
-        String::new()
-    } else {
-        format!("<p class='post-body'>{}</p>", rich_text(&body_excerpt))
-    };
-    let outgoing = if post.url.starts_with("https://") || post.url.starts_with("http://") {
-        format!("<a class='outgoing' href='{}' target='_blank' rel='noopener noreferrer'>Open linked article ↗</a>", escape(&post.url))
-    } else {
-        String::new()
-    };
-    let image = if post.image {
-        "<img class='post-image' src='/plaza.jpg' width='1260' height='419' alt='People crossing a sunlit public plaza with concrete terraces and green trees'>"
-    } else {
-        ""
-    };
     let sensitive = is_sensitive(state, post);
-    let media = post_attachments(post);
-    let poll = post_poll(state, post, back);
-    let repost = repost_card(state, post);
-    let content = format!("{body}{outgoing}{image}{media}{poll}{repost}");
-    let preview = if (post.spoiler || sensitive && state.sensitive != "show") && !content.is_empty()
-    {
-        let label = if post.spoiler {
-            "Reveal spoiler"
-        } else {
-            "Show sensitive preview"
-        };
-        format!("<details class='sensitive-preview'><summary>{label}</summary>{content}</details>")
+    let preview = if compact {
+        String::new()
     } else {
-        content
+        event_details(state, post.id) + &post_preview(state, post, back, full, sensitive)
     };
     let mut flair = if post.flair.is_empty() {
         String::new()
@@ -2649,6 +2675,11 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
     }
     if post.brand_affiliate {
         flair.push_str("<span class='content-tag affiliate-tag'>Brand affiliate</span>");
+    }
+    if compact {
+        if let Some(label) = compact_post_kind(state, post) {
+            write!(flair, "<span class='compact-post-kind'>{label}</span>").unwrap();
+        }
     }
     let saved = state.saved.contains(&post.id);
     let hide_label = if state.hidden.contains(&post.id) {
@@ -2729,7 +2760,6 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
         .unwrap();
     }
     let comment_count = state.visible_reply_count(post);
-    let event = event_details(state, post.id);
     let pin_label = if pinned {
         format!(
             "<div class='pinned-label'>{} Pinned discussion</div>",
@@ -2740,8 +2770,12 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
     };
     format!(
         r#"<article class="panel post{kind}">{pin_label}<div class="post-meta"><a class="post-community" href="/?view={slug}">{mark}{name}</a><span class="meta-dot">·</span>{author}<span class="meta-dot">·</span><span>{age}</span>{flair}<details class="post-menu"><summary aria-label="Post actions">{more}</summary><div class="menu-popover">{menu}</div></details></div>
-{wrapper}{event}{preview}<div class="post-actions">{votes}<a class="action comment-link" href="{discussion_url}#comments">{chat} <span>{comment_count} comments</span></a>{save}</div></article>"#,
-        kind = if full { " full-post" } else { "" },
+{wrapper}{preview}<div class="post-actions">{votes}<a class="action comment-link" href="{discussion_url}#comments">{chat} <span>{comment_count} comments</span></a>{save}</div></article>"#,
+        kind = match view {
+            PostView::Card => "",
+            PostView::Compact => " compact-post",
+            PostView::Thread => " full-post",
+        },
         slug = encode(&post.community),
         name = escape(name),
         author = if state.has_profile(&post.author) {
@@ -2772,6 +2806,60 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
             if saved { "action saved" } else { "action" }
         ),
     )
+}
+
+fn compact_post_kind(state: &State, post: &Post) -> Option<&'static str> {
+    let label = if post.poll.is_some() {
+        "Poll"
+    } else if post.repost_of.is_some() {
+        "Repost"
+    } else if search::has_media(post) {
+        "Media"
+    } else if !post.url.is_empty() {
+        "Link"
+    } else if published_event(state, post.id).is_some() {
+        "Event"
+    } else {
+        return None;
+    };
+    (!post.flair.eq_ignore_ascii_case(label)).then_some(label)
+}
+
+fn post_preview(state: &State, post: &Post, back: &str, full: bool, sensitive: bool) -> String {
+    let body_excerpt = if full || post.body.chars().count() <= 300 {
+        post.body.clone()
+    } else {
+        format!("{}…", post.body.chars().take(297).collect::<String>())
+    };
+    let body = if body_excerpt.is_empty() {
+        String::new()
+    } else {
+        format!("<p class='post-body'>{}</p>", rich_text(&body_excerpt))
+    };
+    let outgoing = if post.url.starts_with("https://") || post.url.starts_with("http://") {
+        format!("<a class='outgoing' href='{}' target='_blank' rel='noopener noreferrer'>Open linked article ↗</a>", escape(&post.url))
+    } else {
+        String::new()
+    };
+    let image = if post.image {
+        "<img class='post-image' src='/plaza.jpg' width='1260' height='419' alt='People crossing a sunlit public plaza with concrete terraces and green trees'>"
+    } else {
+        ""
+    };
+    let media = post_attachments(post);
+    let poll = post_poll(state, post, back);
+    let repost = repost_card(state, post);
+    let content = format!("{body}{outgoing}{image}{media}{poll}{repost}");
+    if (post.spoiler || sensitive && state.sensitive != "show") && !content.is_empty() {
+        let label = if post.spoiler {
+            "Reveal spoiler"
+        } else {
+            "Show sensitive preview"
+        };
+        format!("<details class='sensitive-preview'><summary>{label}</summary>{content}</details>")
+    } else {
+        content
+    }
 }
 
 fn post_attachments(post: &Post) -> String {
@@ -2865,11 +2953,14 @@ fn repost_card(state: &State, post: &Post) -> String {
     format!("<aside class='post-repost' aria-label='Original discussion'><p>Originally posted in <a href='{}'>{}</a></p><a class='repost-original-title' href='/thread?id={id}'>{}</a></aside>", community_url(&original.community), escape(source), escape(&original.title))
 }
 
-fn event_details(state: &State, post_id: u64) -> String {
-    let details = state.scheduled.iter().find(|item| {
+fn published_event(state: &State, post_id: u64) -> Option<&crate::model::ScheduledItem> {
+    state.scheduled.iter().find(|item| {
         item.post_id == Some(post_id) && item.kind == "event" && item.status == "published"
-    });
-    let Some(event) = details else {
+    })
+}
+
+fn event_details(state: &State, post_id: u64) -> String {
+    let Some(event) = published_event(state, post_id) else {
         return String::new();
     };
     let Some(start) = event.event_start else {
@@ -2967,7 +3058,7 @@ fn thread(
     let back = sort.thread_url(post.id);
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
     let pinned = community(state, &post.community).is_some_and(|item| item.is_highlighted(post.id));
-    html.push_str(&post_card(state, post, &back, true, pinned));
+    html.push_str(&post_card(state, post, &back, PostView::Thread, pinned));
     write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort)).unwrap();
     let can_write = can_write_here(state, &post.community);
     let locked = state.is_discussion_locked(post.id);
@@ -3214,6 +3305,12 @@ fn reply_form(
 
 fn preferences(state: &State) -> String {
     let mut html = String::from("<section class='panel standalone'><h1>Feed controls</h1><p>These preferences apply only to your view of Commonline.</p>");
+    write!(
+        html,
+        "<div class='preference-list'><h2>Feed layout</h2>{}</div>",
+        feed_layout::switcher(state.feed_layout, "/settings")
+    )
+    .unwrap();
     let radios = [("show", "Show"), ("blur", "Collapse previews"), ("hide", "Hide")].into_iter().map(|(option, label)| {
         format!("<label class='checkbox'><input type='radio' name='sensitive' value='{option}'{}> {label}</label>", if state.sensitive == option { " checked" } else { "" })
     }).collect::<String>();

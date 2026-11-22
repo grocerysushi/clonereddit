@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use super::{
     can_view_post, community, community_url, encode, escape, icon, initials, post_card,
-    profile_name, profile_url, visible_post,
+    profile_name, profile_url, visible_post, PostView,
 };
 use crate::model::{Comment, Post, State};
 
@@ -197,7 +197,7 @@ fn add_posts<'a>(
                 .unwrap_or(&post.community);
             write!(html, "<article class='panel profile-item'><a class='subtle-link' href='{}'>{}</a><h2><a href='/thread?id={}'>{}</a></h2><p class='muted'>{} comments</p></article>", community_url(&post.community), escape(group), post.id, escape(&post.title), state.visible_reply_count(post)).unwrap();
         } else {
-            html.push_str(&post_card(state, post, back, false, false));
+            html.push_str(&post_card(state, post, back, PostView::Card, false));
         }
     }
 }

@@ -34,6 +34,9 @@ mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
 #[path = "model/discussion_locks.rs"]
 mod discussion_locks;
+#[path = "model/feed_layout.rs"]
+mod feed_layout;
+pub use feed_layout::FeedLayout;
 #[path = "model/highlights.rs"]
 mod highlights;
 #[path = "model/moderation_appeals.rs"]
@@ -339,6 +342,7 @@ pub struct State {
     pub blocked: BTreeSet<String>,
     pub keywords: Vec<String>,
     pub sensitive: String,
+    pub feed_layout: FeedLayout,
     pub reports: Vec<Report>,
     pub messages: Vec<DirectMessage>,
     chat_request_permission: ChatRequestPermission,
@@ -533,6 +537,7 @@ impl State {
             blocked: BTreeSet::new(),
             keywords: Vec::new(),
             sensitive: "blur".into(),
+            feed_layout: FeedLayout::default(),
             reports: Vec::new(),
             messages: Vec::new(),
             chat_request_permission: ChatRequestPermission::default(),
@@ -1019,6 +1024,11 @@ impl State {
                 }
             }
             "preferences" => self.update_preferences(form),
+            "set-feed-layout" => {
+                self.feed_layout =
+                    FeedLayout::parse(value(form, "layout")).ok_or("Choose Card or Compact.")?;
+                Ok("Feed layout saved.")
+            }
             "create" => self.create_post(form),
             "create-poll" => self.create_poll(form),
             "create-repost" => self.create_repost(form),
@@ -2710,6 +2720,9 @@ impl State {
             }),
             ["chat-request-permission", permission] => {
                 self.chat_request_permission = ChatRequestPermission::parse(permission)?;
+            }
+            ["feed-layout", layout] => {
+                self.feed_layout = FeedLayout::parse(layout)?;
             }
             fields @ (["chat-request-sequence", ..]
             | ["chat-request", ..]

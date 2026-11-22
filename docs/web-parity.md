@@ -287,6 +287,12 @@ Workflow **016** is implemented. Post and media search combine exact author, com
 
 Chromium checks at 1440 and 390 CSS pixels covered combined filters, phrase boundaries, clear and recovery controls, sort and time-range retention, access from separate accounts, and reopening a filtered URL after restart. HTTP checks covered Unicode, conflicting filters, and exclusion of private, removed, and personally filtered results. The existing typed-search and community-feed flair checks also passed.
 
+## Feed layout update
+
+Workflow **023** is implemented. Feeds and post search offer **Card** and **Compact** views. The choice is saved per account or per browser for guests. Compact keeps titles, post details, and common actions available in a denser list, with full content in the discussion. This brings the implementation count to **81 implemented, 8 partial, and 11 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered both layouts, account and guest isolation, old accounts defaulting to Card, and preference retention after reload and restart. They also checked sorting, flair filtering, search, post actions, and full discussion content from Compact.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

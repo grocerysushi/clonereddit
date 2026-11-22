@@ -3,7 +3,7 @@ use std::io::{self, Write};
 
 use super::{
     checked_handle, encode, encode_image, next_id, required, unix_seconds, value,
-    ChatRequestPermission, Comment, Community, CustomFeed, DirectMessage, Notification,
+    ChatRequestPermission, Comment, Community, CustomFeed, DirectMessage, FeedLayout, Notification,
     NotificationPreferences, Post, PostDraft, ProfileAvatar, SocialLink, State, DELETED_ACCOUNT,
 };
 
@@ -19,6 +19,7 @@ pub(super) struct ProfileData {
     blocked: BTreeSet<String>,
     keywords: Vec<String>,
     pub(super) sensitive: String,
+    feed_layout: FeedLayout,
     pub(super) custom_feeds: Vec<CustomFeed>,
     recent: Vec<String>,
     pub(super) history: Vec<u64>,
@@ -66,6 +67,7 @@ impl ProfileData {
             blocked: state.blocked.clone(),
             keywords: state.keywords.clone(),
             sensitive: state.sensitive.clone(),
+            feed_layout: state.feed_layout,
             custom_feeds: state.custom_feeds.clone(),
             recent: state.recent.clone(),
             history: state.history.clone(),
@@ -99,6 +101,7 @@ impl ProfileData {
         state.blocked = self.blocked;
         state.keywords = self.keywords;
         state.sensitive = self.sensitive;
+        state.feed_layout = self.feed_layout;
         state.custom_feeds = self.custom_feeds;
         state.recent = self.recent;
         state.history = self.history;
@@ -133,6 +136,7 @@ impl ProfileData {
                 | "draft-sequence"
                 | "notification-preferences"
                 | "chat-request-permission"
+                | "feed-layout"
                 | "F"
                 | "V"
                 | "H"
@@ -183,6 +187,9 @@ impl ProfileData {
                 "chat-request-permission\t{}",
                 self.chat_request_permission.as_str()
             )?;
+        }
+        if self.feed_layout != FeedLayout::default() {
+            writeln!(file, "feed-layout\t{}", self.feed_layout.code())?;
         }
         for (kind, image) in [("avatar", &self.avatar), ("cover", &self.cover)] {
             if let Some(image) = image {

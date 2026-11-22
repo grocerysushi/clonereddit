@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::model::FeedLayout;
+
 const MAX_HEADERS: usize = 16 * 1024;
 const MAX_BODY: usize = 128 * 1024;
 const MAX_IMAGE_BYTES: usize = 512 * 1024;
@@ -27,6 +29,8 @@ const MAX_CONNECTIONS: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const SESSION_COOKIE_NAME: &str = "commonline_session";
 pub(crate) const SESSION_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
+const FEED_LAYOUT_COOKIE_NAME: &str = "commonline_feed_layout";
+const FEED_LAYOUT_MAX_AGE_SECS: u64 = 365 * 24 * 60 * 60;
 const WIZARD_FIELDS: &[&str] = &[
     "review_community",
     "setup_step",
@@ -75,6 +79,24 @@ pub struct Request {
     pub user_agent: Option<String>,
 }
 
+impl Request {
+    pub fn browser_feed_layout(&self) -> FeedLayout {
+        self.cookie
+            .as_deref()
+            .unwrap_or_default()
+            .split(';')
+            .filter_map(|part| part.trim().split_once('='))
+            .find_map(|(name, value)| {
+                if name == FEED_LAYOUT_COOKIE_NAME {
+                    FeedLayout::parse(value)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+}
+
 pub struct Upload {
     pub content_type: String,
     pub bytes: Vec<u8>,
@@ -94,6 +116,7 @@ pub struct Response {
     media_length: Option<usize>,
     body_slice: Option<Range<usize>>,
     session_cookie: Option<String>,
+    feed_layout_cookie: Option<FeedLayout>,
     chat_client: bool,
 }
 
@@ -129,6 +152,7 @@ impl Response {
             media_length: None,
             body_slice: None,
             session_cookie: None,
+            feed_layout_cookie: None,
             chat_client: false,
         }
     }
@@ -147,6 +171,11 @@ impl Response {
         self.session_cookie = Some(format!(
             "{SESSION_COOKIE_NAME}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
         ));
+        self
+    }
+
+    pub fn with_feed_layout_cookie(mut self, layout: FeedLayout) -> Self {
+        self.feed_layout_cookie = Some(layout);
         self
     }
 
@@ -222,6 +251,12 @@ impl Response {
         }
         if let Some(cookie) = &self.session_cookie {
             headers.push_str(&format!("Set-Cookie: {cookie}\r\n"));
+        }
+        if let Some(layout) = self.feed_layout_cookie {
+            headers.push_str(&format!(
+                "Set-Cookie: {FEED_LAYOUT_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={FEED_LAYOUT_MAX_AGE_SECS}\r\n",
+                layout.code()
+            ));
         }
         if self.status == 405 {
             headers.push_str("Allow: GET, HEAD, POST\r\n");

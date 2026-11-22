@@ -5,7 +5,7 @@ use std::fmt::Write;
 use super::moderation_workspace::{report_record, QueueKind};
 use super::{
     action_fields, can_view_post, community_owner, community_url, encode, escape, field, hidden,
-    post_card,
+    post_card, PostView,
 };
 use crate::model::{Community, ModMail, ModPermission, State};
 
@@ -206,7 +206,13 @@ fn mod_feed(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
     }
     html.push_str("</section>");
     for (post, pinned) in posts {
-        html.push_str(&post_card(state, post, MOD_FEED_URL, false, pinned));
+        html.push_str(&post_card(
+            state,
+            post,
+            MOD_FEED_URL,
+            PostView::Card,
+            pinned,
+        ));
     }
     html
 }
