@@ -24,6 +24,8 @@ pub use chat_requests::{ChatRequest, ChatRequestPermission};
 #[path = "model/content_moderation.rs"]
 mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
+#[path = "model/discussion_locks.rs"]
+mod discussion_locks;
 #[path = "model/moderation_appeals.rs"]
 mod moderation_appeals;
 pub use moderation_appeals::{Appeal, AppealStatus};
@@ -304,6 +306,7 @@ pub struct CommunityRestriction {
 pub struct State {
     pub communities: Vec<Community>,
     pub posts: Vec<Post>,
+    locked_discussions: BTreeSet<u64>,
     pub comments: Vec<Comment>,
     pub votes: BTreeMap<u64, i8>,
     pub comment_votes: BTreeMap<u64, i8>,
@@ -486,6 +489,7 @@ impl State {
         Self {
             communities,
             posts,
+            locked_discussions: BTreeSet::new(),
             comments,
             votes: BTreeMap::new(),
             comment_votes: BTreeMap::new(),
@@ -1000,6 +1004,8 @@ impl State {
             "revoke-approved-member" => self.revoke_approved_member(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
+            "lock-discussion" => self.set_discussion_lock(form, true),
+            "unlock-discussion" => self.set_discussion_lock(form, false),
             "save-automod-rule" => self.save_automod_rule(form),
             "delete-automod-rule" => self.delete_automod_rule(form),
             "dismiss-automod-flag" => self.dismiss_automod_flag(form),
@@ -1553,6 +1559,9 @@ impl State {
             .is_some_and(|community| self.can_contribute(community))
         {
             return Err("This community limits who can add a comment.".into());
+        }
+        if self.is_discussion_locked(post_id) {
+            return Err("This discussion is locked.".into());
         }
         let body = required(form, "body", "Comment", 4_000)?;
         let parent = match value(form, "parent") {
@@ -2236,6 +2245,7 @@ impl State {
             .position(|post| post.id == id && post.author == self.username)
             .ok_or("You can delete posts from your own profile.")?;
         let post = self.posts.remove(index);
+        self.locked_discussions.remove(&id);
         // Retained community reports keep the scope of the original discussion.
         for report in self
             .reports
@@ -2412,6 +2422,13 @@ impl State {
                     return None;
                 }
                 post.created_at = Some(number(created_at)?);
+            }
+            ["discussion-lock", id] => {
+                let id = number(id)?;
+                if !self.posts.iter().any(|post| post.id == id) {
+                    return None;
+                }
+                self.locked_discussions.insert(id);
             }
             ["post-poll", id, closes_at, options @ ..] if (2..=6).contains(&options.len()) => {
                 let id = number(id)?;
@@ -2816,6 +2833,9 @@ impl State {
             )?;
             if let Some(created_at) = post.created_at {
                 writeln!(file, "post-created\t{}\t{created_at}", post.id)?;
+            }
+            if self.is_discussion_locked(post.id) {
+                writeln!(file, "discussion-lock\t{}", post.id)?;
             }
             if let Some(poll) = &post.poll {
                 write!(file, "post-poll\t{}\t{}", post.id, poll.closes_at)?;

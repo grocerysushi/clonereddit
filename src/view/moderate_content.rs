@@ -69,6 +69,34 @@ pub(super) fn detail_url(item: &Community, kind: ContentKind, id: u64) -> String
     )
 }
 
+pub(super) fn discussion_lock_controls(
+    state: &State,
+    item: &Community,
+    post: &Post,
+    back: &str,
+) -> String {
+    if !state.can_moderate(item, ModPermission::Content) {
+        return String::new();
+    }
+
+    let id = post.id;
+    let locked = state.is_discussion_locked(id);
+    let (status, action, button) = if locked {
+        ("Replies locked", "unlock-discussion", "Unlock discussion")
+    } else {
+        ("Replies open", "lock-discussion", "Lock discussion")
+    };
+    let form = action_form(
+        action,
+        back,
+        &[("community", &item.slug), ("id", &id.to_string())],
+        button,
+        "",
+        "button light",
+    );
+    format!("<div class='mod-discussion-lock-controls' data-post-id='{id}' data-discussion-locked='{locked}'><span class='flair mod-discussion-lock-status'>{status}</span>{form}</div>")
+}
+
 pub(super) fn render(
     state: &State,
     item: &Community,
@@ -282,6 +310,7 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
             )
             .unwrap();
         }
+        html.push_str(&discussion_lock_controls(state, item, post, &target));
     }
     let fields = [
         ("community", item.slug.as_str()),

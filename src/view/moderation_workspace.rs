@@ -728,6 +728,7 @@ impl<'a> Workspace<'a> {
         }
         let mut html =
             String::from("<section class='panel mod-section'><ul class='mod-discussions-list'>");
+        let back = tools_url(self.item, "discussions");
         for post in self.posts.values().rev() {
             let pinned = if self.item.pinned_post == Some(post.id) {
                 "<span class='flair'>Pinned</span>"
@@ -735,7 +736,8 @@ impl<'a> Workspace<'a> {
                 ""
             };
             let (title, review) = self.post_review_links(state, post);
-            write!(html, "<li class='mod-discussion-row'><div>{title}<p class='muted'>{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}</div></li>", account_byline(&post.author), escape(&post.age_label(crate::schedule_time::now())), score(state, post), state.visible_reply_count(post)).unwrap();
+            let lock = moderate_content::discussion_lock_controls(state, self.item, post, &back);
+            write!(html, "<li class='mod-discussion-row' data-post-id='{}'><div>{title}<p class='muted'>{} · {} · {} net votes · {} replies</p></div><div class='mod-discussion-actions'>{pinned}{review}{lock}</div></li>", post.id, account_byline(&post.author), escape(&post.age_label(crate::schedule_time::now())), score(state, post), state.visible_reply_count(post)).unwrap();
         }
         html.push_str("</ul></section>");
         html

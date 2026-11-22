@@ -248,8 +248,11 @@ pub fn route(
         if matches!(action, "restrict-user" | "lift-restriction") {
             return restriction_submission(state, path, action, &request.form);
         }
-        if matches!(action, "remove-content" | "restore-content") {
-            return content_submission(state, path, action, &request.form);
+        if matches!(
+            action,
+            "remove-content" | "restore-content" | "lock-discussion" | "unlock-discussion"
+        ) {
+            return content_submission(state, path, action, &request.form, back);
         }
         if matches!(
             action,
@@ -911,13 +914,19 @@ fn content_submission(
     path: &Path,
     action: &str,
     form: &BTreeMap<String, String>,
+    back: &str,
 ) -> Response {
     let slug = field(form, "community");
     if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Content)) {
         return missing(state);
     }
 
+    let locking = matches!(action, "lock-discussion" | "unlock-discussion");
     match state.apply(action, form, path) {
+        Ok(notice) if locking => {
+            let delimiter = if back.contains('?') { '&' } else { '?' };
+            Response::redirect(&format!("{back}{delimiter}notice={}", encode(notice)))
+        }
         Ok(notice) => {
             let status = if action == "remove-content" {
                 "removed"
@@ -932,6 +941,7 @@ fn content_submission(
                 encode(notice)
             ))
         }
+        Err(error) if locking => form_error(state, &error, back),
         Err(error) => {
             let Some(item) = community(state, slug) else {
                 return missing(state);
@@ -2720,8 +2730,12 @@ fn thread(
         community(state, &post.community).is_some_and(|item| item.pinned_post == Some(post.id));
     html.push_str(&post_card(state, post, &back, true, pinned));
     write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort)).unwrap();
-    let can_reply = can_write_here(state, &post.community);
-    if can_reply {
+    let can_write = can_write_here(state, &post.community);
+    let locked = state.is_discussion_locked(post.id);
+    let can_reply = can_write && !locked;
+    if locked {
+        html.push_str("<p class='community-restriction-note discussion-lock-note muted'><strong>Discussion locked.</strong> A moderator can reopen it.</p>");
+    } else if can_reply {
         let (draft, error) = match action {
             CommentAction::Reply {
                 parent: None,
@@ -2785,7 +2799,7 @@ fn thread(
                 &back,
                 sort,
                 action,
-                can_reply,
+                can_write,
             ));
         }
         if let Some(children) = branches.get(&Some(comment.id)) {
@@ -2871,9 +2885,10 @@ fn comment_card(
     back: &str,
     sort: discussion::CommentSort,
     action: CommentAction<'_>,
-    can_reply: bool,
+    can_write: bool,
 ) -> String {
     let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
+    let can_reply = can_write && !state.is_discussion_locked(comment.post);
     let avatar = if comment.author == DELETED_ACCOUNT {
         "–".into()
     } else {
@@ -2890,7 +2905,7 @@ fn comment_card(
     };
     let owns = comment.author == state.username;
     let (body, controls) = match action {
-        CommentAction::Edit { id, draft, error } if id == comment.id && owns && can_reply => (
+        CommentAction::Edit { id, draft, error } if id == comment.id && owns && can_write => (
             discussion::editor(comment, back, sort, draft.unwrap_or(&comment.body), error),
             String::new(),
         ),
@@ -2922,7 +2937,7 @@ fn comment_card(
         })
         .unwrap_or_default();
     let moderation = content_tool_url(state, community, ContentKind::Comment, comment.id);
-    let menu = discussion::menu(state, comment, back, can_reply, moderation.as_deref());
+    let menu = discussion::menu(state, comment, back, can_write, moderation.as_deref());
     let reply_link = if can_reply {
         format!(
             "<a class='action' href='{}'>{} Reply</a>",

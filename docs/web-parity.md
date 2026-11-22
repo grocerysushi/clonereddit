@@ -227,11 +227,17 @@ Workflows **082** and **083** are implemented. Signed-in users can report an acc
 
 Independent Chromium profiles at 1440 and 390 CSS pixels filed both types of report, used the combined queue filters, and verified the reporter’s private status after review, reopening, and restart. Legacy legal reports and filtered AutoMod flags were also exercised. Community reports remained reviewable in their original community after the author permanently deleted the parent discussion.
 
+## Discussion locking update
+
+Workflow **088** is implemented. Moderators can lock or unlock a post’s discussion from Mod Tools. Locking stops new comments and nested replies while the existing discussion stays readable. Lock and unlock changes persist and are recorded in the community moderation log. This brings the implementation count to **75 implemented, 12 partial, and 13 missing**.
+
+Independent Chromium profiles at 1440 and 390 CSS pixels tested both Mod Tools controls, the locked thread notice, and top-level and nested replies after reopening. A separate server check verified community permissions, both states across restarts, existing comment edits and reports, and audit entries for each change.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-3. Expand community operations. Add community-defined reporting rules, granular role permissions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
+3. Expand community operations. Add community-defined reporting rules, granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 
 ## Reddit Help references
