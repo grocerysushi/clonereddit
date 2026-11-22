@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{encode, escape, icon, score};
+use super::{can_view_post, encode, escape, icon, score, visible_post};
 use crate::model::{Community, Post, State};
 
 pub(super) fn render(state: &State, section: &str) -> String {
@@ -12,7 +12,7 @@ pub(super) fn render(state: &State, section: &str) -> String {
         let mut posts: Vec<&Post> = state
             .posts
             .iter()
-            .filter(|post| post.author == state.username)
+            .filter(|post| post.author == state.username && can_view_post(state, post))
             .collect();
         posts.sort_by_key(|post| Reverse(post.id));
         match section {
@@ -39,12 +39,19 @@ fn dashboard(state: &State, posts: &[&Post]) -> String {
     let replies = state
         .comments
         .iter()
-        .filter(|comment| comment.author == state.username)
+        .filter(|comment| {
+            comment.author == state.username && visible_post(state, comment.post).is_some()
+        })
+        .count();
+    let joined = state
+        .communities
+        .iter()
+        .filter(|item| state.joined.contains(&item.slug) && state.can_view_community(item))
         .count();
     let mut html = format!(
         "<dl class='creator-stats'><div><dt>Posts published</dt><dd>{}</dd></div><div><dt>Replies written</dt><dd>{replies}</dd></div><div><dt>Communities joined</dt><dd>{}</dd></div></dl><h2>Latest posts</h2>",
         posts.len(),
-        state.joined.len()
+        joined
     );
     if posts.is_empty() {
         html.push_str("<p class='muted creator-muted'>Your latest posts will appear here.</p>");

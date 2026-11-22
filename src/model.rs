@@ -8,6 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[path = "model/account_data.rs"]
 mod account_data;
 use account_data::ProfileData;
+#[path = "model/approved_members.rs"]
+mod approved_members;
+pub use approved_members::ApprovedMember;
 #[path = "model/moderation_appeals.rs"]
 mod moderation_appeals;
 pub use moderation_appeals::{Appeal, AppealStatus};
@@ -270,6 +273,7 @@ pub struct State {
     pub mod_log: Vec<ModerationEvent>,
     pub saved_responses: Vec<SavedResponse>,
     pub moderator_roles: Vec<ModeratorAssignment>,
+    pub approved_members: Vec<ApprovedMember>,
     pub scheduled: Vec<ScheduledItem>,
     pub restrictions: Vec<CommunityRestriction>,
     pub appeals: Vec<Appeal>,
@@ -441,6 +445,7 @@ impl State {
             mod_log: Vec::new(),
             saved_responses: Vec::new(),
             moderator_roles: Vec::new(),
+            approved_members: Vec::new(),
             scheduled: Vec::new(),
             restrictions: Vec::new(),
             appeals: Vec::new(),
@@ -902,6 +907,8 @@ impl State {
             "delete-saved-response" => self.delete_saved_response(form),
             "set-moderator-role" => self.set_moderator_role(form),
             "remove-moderator-role" => self.remove_moderator_role(form),
+            "approve-member" => self.approve_member(form),
+            "revoke-approved-member" => self.revoke_approved_member(form),
             "schedule-item" => self.schedule_item(form),
             "edit-scheduled-item" => self.edit_scheduled_item(form),
             "cancel-scheduled-item" => self.cancel_scheduled_item(form),
@@ -955,12 +962,26 @@ impl State {
     }
 
     pub fn can_view_community(&self, item: &Community) -> bool {
-        item.visibility != "private" || self.can_moderate(item, ModPermission::Reports)
+        item.visibility != "private"
+            || self.can_moderate(item, ModPermission::Members)
+            || self.is_approved_member(&item.slug, &self.username)
     }
 
     pub fn can_contribute(&self, item: &Community) -> bool {
-        (item.visibility == "public" || self.can_moderate(item, ModPermission::Reports))
+        !self.username.is_empty()
             && !self.is_banned(&item.slug, &self.username)
+            && (item.visibility == "public"
+                || self.can_moderate(item, ModPermission::Members)
+                || self.is_approved_member(&item.slug, &self.username))
+    }
+
+    pub fn can_edit_post(&self, post: &Post) -> bool {
+        post.author == self.username
+            && self
+                .communities
+                .iter()
+                .find(|community| community.slug == post.community)
+                .is_some_and(|community| self.can_contribute(community))
     }
 
     pub fn is_banned(&self, slug: &str, handle: &str) -> bool {
@@ -988,7 +1009,11 @@ impl State {
 
     fn community_slug(&self, form: &BTreeMap<String, String>) -> Result<String, String> {
         let index = self.community_index(form)?;
-        Ok(self.communities[index].slug.clone())
+        let community = &self.communities[index];
+        if !self.can_view_community(community) {
+            return Err("Choose a community.".into());
+        }
+        Ok(community.slug.clone())
     }
 
     fn community_index(&self, form: &BTreeMap<String, String>) -> Result<usize, String> {
@@ -1750,19 +1775,26 @@ impl State {
         &self,
         form: &BTreeMap<String, String>,
         name_limit: usize,
+        existing: Option<&CustomFeed>,
     ) -> Result<(String, BTreeSet<String>), String> {
         let name = required(form, "name", "Feed name", name_limit)?;
         let communities: BTreeSet<_> = self
             .communities
             .iter()
-            .filter(|community| value(form, &format!("community-{}", community.slug)) == "on")
+            .filter(|community| {
+                if self.can_view_community(community) {
+                    value(form, &format!("community-{}", community.slug)) == "on"
+                } else {
+                    existing.is_some_and(|feed| feed.communities.contains(&community.slug))
+                }
+            })
             .map(|community| community.slug.clone())
             .collect();
         Ok((name.into(), communities))
     }
 
     fn create_feed(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let (name, communities) = self.feed_details(form, 50)?;
+        let (name, communities) = self.feed_details(form, 50, None)?;
         let description = bounded(form, "description", "Feed description", 500)?;
         let (private, show_on_profile) = feed_visibility(form).unwrap_or((false, true));
         let id = next_id(&mut self.next_feed)?;
@@ -1779,12 +1811,13 @@ impl State {
 
     fn edit_feed(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let id = id_field(form, "id")?;
-        let (name, communities) = self.feed_details(form, 60)?;
-        let feed = self
+        let index = self
             .custom_feeds
-            .iter_mut()
-            .find(|feed| feed.id == id)
+            .iter()
+            .position(|feed| feed.id == id)
             .ok_or("This custom feed could not be found.")?;
+        let (name, communities) = self.feed_details(form, 60, self.custom_feeds.get(index))?;
+        let feed = &mut self.custom_feeds[index];
         feed.name = name;
         feed.communities = communities;
         if form.contains_key("description") {
@@ -1918,7 +1951,7 @@ impl State {
         &mut self,
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
-        let id = id_field(form, "id")?;
+        let id = self.post_id(form, "id")?;
         if !self
             .posts
             .iter()
@@ -1938,11 +1971,13 @@ impl State {
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
         let id = id_field(form, "id")?;
-        if !self
-            .comments
-            .iter()
-            .any(|comment| comment.id == id && comment.author == self.username)
-        {
+        if !self.comments.iter().any(|comment| {
+            comment.id == id
+                && comment.author == self.username
+                && self
+                    .community_for_post(comment.post)
+                    .is_some_and(|community| self.can_view_community(community))
+        }) {
             return Err("Choose one of your own comments to edit its profile visibility.".into());
         }
         if toggle(&mut self.profile_hidden_comments, id) {
@@ -1997,13 +2032,13 @@ impl State {
     }
 
     fn edit_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let id = id_field(form, "id")?;
+        let id = self.post_id(form, "id")?;
         let index = self
             .posts
             .iter()
             .position(|post| post.id == id && post.author == self.username)
             .ok_or("You can edit posts from your own profile.")?;
-        if self.is_banned(&self.posts[index].community, &self.username) {
+        if !self.can_edit_post(&self.posts[index]) {
             return Err("This community has restricted your posting access.".into());
         }
         let source = self.posts[index]
@@ -2042,7 +2077,7 @@ impl State {
     }
 
     fn delete_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let id = id_field(form, "id")?;
+        let id = self.post_id(form, "id")?;
         let index = self
             .posts
             .iter()
@@ -2365,6 +2400,7 @@ impl State {
             ["moderator-role", slug, handle, role] => {
                 self.read_moderator_role(slug, handle, role)?;
             }
+            ["approved-member", slug, handle] => self.read_approved_member(slug, handle)?,
             ["schedule-sequence", next_scheduled] => self.next_scheduled = number(next_scheduled)?,
             ["restriction-sequence", next_restriction] => {
                 self.next_restriction = number(next_restriction)?
@@ -2560,6 +2596,7 @@ impl State {
             }
         }
         self.write_moderator_roles(file)?;
+        self.write_approved_members(file)?;
         for post in &self.posts {
             writeln!(
                 file,

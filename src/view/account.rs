@@ -2,8 +2,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use super::{action_fields, action_form, community, encode, escape, field};
-use crate::model::{DirectMessage, State};
+use super::{action_fields, action_form, encode, escape, field, visible_post};
+use crate::model::{DirectMessage, Notification, State};
 use crate::schedule_time::{display, to_local};
 
 const INBOX: &str = "/messages";
@@ -266,12 +266,15 @@ fn message_form(contacts: &BTreeSet<&str>, selected: Option<&str>, draft: &str) 
     )
 }
 
+pub(super) fn visible_notifications(state: &State) -> impl Iterator<Item = &Notification> {
+    state.notifications.iter().filter(|item| {
+        item.recipient == state.username
+            && item.post.is_none_or(|id| visible_post(state, id).is_some())
+    })
+}
+
 pub(super) fn notifications(state: &State) -> String {
-    let mut items: Vec<_> = state
-        .notifications
-        .iter()
-        .filter(|item| item.recipient == state.username)
-        .collect();
+    let mut items: Vec<_> = visible_notifications(state).collect();
     items.sort_by_key(|item| Reverse((item.at, item.id)));
     let read = if items.iter().any(|item| !item.read) {
         action_form(
@@ -298,24 +301,12 @@ pub(super) fn notifications(state: &State) -> String {
             } else {
                 "<span class='account-unread'>Unread</span>"
             };
-            let post = item
-                .post
-                .and_then(|id| state.posts.iter().find(|post| post.id == id));
             let link = if item.appeal {
                 "<a class='subtle-link' href='/appeals'>View your appeals</a>".to_owned()
-            } else if item.post.is_none() {
-                "<a class='subtle-link' href='/messages'>Open messages</a>".to_owned()
+            } else if let Some(id) = item.post {
+                format!("<a class='subtle-link' href='/thread?id={id}'>View discussion</a>")
             } else {
-                post.filter(|post| {
-                    community(state, &post.community)
-                        .is_some_and(|item| state.can_view_community(item))
-                })
-                .map_or_else(String::new, |post| {
-                    format!(
-                        "<a class='subtle-link' href='/thread?id={}'>View discussion</a>",
-                        post.id
-                    )
-                })
+                "<a class='subtle-link' href='/messages'>Open messages</a>".to_owned()
             };
             write!(
                 html,

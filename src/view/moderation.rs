@@ -106,7 +106,7 @@ fn mail(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
         html.push_str("<p class='muted log-empty'>No messages to your communities.</p>");
     }
     for (message, item) in inbox {
-        mail_record(&mut html, message, &item.name, true);
+        mail_record(&mut html, message, Some(&item.name), true);
     }
 
     html.push_str("</section><section class='preference-list'><h2>Sent</h2>");
@@ -123,27 +123,34 @@ fn mail(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
         let name = state
             .communities
             .iter()
-            .find(|item| item.slug == message.community)
-            .map(|item| item.name.as_str())
-            .unwrap_or(&message.community);
+            .find(|item| item.slug == message.community && state.can_view_community(item))
+            .map(|item| item.name.as_str());
         mail_record(&mut html, message, name, false);
     }
     html.push_str("</section></section>");
     html
 }
 
-fn mail_record(html: &mut String, message: &ModMail, community_name: &str, inbox: bool) {
+fn mail_record(html: &mut String, message: &ModMail, community_name: Option<&str>, inbox: bool) {
     let from = if inbox {
         format!("From u/{} · ", escape(&message.sender))
     } else {
         String::from("To ")
     };
+    let destination = community_name.map_or_else(
+        || "Community unavailable".to_owned(),
+        |name| {
+            format!(
+                "<a class='subtle-link' href='{}'>{}</a>",
+                community_url(&message.community),
+                escape(name)
+            )
+        },
+    );
     write!(
         html,
-        "<article class='log-item moderation-record'><h3>{}</h3><p class='muted'>{from}<a class='subtle-link' href='{}'>{}</a></p><p>{}</p>",
+        "<article class='log-item moderation-record'><h3>{}</h3><p class='muted'>{from}{destination}</p><p>{}</p>",
         escape(&message.subject),
-        community_url(&message.community),
-        escape(community_name),
         escape(&message.body)
     )
     .unwrap();
@@ -151,7 +158,7 @@ fn mail_record(html: &mut String, message: &ModMail, community_name: &str, inbox
         write!(
             html,
             "<blockquote class='moderation-reply'><strong>Reply from {}</strong><p>{}</p></blockquote>",
-            escape(community_name),
+            escape(community_name.unwrap_or("the moderation team")),
             escape(&message.reply)
         )
         .unwrap();

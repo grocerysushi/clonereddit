@@ -9,6 +9,75 @@ use super::{empty, tools_url};
 
 type Draft<'a> = Option<(&'a BTreeMap<String, String>, &'a str)>;
 
+pub(super) fn approved_members(
+    state: &State,
+    item: &Community,
+    registered: &[String],
+    draft: Draft<'_>,
+) -> String {
+    let back = tools_url(item, "approved-members");
+    let mut members: Vec<_> = state
+        .approved_members
+        .iter()
+        .filter(|member| member.community == item.slug)
+        .collect();
+    members.sort_by(|left, right| left.handle.cmp(&right.handle));
+
+    let access = match item.visibility.as_str() {
+        "private" => "Approved accounts can view, post, and comment here.",
+        "restricted" => "Anyone can view this community. Approved accounts can post and comment.",
+        _ => "This community is public. Approvals take effect if it becomes private or restricted.",
+    };
+    let mut suggestions = String::new();
+    for handle in registered.iter().filter(|handle| {
+        item.owner.as_deref() != Some(handle.as_str())
+            && state.moderator_role(item, handle) != Some(ModeratorRole::Moderator)
+            && !state.is_approved_member(&item.slug, handle)
+    }) {
+        write!(suggestions, "<option value='{}'></option>", escape(handle)).unwrap();
+    }
+
+    let handle = draft
+        .filter(|(form, _)| field(form, "action") == "approve-member")
+        .map_or("", |(form, _)| field(form, "handle"));
+    let fields = action_fields("approve-member", &back, &[("community", &item.slug)]);
+    let mut html = format!(
+        "{}<section class='panel mod-section mod-access-add'><h2>Approve an account</h2><p id='mod-access-help' class='muted'>{access} Joining is a separate choice. Bans block posting, editing, and commenting. Mutes block mod mail.</p><form class='stack-form' action='/action' method='post'>{fields}<label>Username<input name='handle' value='{}' list='mod-access-usernames' minlength='2' maxlength='26' autocomplete='off' autocapitalize='none' spellcheck='false' aria-describedby='mod-access-help' required></label><datalist id='mod-access-usernames'>{suggestions}</datalist><button class='button dark' type='submit'>Approve member</button></form></section>",
+        alert(draft), escape(handle)
+    );
+
+    html.push_str(
+        "<section class='panel mod-section mod-access-roster'><h2>Approved accounts</h2>",
+    );
+    if members.is_empty() {
+        html.push_str("<p class='muted'>No approved accounts yet.</p>");
+    } else {
+        html.push_str("<ul>");
+        for member in members {
+            let name = escape(&member.handle);
+            let ban = if state.is_banned(&item.slug, &member.handle) {
+                "<span class='flair'>Banned</span>"
+            } else {
+                ""
+            };
+            let mute = if state.is_mod_mail_muted(&item.slug, &member.handle) {
+                "<span class='flair'>Mod mail muted</span>"
+            } else {
+                ""
+            };
+            let revoke = action_fields(
+                "revoke-approved-member",
+                &back,
+                &[("community", &item.slug), ("handle", &member.handle)],
+            );
+            write!(html, "<li><div class='mod-access-account'><strong>u/{name}</strong>{ban}{mute}</div><form action='/action' method='post'>{revoke}<button type='submit' class='button light' aria-label='Revoke approval for u/{name}'>Revoke approval</button></form></li>").unwrap();
+        }
+        html.push_str("</ul>");
+    }
+    html.push_str("</section>");
+    html
+}
+
 pub(super) fn roles(
     state: &State,
     item: &Community,
@@ -80,7 +149,7 @@ pub(super) fn roles(
         }
         html.push_str("</li>");
     }
-    html.push_str("</ul></section><section class='panel mod-section mod-role-help'><h2>What each role can do</h2><dl><dt>Moderator</dt><dd>Review reports and appeals, manage bans and mutes, reply to mod mail, and schedule posts and events.</dd><dt>Appeals reviewer</dt><dd>Review and decide appeals for this community.</dd><dt>Owner</dt><dd>Set community access and appearance, pin posts, and manage moderator roles.</dd></dl></section>");
+    html.push_str("</ul></section><section class='panel mod-section mod-role-help'><h2>What each role can do</h2><dl><dt>Moderator</dt><dd>Review reports and appeals, manage approved members, bans and mutes, reply to mod mail, and schedule posts and events.</dd><dt>Appeals reviewer</dt><dd>Review and decide appeals for this community.</dd><dt>Owner</dt><dd>Set community access and appearance, pin posts, and manage moderator roles.</dd></dl></section>");
     html
 }
 

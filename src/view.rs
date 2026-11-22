@@ -202,7 +202,11 @@ pub fn route(
         }
         if matches!(
             action,
-            "set-moderator-role" | "remove-moderator-role" | "decide-appeal"
+            "set-moderator-role"
+                | "remove-moderator-role"
+                | "decide-appeal"
+                | "approve-member"
+                | "revoke-approved-member"
         ) {
             return community_management_submission(state, auth, path, action, &request.form);
         }
@@ -408,7 +412,14 @@ pub fn route(
             };
             match item {
                 Some(item) => {
-                    let registered = registered_accounts_for_owner(state, item, auth);
+                    let registered = if section == "roles" && community_owner(state, item)
+                        || section == "approved-members"
+                            && state.can_moderate(item, ModPermission::Members)
+                    {
+                        registered_accounts(state, auth)
+                    } else {
+                        Vec::new()
+                    };
                     (
                         "Moderator workspace",
                         "mod-workspace",
@@ -662,15 +673,11 @@ fn publishing_error(
     Response::html(layout(state, "", "Check your post", &body, "", ""))
 }
 
-fn registered_accounts_for_owner(state: &State, item: &Community, auth: &AuthStore) -> Vec<String> {
-    if community_owner(state, item) {
-        auth.usernames()
-            .filter(|handle| *handle != state.username)
-            .map(str::to_owned)
-            .collect()
-    } else {
-        Vec::new()
-    }
+fn registered_accounts(state: &State, auth: &AuthStore) -> Vec<String> {
+    auth.usernames()
+        .filter(|handle| *handle != state.username)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn community_management_submission(
@@ -681,29 +688,26 @@ fn community_management_submission(
     form: &BTreeMap<String, String>,
 ) -> Response {
     let slug = field(form, "community");
-    let is_decision = action == "decide-appeal";
-    let permitted = |item: &Community, state: &State| {
-        if is_decision {
-            state.can_moderate(item, ModPermission::Appeals)
-        } else {
-            community_owner(state, item)
-        }
+    let (section, title) = match action {
+        "decide-appeal" => ("appeals", "Community appeals"),
+        "approve-member" | "revoke-approved-member" => ("approved-members", "Approved members"),
+        _ => ("roles", "Moderator roles"),
     };
-    let Some(item) = community(state, slug).filter(|item| permitted(item, state)) else {
+    let Some(item) = community(state, slug).filter(|item| match section {
+        "roles" => community_owner(state, item),
+        _ => moderation_workspace::can_view(state, item, section),
+    }) else {
         return missing(state);
     };
     let slug = item.slug.clone();
-    let handle = field(form, "handle").trim().trim_start_matches("u/");
-    let result = if action == "set-moderator-role" && !auth.has_account(handle) {
-        Err("Choose a registered Commonline account.".into())
-    } else {
-        state.apply(action, form, path)
-    };
-    let (section, title) = if is_decision {
-        ("appeals", "Community appeals")
-    } else {
-        ("roles", "Moderator roles")
-    };
+    let handle = field(form, "handle").trim().to_ascii_lowercase();
+    let handle = handle.strip_prefix("u/").unwrap_or(&handle);
+    let result =
+        if matches!(action, "set-moderator-role" | "approve-member") && !auth.has_account(handle) {
+            Err("Choose a registered Commonline account.".into())
+        } else {
+            state.apply(action, form, path)
+        };
     match result {
         Ok(notice) => Response::redirect(&format!(
             "/moderation/tools?community={}&section={section}&notice={}",
@@ -714,16 +718,22 @@ fn community_management_submission(
             let Some(item) = community(state, &slug) else {
                 return missing(state);
             };
-            let body = if is_decision {
-                moderation_workspace::decision_error(state, item, form, &error)
-            } else {
-                moderation_workspace::role_error(
+            let body = match section {
+                "appeals" => moderation_workspace::decision_error(state, item, form, &error),
+                "approved-members" => moderation_workspace::approved_member_error(
                     state,
                     item,
-                    &registered_accounts_for_owner(state, item, auth),
+                    &registered_accounts(state, auth),
                     form,
                     &error,
-                )
+                ),
+                _ => moderation_workspace::role_error(
+                    state,
+                    item,
+                    &registered_accounts(state, auth),
+                    form,
+                    &error,
+                ),
             };
             Response::html(layout(state, "mod-workspace", title, &body, "", ""))
         }
@@ -1021,7 +1031,7 @@ fn can_write_here(state: &State, slug: &str) -> bool {
 }
 
 fn can_edit_post(state: &State, post: &Post) -> bool {
-    post.author == state.username && !state.is_banned(&post.community, &state.username)
+    state.can_edit_post(post)
 }
 
 fn community_url(slug: &str) -> String {
@@ -1060,10 +1070,18 @@ fn community_members(state: &State, item: &Community) -> String {
 
 fn find_post<'a>(state: &'a State, query: &BTreeMap<String, String>) -> Option<&'a Post> {
     let id = field(query, "id").parse().ok()?;
-    state.posts.iter().find(|post| {
-        post.id == id
-            && community(state, &post.community).is_some_and(|item| state.can_view_community(item))
-    })
+    visible_post(state, id)
+}
+
+fn visible_post(state: &State, id: u64) -> Option<&Post> {
+    state
+        .posts
+        .iter()
+        .find(|post| post.id == id && can_view_post(state, post))
+}
+
+fn can_view_post(state: &State, post: &Post) -> bool {
+    community(state, &post.community).is_some_and(|item| state.can_view_community(item))
 }
 
 fn community_icon(item: &Community) -> String {
@@ -1135,11 +1153,12 @@ fn layout_with_rail(
     right: Option<String>,
 ) -> String {
     let mut communities = String::new();
-    for item in state
-        .communities
-        .iter()
-        .filter(|item| state.joined.contains(&item.slug) && state.can_view_community(item))
-    {
+    for item in state.communities.iter().filter(|item| {
+        state.can_view_community(item)
+            && (state.joined.contains(&item.slug)
+                || item.visibility != "public"
+                    && state.is_approved_member(&item.slug, &state.username))
+    }) {
         let selection = if item.slug == active {
             " class='selected' aria-current='page'"
         } else {
@@ -1324,10 +1343,8 @@ fn layout_with_rail(
             .iter()
             .filter(|item| item.to == state.username && !item.read)
             .count();
-        let unread_notifications = state
-            .notifications
-            .iter()
-            .filter(|item| item.recipient == state.username && !item.read)
+        let unread_notifications = account::visible_notifications(state)
+            .filter(|item| !item.read)
             .count();
         let messages = account_shortcut(
             "/messages",
@@ -1527,7 +1544,13 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
                 item.id
             )
         };
-        let count = item.communities.len();
+        let count = state
+            .communities
+            .iter()
+            .filter(|community| {
+                item.communities.contains(&community.slug) && state.can_view_community(community)
+            })
+            .count();
         write!(html, "<div class='community-bar'><span>{count} {}</span>{share}<a class='button light' href='/feeds/settings?id={}'>{} Custom feed settings</a></div>", if count == 1 { "community" } else { "communities" }, item.id, icon("sliders")).unwrap();
     }
     if let Some(item) = selected.filter(|_| search.is_empty()) {
@@ -1582,6 +1605,8 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         html.push_str("</div>");
         if state.is_banned(&item.slug, &state.username) {
             html.push_str("<p class='community-restriction-note muted'>Your account is banned from posting or replying in this community. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
+        } else if item.visibility == "restricted" && !can_write_here(state, &item.slug) {
+            html.push_str("<p class='community-restriction-note muted'>Approved members and moderators can post and reply here.</p>");
         }
         if state.is_mod_mail_muted(&item.slug, &state.username) {
             html.push_str("<p class='community-restriction-note muted'>Your account is muted in this community’s mod mail. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
@@ -2326,7 +2351,7 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
         html.push_str("<p class='community-restriction-note muted'>Your account is banned from replying in this community. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
     } else {
         html.push_str(
-            "<p class='community-restriction-note muted'>This community limits who can reply.</p>",
+            "<p class='community-restriction-note muted'>Approved members and moderators can reply here.</p>",
         );
     }
     let branches = comment_branches(state, post.id);
@@ -2587,21 +2612,24 @@ fn preferences(state: &State) -> String {
     }).collect::<String>();
     write!(html, "<form class='stack-form' method='post' action='/action'>{}<fieldset><legend>Sensitive posts</legend>{radios}</fieldset><label>Muted keywords <small>One per line</small><textarea name='keywords' rows='4' maxlength='2000' placeholder='Enter a word or phrase'>{}</textarea></label><button class='button dark' type='submit'>Save preferences</button></form>", action_fields("preferences", "/settings", &[]), escape(&state.keywords.join("\n"))).unwrap();
     html.push_str("<div class='preference-list'><h2>Muted communities</h2>");
-    if state.muted.is_empty() {
+    let mut muted = state
+        .muted
+        .iter()
+        .filter_map(|slug| community(state, slug))
+        .filter(|item| state.can_view_community(item))
+        .peekable();
+    if muted.peek().is_none() {
         html.push_str("<p class='muted'>You haven’t muted any communities.</p>");
     }
-    for slug in &state.muted {
-        let name = community(state, slug)
-            .map(|item| item.name.as_str())
-            .unwrap_or(slug);
+    for item in muted {
         write!(
             html,
             "<div class='preference-row'><span>{}</span>{}</div>",
-            escape(name),
+            escape(&item.name),
             action_form(
                 "mute",
                 "/settings",
-                &[("community", slug)],
+                &[("community", &item.slug)],
                 "Unmute",
                 "",
                 "button light"
@@ -2630,14 +2658,15 @@ fn preferences(state: &State) -> String {
         .unwrap();
     }
     html.push_str("<h2>Hidden posts</h2>");
-    if state.hidden.is_empty() {
-        html.push_str("<p class='muted'>You haven’t hidden any posts.</p>");
-    }
-    for post in state
+    let mut hidden = state
         .posts
         .iter()
-        .filter(|post| state.hidden.contains(&post.id))
-    {
+        .filter(|post| state.hidden.contains(&post.id) && can_view_post(state, post))
+        .peekable();
+    if hidden.peek().is_none() {
+        html.push_str("<p class='muted'>You haven’t hidden any posts.</p>");
+    }
+    for post in hidden {
         write!(
             html,
             "<div class='preference-row'><span>{}</span>{}</div>",
@@ -2679,18 +2708,22 @@ fn reports(state: &State) -> String {
         html.push_str("<div class='log-empty'><h2>No reports yet</h2><p>Use a post’s menu to report a legal concern.</p></div>");
     }
     for report in reports {
-        let title = state
-            .posts
-            .iter()
-            .find(|post| post.id == report.post)
-            .map(|post| post.title.as_str())
-            .unwrap_or("Discussion unavailable");
+        let title = visible_post(state, report.post).map_or_else(
+            || "Discussion unavailable".to_owned(),
+            |post| {
+                format!(
+                    "<a href='/thread?id={}'>{}</a>",
+                    post.id,
+                    escape(&post.title)
+                )
+            },
+        );
         let status = if report.reviewed {
             "Reviewed"
         } else {
             "Pending review"
         };
-        write!(html, "<article class='log-item'><span class='flair'>{status}</span><h2><a href='/thread?id={}'>{}</a></h2><p><strong>Region</strong> {}</p><p>{}</p></article>", report.post, escape(title), escape(&report.region), escape(&report.details)).unwrap();
+        write!(html, "<article class='log-item'><span class='flair'>{status}</span><h2>{title}</h2><p><strong>Region</strong> {}</p><p>{}</p></article>", escape(&report.region), escape(&report.details)).unwrap();
     }
     html.push_str("</section>");
     html

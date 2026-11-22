@@ -499,14 +499,15 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-discussions-list li, .mod-log-list li { display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 7px 0; }
 :is(.mod-tool-results, .mod-discussions-list, .mod-log-list) li + li { border-top: 1px solid var(--line); }
 .mod-members-links { flex-wrap: wrap; }
-.mod-role-add, .mod-role-roster { margin-bottom: 9px; }
-.mod-role-roster ul { list-style: none; margin: 0; padding: 0; }
-.mod-role-roster li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 0; }
-.mod-role-roster li + li { border-top: 1px solid var(--line); }
-.mod-role-roster strong { overflow-wrap: anywhere; }
+.mod-role-add, .mod-role-roster, .mod-access-add { margin-bottom: 9px; }
+:is(.mod-role-roster, .mod-access-roster) ul { list-style: none; margin: 0; padding: 0; }
+:is(.mod-role-roster, .mod-access-roster) li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 0; }
+:is(.mod-role-roster, .mod-access-roster) li + li { border-top: 1px solid var(--line); }
+:is(.mod-role-roster, .mod-access-roster) strong { overflow-wrap: anywhere; }
 .mod-role-roster p { font-size: .85rem; }
 .mod-role-actions, .mod-role-actions > form:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-.mod-role-actions .button { margin-top: 0; min-height: 35px; padding: 4px 8px; font-size: .8rem; }
+:is(.mod-role-actions, .mod-access-roster) .button { margin-top: 0; min-height: 35px; padding: 4px 8px; font-size: .8rem; }
+.mod-access-account { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }
 .mod-role-help dl { display: grid; gap: .3rem; margin-block: .5rem 0; }
 .mod-role-help dt { font-weight: 700; }
 .mod-role-help dd { margin: 0 0 .4rem; color: var(--quiet); }

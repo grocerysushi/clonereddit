@@ -68,6 +68,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "See ownership, membership, and access.",
     ),
     (
+        "approved-members",
+        "Approved members",
+        "check",
+        "Manage access to private and restricted communities.",
+    ),
+    (
         "roles",
         "Moderator roles",
         "shield",
@@ -96,9 +102,8 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
 pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
     let permission = match section {
         "" => return state.can_open_mod_tools(item),
-        "queue" | "discussions" | "rules" | "members" | "roles" | "insights" | "log" => {
-            ModPermission::Reports
-        }
+        "queue" | "discussions" | "rules" | "roles" | "insights" | "log" => ModPermission::Reports,
+        "members" | "approved-members" => ModPermission::Members,
         "mail" | "responses" => ModPermission::Mail,
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
@@ -137,6 +142,7 @@ pub(super) fn render(
             "discussions" => workspace.discussions(state),
             "rules" => workspace.rules(state),
             "members" => workspace.members(state),
+            "approved-members" => community_manage::approved_members(state, item, registered, None),
             "roles" => community_manage::roles(state, item, registered, None),
             "insights" => workspace.insights(state),
             "log" => workspace.log(state),
@@ -168,6 +174,17 @@ pub(super) fn role_error(
 ) -> String {
     let body = community_manage::roles(state, item, registered, Some((form, error)));
     Workspace::new(state, item).frame(state, "roles", "Moderator roles", "", &body)
+}
+
+pub(super) fn approved_member_error(
+    state: &State,
+    item: &Community,
+    registered: &[String],
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let body = community_manage::approved_members(state, item, registered, Some((form, error)));
+    Workspace::new(state, item).frame(state, "approved-members", "Approved members", "", &body)
 }
 
 pub(super) fn decision_error(
@@ -583,7 +600,7 @@ impl<'a> Workspace<'a> {
             "private" => "Private",
             _ => "Public",
         };
-        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Moderator roles</a></div></section>", escape(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "roles")))
+        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Approved members</a><a class='button light' href='{}'>Moderator roles</a></div></section>", escape(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "approved-members")), escape(&tools_url(self.item, "roles")))
     }
 
     fn insights(&self, state: &State) -> String {

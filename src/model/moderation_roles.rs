@@ -10,6 +10,7 @@ pub enum ModPermission {
     Restrictions,
     Schedule,
     Appeals,
+    Members,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

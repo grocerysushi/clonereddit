@@ -141,11 +141,14 @@ fn cover(state: &State, public: bool) -> String {
 fn profile_posts(state: &State, public: bool) -> impl DoubleEndedIterator<Item = &Post> {
     state.posts.iter().filter(move |post| {
         post.author == state.username
-            && (!public
-                || state.public_posts
+            && if public {
+                state.public_posts
                     && !state.profile_hidden_posts.contains(&post.id)
                     && super::community(state, &post.community)
-                        .is_some_and(|item| item.visibility != "private"))
+                        .is_some_and(|item| item.visibility != "private")
+            } else {
+                super::can_view_post(state, post)
+            }
     })
 }
 
@@ -153,15 +156,18 @@ fn profile_comments(state: &State, public: bool) -> impl DoubleEndedIterator<Ite
     state.comments.iter().filter(move |comment| {
         !comment.deleted
             && comment.author == state.username
-            && (!public
-                || state.public_comments
+            && if public {
+                state.public_comments
                     && !state.profile_hidden_comments.contains(&comment.id)
                     && state
                         .posts
                         .iter()
                         .find(|post| post.id == comment.post)
                         .and_then(|post| super::community(state, &post.community))
-                        .is_some_and(|item| item.visibility != "private"))
+                        .is_some_and(|item| item.visibility != "private")
+            } else {
+                super::visible_post(state, comment.post).is_some()
+            }
     })
 }
 
