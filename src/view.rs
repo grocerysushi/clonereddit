@@ -189,6 +189,12 @@ pub fn route(
         if action == "profile" && field(&request.form, "username") != state.username {
             return form_error(state, "Your account username stays the same.", back);
         }
+        if matches!(
+            action,
+            "request-chat" | "accept-chat-request" | "decline-chat-request"
+        ) {
+            return chat_request_submission(state, auth, path, action, &request.form);
+        }
         if action == "send-direct-message" && !auth.has_account(field(&request.form, "recipient")) {
             return message_error(state, auth, &request.form, "Choose a registered recipient.");
         }
@@ -482,6 +488,9 @@ pub fn route(
             None => return missing(state),
         },
         "/settings" => ("Feed controls", "settings", preferences(state)),
+        "/messages" if field(query, "view") == "requests" => {
+            ("Chat requests", "messages", account::chat_requests(state))
+        }
         "/messages" => {
             let recipients = auth.usernames().map(str::to_owned).collect::<Vec<_>>();
             (
@@ -543,6 +552,48 @@ pub fn route(
         right,
         search_kind,
     ))
+}
+
+fn chat_request_submission(
+    state: &mut State,
+    auth: &AuthStore,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    const REQUESTS: &str = "/messages?view=requests";
+    if action == "request-chat" {
+        if !auth.has_account(field(form, "recipient")) {
+            return message_error(state, auth, form, "Choose a registered recipient.");
+        }
+        let verified = auth
+            .security(&state.username)
+            .is_some_and(|info| info.email.is_some());
+        return match state.request_chat(form, verified, path) {
+            Ok(notice) => Response::redirect(&format!("{REQUESTS}&notice={}", encode(notice))),
+            Err(error) => message_error(state, auth, form, &error),
+        };
+    }
+
+    let sender = field(form, "id").parse::<u64>().ok().and_then(|id| {
+        state
+            .incoming_chat_requests()
+            .find(|request| request.id == id)
+            .filter(|request| auth.has_account(&request.sender))
+            .map(|request| request.sender.clone())
+    });
+    let Some(sender) = sender else {
+        return form_error(state, "This chat request is unavailable.", REQUESTS);
+    };
+    match state.apply(action, form, path) {
+        Ok(notice) if action == "accept-chat-request" => Response::redirect(&format!(
+            "/messages?peer={}&notice={}",
+            encode(&sender),
+            encode(notice)
+        )),
+        Ok(notice) => Response::redirect(&format!("{REQUESTS}&notice={}", encode(notice))),
+        Err(error) => form_error(state, &error, REQUESTS),
+    }
 }
 
 fn message_error(

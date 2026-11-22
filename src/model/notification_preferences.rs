@@ -91,6 +91,28 @@ mod tests {
         let post = state.posts.last().unwrap().id.to_string();
         state.activate_profile(Some(BOB));
         state
+            .request_chat(
+                &form(&[("recipient", ALICE), ("body", "Conversation opener")]),
+                false,
+                &fixture.0,
+            )
+            .unwrap();
+        state.activate_profile(Some(ALICE));
+        let request_id = state
+            .incoming_chat_requests()
+            .next()
+            .unwrap()
+            .id
+            .to_string();
+        state
+            .apply(
+                "accept-chat-request",
+                &form(&[("id", &request_id)]),
+                &fixture.0,
+            )
+            .unwrap();
+        state.activate_profile(Some(BOB));
+        state
             .send_direct_message(&form(&[("recipient", ALICE), ("body", "First message")]))
             .unwrap();
         assert_eq!(state.notifications.len(), 1);
@@ -132,7 +154,7 @@ mod tests {
                 .iter()
                 .filter(|message| message.to == ALICE)
                 .count(),
-            2
+            3
         );
         assert_eq!(state.comments.last().unwrap().body, "Still delivered");
         state.notify_restriction_issued(ALICE, ROOM, "ban").unwrap();

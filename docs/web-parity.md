@@ -203,13 +203,18 @@ Workflow **073** is implemented. Account Settings lets each account independentl
 
 Independent Chromium profiles at 1440 and 390 CSS pixels saved different settings and retained them after restarting the server. Real replies, messages, and moderation events followed the intended recipient’s switches. Re-enabling categories restored future alerts, and private moderation history preserved muted notices without adding to the bell count.
 
+## Chat request controls update
+
+Workflow **072** is implemented. Account Settings controls who can send a new chat request. Recipients can accept or decline each pending request in Messages before a conversation starts. Existing conversations continue through their original inbox entries. This brings the implementation count to **69 implemented, 17 partial, and 14 missing**.
+
+Independent Chromium profiles at 1440 and 390 CSS pixels changed request permissions, rejected new requests under **Nobody**, and exercised the verified-email policy through a local outbox. A pending request stayed private and survived a restart. Acceptance opened its conversation with the original note, declining stopped repeat requests, and blocked accounts could not send requests. Existing and accepted conversations remained accessible after restart.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Add chat request controls.
-3. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-4. Expand community operations. Add structured rules and reporting, granular role permissions, timed restrictions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
-5. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
+2. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
+3. Expand community operations. Add structured rules and reporting, granular role permissions, timed restrictions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
+4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 
 ## Reddit Help references
 

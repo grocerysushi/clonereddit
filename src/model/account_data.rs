@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
 use super::{
-    checked_handle, encode, encode_image, next_id, required, unix_seconds, value, Comment,
-    Community, CustomFeed, DirectMessage, Notification, NotificationPreferences, Post, PostDraft,
-    ProfileAvatar, SocialLink, State, DELETED_ACCOUNT,
+    checked_handle, encode, encode_image, next_id, required, unix_seconds, value,
+    ChatRequestPermission, Comment, Community, CustomFeed, DirectMessage, Notification,
+    NotificationPreferences, Post, PostDraft, ProfileAvatar, SocialLink, State, DELETED_ACCOUNT,
 };
 
 #[derive(Clone, Default)]
@@ -36,6 +36,7 @@ pub(super) struct ProfileData {
     created: u64,
     draft: Option<PostDraft>,
     pub(super) notification_preferences: NotificationPreferences,
+    pub(super) chat_request_permission: ChatRequestPermission,
 }
 
 impl ProfileData {
@@ -80,6 +81,7 @@ impl ProfileData {
             created: state.profile_created,
             draft: state.draft.clone(),
             notification_preferences: state.notification_preferences,
+            chat_request_permission: state.chat_request_permission,
         }
     }
 
@@ -111,6 +113,7 @@ impl ProfileData {
         state.profile_created = self.created;
         state.draft = self.draft;
         state.notification_preferences = self.notification_preferences;
+        state.chat_request_permission = self.chat_request_permission;
     }
 
     pub(super) fn from_records(username: &str, sensitive: String, records: &str) -> Option<Self> {
@@ -124,6 +127,7 @@ impl ProfileData {
                 | "social-link"
                 | "draft"
                 | "notification-preferences"
+                | "chat-request-permission"
                 | "F"
                 | "V"
                 | "H"
@@ -166,6 +170,13 @@ impl ProfileData {
                 file,
                 "notification-preferences\t{}\t{}\t{}",
                 prefs.replies, prefs.messages, prefs.moderation,
+            )?;
+        }
+        if self.chat_request_permission != ChatRequestPermission::default() {
+            writeln!(
+                file,
+                "chat-request-permission\t{}",
+                self.chat_request_permission.as_str()
             )?;
         }
         for (kind, image) in [("avatar", &self.avatar), ("cover", &self.cover)] {
@@ -431,6 +442,9 @@ impl State {
         let to = checked_handle(value(form, "recipient"))?;
         if to == self.username || self.either_blocked(&self.username, &to) {
             return Err("This account is unavailable for messages.".into());
+        }
+        if !self.has_chat_conversation(&to) {
+            return Err("Send a chat request to start a conversation.".into());
         }
         let body = required(form, "body", "Message", 4_000)?;
         let id = next_id(&mut self.next_message)?;

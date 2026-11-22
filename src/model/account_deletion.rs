@@ -16,6 +16,7 @@ impl State {
         self.notifications.retain(|entry| entry.recipient != handle);
         self.moderator_roles.retain(|entry| entry.handle != handle);
         self.approved_members.retain(|entry| entry.handle != handle);
+        self.delete_account_chat_requests(handle);
 
         for post in &mut self.posts {
             if post.author == handle {
@@ -132,10 +133,11 @@ mod tests {
             .save_draft(&form(&[("community", ROOM), ("title", "Draft to remove")]))
             .unwrap();
         state
-            .send_direct_message(&form(&[
-                ("recipient", MODERATOR),
-                ("body", "Kept by recipient"),
-            ]))
+            .request_chat(
+                &form(&[("recipient", MODERATOR), ("body", "Kept by recipient")]),
+                false,
+                &path.0,
+            )
             .unwrap();
         let publish_at = (unix_seconds() + 3_600).to_string();
         state
@@ -149,6 +151,19 @@ mod tests {
         state.scheduled.last_mut().unwrap().author = None;
 
         state.activate_profile(Some(MODERATOR));
+        let request_id = state
+            .incoming_chat_requests()
+            .next()
+            .unwrap()
+            .id
+            .to_string();
+        state
+            .apply(
+                "accept-chat-request",
+                &form(&[("id", &request_id)]),
+                &path.0,
+            )
+            .unwrap();
         state
             .vote_poll(&form(&[("id", &post), ("option", "1")]))
             .unwrap();

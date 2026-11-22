@@ -106,16 +106,26 @@ h1, h2, p { margin: 0; overflow-wrap: anywhere; }
 .account-message-meta, .account-notification-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; font-size: .78rem; color: var(--quiet); }
 .account-message-meta strong { color: var(--ink); }
 .account-message-form { margin-top: 16px; }
+.account-chat-pending { margin-top: 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); overflow-wrap: anywhere; }
+.account-chat-request-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; margin-top: 15px; }
+.account-chat-request-list { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.account-chat-request { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); overflow-wrap: anywhere; }
+.account-chat-request > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 9px; margin-bottom: 4px; }
+.account-chat-request time { color: var(--quiet); font-size: .78rem; }
+.account-chat-request .flair, .account-chat-request-actions { margin-top: 8px; }
+.account-chat-request-actions { flex-wrap: wrap; }
 .account-notification { padding: 12px 4px; border-bottom: 1px solid var(--line); }
 .account-notification > p { margin: .32rem 0; }
-.account-notifications-header, .account-notifications-actions, .account-notifications-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.account-notifications-header, .account-notifications-actions, .account-notifications-nav, .account-message-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .account-notifications-header { justify-content: space-between; margin-bottom: 10px; }
 .account-notifications-header h1 { margin-bottom: 0; }
-.account-notifications-nav { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
-.account-notifications-nav a { padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; color: var(--quiet); font-size: .84rem; font-weight: 650; }
-.account-notifications-nav a:hover { background: var(--pale); }
-.account-notifications-nav a[aria-current='page'] { border-color: #c5d7a9; color: var(--ink); background: var(--light-lime); }
+:is(.account-notifications-nav, .account-message-tabs) { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+:is(.account-notifications-nav, .account-message-tabs) a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; color: var(--quiet); font-size: .84rem; font-weight: 650; }
+:is(.account-notifications-nav, .account-message-tabs) a:hover { background: var(--pale); }
+:is(.account-notifications-nav, .account-message-tabs) a[aria-current='page'] { border-color: #c5d7a9; color: var(--ink); background: var(--light-lime); }
 .account-preferences section > p { color: var(--quiet); margin-top: 5px; }
+.chat-request-settings { margin-top: 22px; padding-top: 15px; border-top: 1px solid var(--line); }
+.chat-request-settings-form { gap: 9px; margin-top: 12px; }
 .notification-settings-form { gap: 8px; }
 .notification-settings-form .notification-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding: 7px 0 10px; cursor: pointer; }
 .notification-switch-text { display: grid; gap: 3px; min-width: 0; }
@@ -681,7 +691,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
   .account-compose { padding-inline: 8px; }
   .account-compose > span { display: none; }
   .account-shortcut { width: 34px; height: 35px; }
-  .account-inbox-grid { grid-template-columns: minmax(0, 1fr); }
+  .account-inbox-grid, .account-chat-request-groups { grid-template-columns: minmax(0, 1fr); }
   .top-inner .wordmark { font-size: 1.48rem; }
   .brand-mark { width: 31px; height: 31px; margin-right: 7px; }
   .page-shell { grid-template-columns: minmax(0, 1fr); padding: 0 12px 24px; gap: 13px; }

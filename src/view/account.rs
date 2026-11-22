@@ -2,18 +2,22 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use super::{
-    account_security, action_fields, action_form, encode, escape, field, icon, visible_post,
+use super::{account_security, action_form, encode, escape, field, icon, visible_post};
+use crate::model::{
+    ChatRequestPermission, DirectMessage, Notification, NotificationPreferences, State,
 };
-use crate::model::{DirectMessage, Notification, NotificationPreferences, State};
 use crate::schedule_time::{display, to_local};
+
+#[path = "account_chat.rs"]
+mod chat;
 
 const INBOX: &str = "/messages";
 const NOTIFICATIONS: &str = "/notifications";
 
-pub(super) fn notification_settings(
+pub(super) fn settings(
     prefs: NotificationPreferences,
-    saved: bool,
+    chat: ChatRequestPermission,
+    saved: Option<&str>,
     error: &str,
 ) -> String {
     let feedback = if !error.is_empty() {
@@ -21,8 +25,8 @@ pub(super) fn notification_settings(
             "<p class='notice account-error' role='alert'>{}</p>",
             escape(error)
         )
-    } else if saved {
-        "<p class='notice' role='status'>Notification preferences saved.</p>".to_owned()
+    } else if let Some(notice) = saved {
+        format!("<p class='notice' role='status'>{}</p>", escape(notice))
     } else {
         String::new()
     };
@@ -34,11 +38,12 @@ pub(super) fn notification_settings(
         let checked = if enabled { " checked" } else { "" };
         format!("<label class='notification-switch'><span class='notification-switch-text'><strong id='notify-{name}-label'>{label}</strong><small id='notify-{name}-help'>{help}</small></span><span class='notification-switch-control'><input type='checkbox' role='switch' name='{name}' value='on' aria-labelledby='notify-{name}-label' aria-describedby='notify-{name}-help'{checked}><span class='notification-switch-track' aria-hidden='true'></span></span></label>")
     }).collect();
+    let chat_settings = chat::settings(chat);
     format!(
         r#"<section class="panel standalone account-preferences"><h1>Account Settings</h1>{feedback}
 <section aria-labelledby="notification-preferences-title"><h2 id="notification-preferences-title">Notification preferences</h2>
 <p>Choose which future activity appears in your in-app notifications. Muted moderation notices remain available under <a class="subtle-link" href="/notifications?view=moderation">Moderation updates</a>.</p>
-<form class="stack-form notification-settings-form" action="/account/settings" method="post" aria-labelledby="notification-preferences-title">{switches}<button type="submit" class="button dark">Save preferences</button></form></section></section>"#
+<form class="stack-form notification-settings-form" action="/account/settings" method="post" aria-labelledby="notification-preferences-title">{switches}<button type="submit" class="button dark">Save preferences</button></form></section>{chat_settings}</section>"#
     )
 }
 
@@ -157,7 +162,8 @@ pub(super) fn inbox_draft(
         };
     let navigation = conversations(peers, selected);
     let thread = selected.map_or_else(String::new, |peer| conversation(state, peer));
-    let compose = message_form(&contacts, selected, draft);
+    let compose = chat::compose(state, &contacts, selected, draft);
+    let tabs = chat::tabs(state, false);
     let alert = if error.is_empty() {
         String::new()
     } else {
@@ -167,8 +173,12 @@ pub(super) fn inbox_draft(
         )
     };
     format!(
-        "<section class='panel standalone account-inbox'><h1>Messages</h1><div class='account-inbox-grid'>{navigation}<div class='account-inbox-content'>{thread}{alert}{compose}</div></div></section>"
+        "<section class='panel standalone account-inbox'><h1>Messages</h1>{tabs}<div class='account-inbox-grid'>{navigation}<div class='account-inbox-content'>{thread}{alert}{compose}</div></div></section>"
     )
+}
+
+pub(super) fn chat_requests(state: &State) -> String {
+    chat::requests(state)
 }
 
 fn other_participant<'a>(message: &'a DirectMessage, username: &str) -> Option<&'a str> {
@@ -251,9 +261,7 @@ fn conversation(state: &State, peer: &str) -> String {
         "<section class='account-conversation'><header><h2>u/{}</h2>{read}</header>",
         escape(peer)
     );
-    if messages.is_empty() {
-        html.push_str("<p class='muted account-empty'>No messages with this account yet.</p>");
-    } else {
+    if !messages.is_empty() {
         html.push_str("<ul class='account-message-list'>");
         for message in messages {
             let (style, sender) = if message.from == username {
@@ -273,35 +281,6 @@ fn conversation(state: &State, peer: &str) -> String {
     }
     html.push_str("</section>");
     html
-}
-
-fn message_form(contacts: &BTreeSet<&str>, selected: Option<&str>, draft: &str) -> String {
-    if contacts.is_empty() {
-        return "<p class='muted account-empty'>You can send a message when another account joins Commonline.</p>".into();
-    }
-    let back = selected.map_or_else(|| INBOX.to_owned(), inbox_url);
-    let fields = action_fields("send-direct-message", &back, &[]);
-    let mut options = String::from("<option value=''>Choose a recipient</option>");
-    for &peer in contacts {
-        let selected = if selected == Some(peer) {
-            " selected"
-        } else {
-            ""
-        };
-        let peer = escape(peer);
-        write!(
-            options,
-            "<option value='{peer}'{selected}>u/{peer}</option>"
-        )
-        .unwrap();
-    }
-    format!(
-        r#"<form class="stack-form account-message-form" action="/action" method="post">{fields}
-<label>Recipient<select name="recipient" required>{options}</select></label>
-<label>Message<textarea name="body" rows="4" maxlength="4000" required>{}</textarea></label>
-<button class="button dark" type="submit">Send message</button></form>"#,
-        escape(draft)
-    )
 }
 
 pub(super) fn visible_notifications(state: &State) -> impl Iterator<Item = &Notification> {

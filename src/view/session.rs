@@ -5,7 +5,7 @@ use crate::account_deletion;
 use crate::auth::{session_token, AuthGrant, AuthStore, LoginProgress, SessionDevice};
 use crate::http::{Request, Response};
 use crate::mail::AccountMail;
-use crate::model::{NotificationPreferences, State};
+use crate::model::{ChatRequestPermission, NotificationPreferences, State};
 
 pub(super) fn requires_account(request: &Request) -> bool {
     matches!(
@@ -40,7 +40,10 @@ pub(super) fn route(
     auth: &mut AuthStore,
     mail: &AccountMail,
 ) -> Response {
-    if request.path == "/account/settings" {
+    if matches!(
+        request.path.as_str(),
+        "/account/settings" | "/account/settings/chat"
+    ) {
         return account_settings(request, state, path);
     }
     if request.path == "/account/security" || request.path.starts_with("/account/security/") {
@@ -120,51 +123,84 @@ fn account_settings(request: &Request, state: &mut State, path: &Path) -> Respon
         return Response::redirect("/account/login");
     }
 
-    let previous = state.notification_preferences();
+    let previous_notifications = state.notification_preferences();
+    let previous_chat = state.chat_request_permission();
     if request.method == "GET" {
-        return page(
-            state,
-            "Account settings",
-            &account::notification_settings(previous, field(&request.query, "saved") == "1", ""),
-        );
+        if request.path == "/account/settings/chat" {
+            return Response::redirect("/account/settings");
+        }
+        let saved = match field(&request.query, "saved") {
+            "1" => Some("Notification preferences saved."),
+            "chat" => Some("Chat request settings saved."),
+            _ => None,
+        };
+        return settings_form(state, previous_notifications, previous_chat, saved, "");
     }
-    if ["replies", "messages", "moderation"]
-        .iter()
-        .any(|key| request.form.get(*key).is_some_and(|value| value != "on"))
-    {
-        return page(
-            state,
-            "Account settings",
-            &account::notification_settings(
-                previous,
-                false,
+    let saving_chat = request.path == "/account/settings/chat";
+    let (notifications, chat) = if saving_chat {
+        let Some(chat) = ChatRequestPermission::parse(field(&request.form, "chat_requests")) else {
+            return settings_form(
+                state,
+                previous_notifications,
+                previous_chat,
+                None,
+                "Choose who can send you chat requests.",
+            );
+        };
+        (previous_notifications, chat)
+    } else {
+        if ["replies", "messages", "moderation"]
+            .iter()
+            .any(|key| request.form.get(*key).is_some_and(|value| value != "on"))
+        {
+            return settings_form(
+                state,
+                previous_notifications,
+                previous_chat,
+                None,
                 "Choose valid notification preferences.",
-            ),
-        );
-    }
-
-    let submitted = NotificationPreferences {
-        replies: request.form.contains_key("replies"),
-        messages: request.form.contains_key("messages"),
-        moderation: request.form.contains_key("moderation"),
+            );
+        }
+        (
+            NotificationPreferences {
+                replies: request.form.contains_key("replies"),
+                messages: request.form.contains_key("messages"),
+                moderation: request.form.contains_key("moderation"),
+            },
+            previous_chat,
+        )
     };
-    state.set_notification_preferences(submitted);
+    state.set_notification_preferences(notifications);
+    state.set_chat_request_permission(chat);
     match state.save(path) {
+        Ok(()) if saving_chat => Response::redirect("/account/settings?saved=chat"),
         Ok(()) => Response::redirect("/account/settings?saved=1"),
         Err(error) => {
-            state.set_notification_preferences(previous);
-            eprintln!("Commonline could not save notification preferences. {error}");
-            page(
-                state,
-                "Account settings",
-                &account::notification_settings(
-                    submitted,
-                    false,
-                    "Could not save notification preferences. Try again.",
-                ),
-            )
+            state.set_notification_preferences(previous_notifications);
+            state.set_chat_request_permission(previous_chat);
+            eprintln!("Commonline could not save account settings. {error}");
+            let error = if saving_chat {
+                "Could not save chat request settings. Try again."
+            } else {
+                "Could not save notification preferences. Try again."
+            };
+            settings_form(state, notifications, chat, None, error)
         }
     }
+}
+
+fn settings_form(
+    state: &State,
+    notifications: NotificationPreferences,
+    chat: ChatRequestPermission,
+    saved: Option<&str>,
+    error: &str,
+) -> Response {
+    page(
+        state,
+        "Account settings",
+        &account::settings(notifications, chat, saved, error),
+    )
 }
 
 fn reset_route(

@@ -18,6 +18,9 @@ pub use approved_members::ApprovedMember;
 mod automod;
 pub use automod::{AutoModAction, AutoModFlag, AutoModRule, AutoModScope};
 use automod::{AUTOMOD_REMOVED_COMMENT, AUTOMOD_REMOVED_POST};
+#[path = "model/chat_requests.rs"]
+mod chat_requests;
+pub use chat_requests::{ChatRequest, ChatRequestPermission};
 #[path = "model/content_moderation.rs"]
 mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
@@ -303,6 +306,9 @@ pub struct State {
     pub sensitive: String,
     pub reports: Vec<Report>,
     pub messages: Vec<DirectMessage>,
+    chat_request_permission: ChatRequestPermission,
+    chat_requests: Vec<ChatRequest>,
+    declined_chat_requests: BTreeSet<(String, String)>,
     pub notifications: Vec<Notification>,
     notification_preferences: NotificationPreferences,
     pub mod_mail: Vec<ModMail>,
@@ -340,6 +346,7 @@ pub struct State {
     next_comment: u64,
     next_report: u64,
     next_message: u64,
+    next_chat_request: u64,
     next_notification: u64,
     next_mod_mail: u64,
     next_mod_event: u64,
@@ -483,6 +490,9 @@ impl State {
             sensitive: "blur".into(),
             reports: Vec::new(),
             messages: Vec::new(),
+            chat_request_permission: ChatRequestPermission::default(),
+            chat_requests: Vec::new(),
+            declined_chat_requests: BTreeSet::new(),
             notifications: Vec::new(),
             notification_preferences: NotificationPreferences::default(),
             mod_mail: Vec::new(),
@@ -520,6 +530,7 @@ impl State {
             next_comment: 7,
             next_report: 1,
             next_message: 1,
+            next_chat_request: 1,
             next_notification: 1,
             next_mod_mail: 1,
             next_mod_event: 1,
@@ -938,10 +949,12 @@ impl State {
                 if author == self.username {
                     return Err("Choose another account to block.".into());
                 }
-                if toggle(&mut self.blocked, author) {
-                    Ok("Account blocked in your feed.")
-                } else {
+                if self.blocked.remove(&author) {
                     Ok("Account unblocked.")
+                } else {
+                    self.cancel_chat_requests_with(&author);
+                    self.blocked.insert(author);
+                    Ok("Account blocked in your feed.")
                 }
             }
             "preferences" => self.update_preferences(form),
@@ -959,6 +972,8 @@ impl State {
             "delete-comment" => self.delete_comment(form),
             "report" => self.create_report(form),
             "send-direct-message" => self.send_direct_message(form),
+            "accept-chat-request" => self.resolve_chat_request(form, true),
+            "decline-chat-request" => self.resolve_chat_request(form, false),
             "read-conversation" => self.read_conversation(form),
             "read-notifications" => self.read_notifications(),
             "submit-appeal" => self.submit_appeal(form),
@@ -2474,6 +2489,14 @@ impl State {
                 at: number(at)?,
                 read: number(read)?,
             }),
+            ["chat-request-permission", permission] => {
+                self.chat_request_permission = ChatRequestPermission::parse(permission)?;
+            }
+            fields @ (["chat-request-sequence", ..]
+            | ["chat-request", ..]
+            | ["declined-chat-request", ..]) => {
+                self.read_chat_request_record(fields)?;
+            }
             ["notification-preferences", replies, messages, moderation] => {
                 self.notification_preferences = NotificationPreferences {
                     replies: number(replies)?,
@@ -2834,6 +2857,7 @@ impl State {
                 message.read
             )?;
         }
+        self.write_chat_request_records(file)?;
         for notification in &self.notifications {
             let post = notification
                 .post
