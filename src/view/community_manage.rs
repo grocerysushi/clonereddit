@@ -172,27 +172,52 @@ const APPEAL_TYPES: &[(&str, &str)] = &[
     ("mute", "Mute"),
 ];
 
+const APPEAL_OUTCOMES: &[(&str, &str)] = &[
+    ("all", "All decisions"),
+    ("approved", "Approved"),
+    ("denied", "Denied"),
+    ("closed", "Closed"),
+];
+
 #[derive(Clone, Copy)]
 struct AppealFilters {
     kind: &'static str,
     resolved: bool,
+    outcome: &'static str,
 }
 
 impl AppealFilters {
     fn read(query: &BTreeMap<String, String>) -> Self {
-        let requested = field(query, "kind");
-        let kind = APPEAL_TYPES
-            .iter()
-            .find_map(|&(kind, _)| (kind == requested).then_some(kind))
-            .unwrap_or("all");
+        let resolved = field(query, "status") == "resolved";
+        let outcome = if resolved {
+            appeal_filter_key(APPEAL_OUTCOMES, field(query, "outcome"))
+        } else {
+            "all"
+        };
         Self {
-            kind,
-            resolved: field(query, "status") == "resolved",
+            kind: appeal_filter_key(APPEAL_TYPES, field(query, "kind")),
+            resolved,
+            outcome,
         }
     }
 
     fn matches(self, kind: &str) -> bool {
         self.kind == "all" || self.kind == kind
+    }
+
+    fn matches_resolved(self, status: AppealStatus) -> bool {
+        match self.outcome {
+            "approved" => status == AppealStatus::Approved,
+            "denied" => status == AppealStatus::Denied,
+            "closed" => matches!(
+                status,
+                AppealStatus::Lifted
+                    | AppealStatus::Expired
+                    | AppealStatus::Restored
+                    | AppealStatus::Unavailable
+            ),
+            _ => status != AppealStatus::Pending,
+        }
     }
 
     fn url(self, item: &Community) -> String {
@@ -203,6 +228,9 @@ impl AppealFilters {
         if self.kind != "all" {
             write!(url, "&kind={}", self.kind).unwrap();
         }
+        if self.resolved && self.outcome != "all" {
+            write!(url, "&outcome={}", self.outcome).unwrap();
+        }
         url
     }
 
@@ -211,10 +239,26 @@ impl AppealFilters {
             .iter()
             .map(|&(kind, label)| option(kind, label, self.kind))
             .collect();
+        let decision = if self.resolved {
+            let decisions: String = APPEAL_OUTCOMES
+                .iter()
+                .map(|&(outcome, label)| option(outcome, label, self.outcome))
+                .collect();
+            format!("<label>Decision<select name='outcome'>{decisions}</select></label>")
+        } else {
+            String::new()
+        };
         let status = if self.resolved { "resolved" } else { "pending" };
-        format!("<form class='mod-queue-sort mod-appeal-filters' action='/moderation/tools' method='get'>{}{}{}<label>Appeal type<select name='kind'>{options}</select></label><button type='submit' class='button light'>Apply filters</button></form>",
+        format!("<form class='mod-queue-sort mod-appeal-filters' action='/moderation/tools' method='get'>{}{}{}<label>Appeal type<select name='kind'>{options}</select></label>{decision}<button type='submit' class='button light'>Apply filters</button></form>",
             hidden("community", &item.slug), hidden("section", "appeals"), hidden("status", status))
     }
+}
+
+fn appeal_filter_key(options: &[(&'static str, &str)], requested: &str) -> &'static str {
+    options
+        .iter()
+        .find_map(|&(key, _)| (key == requested).then_some(key))
+        .unwrap_or("all")
 }
 
 pub(super) fn appeal_return_url(item: &Community, form: &BTreeMap<String, String>) -> String {
@@ -277,10 +321,19 @@ pub(super) fn appeals(
         .iter()
         .filter(|(status, _, _)| *status == AppealStatus::Pending)
         .count();
-    let completed = cases.len() - pending;
+    let completed = cases
+        .iter()
+        .filter(|(status, _, _)| filters.matches_resolved(*status))
+        .count();
     let mut html = format!("{}<div class='mod-queue-controls'><nav class='mod-queue-tabs mod-appeal-tabs' aria-label='Appeal status'><a href='{pending_url}'{}>Pending<span>{pending}</span></a><a href='{resolved_url}'{}>Resolved<span>{completed}</span></a></nav>{}</div>", alert(draft), current(!resolved), current(resolved), filters.form(item));
 
-    cases.retain(|(status, _, _)| (*status != AppealStatus::Pending) == resolved);
+    cases.retain(|(status, _, _)| {
+        if resolved {
+            filters.matches_resolved(*status)
+        } else {
+            *status == AppealStatus::Pending
+        }
+    });
     cases.sort_by_key(|(_, key, _)| std::cmp::Reverse(*key));
     if cases.is_empty() {
         let title = if resolved {
@@ -288,7 +341,9 @@ pub(super) fn appeals(
         } else {
             "No appeals to review"
         };
-        let text = if filters.kind != "all" {
+        let text = if filters.outcome != "all" {
+            "No appeals match this decision and appeal type."
+        } else if filters.kind != "all" {
             "No appeals match this type and status."
         } else if resolved {
             "Decisions on appeals for this community will appear here."

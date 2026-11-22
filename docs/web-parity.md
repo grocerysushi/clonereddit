@@ -263,6 +263,8 @@ Desktop and mobile Chromium checks covered notification-led appeals, approval an
 
 The Appeals queue can filter post removals, comment removals, bans, and mutes in both Pending and Resolved. Desktop and mobile Chromium checks verified that the selected type scopes the counts and stays selected when switching status, saving a decision, or correcting a validation error.
 
+In Resolved, reviewers can combine appeal type with Approved, Denied, or Closed. Closed includes lifted and expired restrictions, removals restored outside the appeal, and discussions that were deleted while an appeal was pending. Desktop and mobile checks covered combined filters, result counts, and the switch back to Pending. Server checks covered all four closure statuses and community-scoped results.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
