@@ -19,6 +19,7 @@ const MAX_IMAGE_BYTES: usize = 512 * 1024;
 const MAX_PROFILE_BODY: usize = MAX_IMAGE_BYTES + 8 * 1024;
 const MAX_COMMUNITY_BODY: usize = 2 * MAX_IMAGE_BYTES + 32 * 1024;
 const MAX_POST_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_INLINE_IMAGE_BODY: usize = MAX_POST_IMAGE_BYTES + 8 * 1024;
 const MAX_POST_VIDEO_BYTES: usize = 16 * 1024 * 1024;
 const MAX_POST_BODY: usize = MAX_POST_VIDEO_BYTES + 100 * 1024;
 const MAX_POST_FILES: usize = 6;
@@ -106,6 +107,7 @@ enum UploadTarget {
     Profile,
     Community(&'static [&'static str]),
     PostMedia,
+    InlinePostImage,
 }
 
 pub struct Response {
@@ -500,12 +502,14 @@ fn read_request(
             Some(UploadTarget::Community(ARTWORK_SETTINGS_FIELDS))
         }
         ("POST", "/posts/media/new") => Some(UploadTarget::PostMedia),
+        ("POST", "/posts/inline-image") => Some(UploadTarget::InlinePostImage),
         _ => None,
     };
     let max_body = match upload_target {
         Some(UploadTarget::Profile) => MAX_PROFILE_BODY,
         Some(UploadTarget::Community(_)) => MAX_COMMUNITY_BODY,
         Some(UploadTarget::PostMedia) => MAX_POST_BODY,
+        Some(UploadTarget::InlinePostImage) => MAX_INLINE_IMAGE_BODY,
         None => MAX_BODY,
     };
     let length = content_length(headers.get("content-length"), max_body)?;
@@ -553,6 +557,9 @@ fn read_request(
         }
         Some((UploadTarget::PostMedia, boundary)) => {
             (request.form, request.post_uploads) = parse_post_uploads(body, &boundary)?;
+        }
+        Some((UploadTarget::InlinePostImage, boundary)) => {
+            request.upload = Some(parse_inline_post_image(&body, &boundary)?);
         }
         None => {
             let body = std::str::from_utf8(&body)
@@ -869,6 +876,40 @@ fn parse_post_uploads(
             .collect()
     };
     Ok((fields, uploads))
+}
+
+fn parse_inline_post_image(body: &[u8], boundary: &str) -> Result<Upload, Response> {
+    let mut upload = None;
+    let invalid = || Response::error(400, "Choose one image to insert.");
+    read_multipart(body, boundary, 1, invalid, |part| {
+        if part.name != "image"
+            || part.filename.as_deref().is_none_or(str::is_empty)
+            || part.data.is_empty()
+        {
+            return Err(invalid());
+        }
+        if !matches!(
+            part.content_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) {
+            return Err(Response::error(
+                415,
+                "Choose a PNG, JPEG, WebP, or GIF image.",
+            ));
+        }
+        if part.data.len() > MAX_POST_IMAGE_BYTES {
+            return Err(Response::error(
+                413,
+                "Choose an image no larger than 2 MiB.",
+            ));
+        }
+        upload = Some(Upload {
+            content_type: part.content_type,
+            bytes: part.data.to_vec(),
+        });
+        Ok(())
+    })?;
+    upload.ok_or_else(invalid)
 }
 
 fn read_image(content_type: String, data: &[u8]) -> Result<Upload, Response> {

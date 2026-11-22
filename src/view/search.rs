@@ -95,8 +95,8 @@ pub(super) fn header_fields(query: Option<&BTreeMap<String, String>>) -> String 
     html
 }
 
-pub(super) fn has_media(post: &Post) -> bool {
-    post.image || !post.media.is_empty()
+pub(super) fn has_media(state: &State, post: &Post) -> bool {
+    post.image || !post.media.is_empty() || state.post_has_inline_images(post.id)
 }
 
 fn url(active: &str, query: &BTreeMap<String, String>, kind: Kind) -> String {

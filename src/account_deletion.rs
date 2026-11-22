@@ -12,11 +12,8 @@ pub fn finish_pending(state: &mut State, path: &Path, auth: &mut AuthStore) -> R
     }
 
     // Keep the durable cleanup record until the site snapshot is saved without the profile.
-    for handle in &handles {
-        state.delete_account_profile(handle);
-    }
     state
-        .save(path)
+        .delete_account_profiles(&handles, path)
         .map_err(|error| format!("Could not save account deletion cleanup. {error}"))?;
     auth.finish_account_deletions(&handles)
 }

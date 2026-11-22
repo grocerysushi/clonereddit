@@ -229,7 +229,7 @@ pub(super) fn editor(
         tag_icon = icon("tag"),
         tags_open = if tags.contains(&true) { " open" } else { "" },
         title = escape(title),
-        body = post_body_editor::editor(body, 7),
+        body = post_body_editor::editor_with_inline_images(body, 7),
         url = escape(url),
         cancel = escape(&cancel),
     )

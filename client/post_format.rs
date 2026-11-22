@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::ops::Range;
 
 const BODY_CAPACITY: usize = 8_000;
+const IMAGE_KEY_LENGTH: usize = 48;
+const IMAGE_ALT_CAPACITY: usize = 160;
 const NEWLINE: u16 = b'\n' as u16;
 
 enum Command {
@@ -184,8 +186,57 @@ fn format_lines(
     Edit::new(first..last, replacement, selection)
 }
 
+fn inline_image(source: &[u16], at: usize, key: &[u16], description: &[u16]) -> Option<Edit> {
+    if at > source.len() || !is_character_boundary(source, at) {
+        return None;
+    }
+    if key.len() != IMAGE_KEY_LENGTH
+        || !key
+            .iter()
+            .all(|&unit| matches!(unit, 0x30..=0x39 | 0x61..=0x66))
+    {
+        return None;
+    }
+    let description = &description[trim_selection(description, 0..description.len())];
+    let mut replacement = Vec::new();
+    if at != 0 {
+        let before = source[..at]
+            .iter()
+            .rev()
+            .take_while(|&&unit| unit == NEWLINE)
+            .count();
+        replacement.extend(std::iter::repeat(NEWLINE).take(2_usize.saturating_sub(before)));
+    }
+    replacement.extend("![".encode_utf16());
+    if description.is_empty() {
+        replacement.extend("Inline image".encode_utf16());
+    } else {
+        for &unit in description {
+            if matches!(unit, 0x21..=0x2F | 0x3A..=0x40 | 0x5B..=0x60 | 0x7B..=0x7E) {
+                replacement.push(b'\\' as u16);
+            }
+            replacement.push(if matches!(unit, 0x0A | 0x0D) {
+                b' ' as u16
+            } else {
+                unit
+            });
+        }
+    }
+    replacement.extend("](inline-image:".encode_utf16());
+    replacement.extend_from_slice(key);
+    replacement.push(b')' as u16);
+    let after = source[at..]
+        .iter()
+        .take_while(|&&unit| unit == NEWLINE)
+        .count();
+    replacement.extend(std::iter::repeat(NEWLINE).take(2_usize.saturating_sub(after)));
+    let end = replacement.len() + after.min(2);
+    Some(Edit::new(at..at, replacement, end..end))
+}
+
 struct Buffer {
     input: [u16; BODY_CAPACITY],
+    image: [u16; IMAGE_KEY_LENGTH + IMAGE_ALT_CAPACITY],
     edit: Option<Edit>,
 }
 
@@ -193,6 +244,7 @@ thread_local! {
     static BUFFER: RefCell<Buffer> = const {
         RefCell::new(Buffer {
             input: [0; BODY_CAPACITY],
+            image: [0; IMAGE_KEY_LENGTH + IMAGE_ALT_CAPACITY],
             edit: None,
         })
     };
@@ -209,6 +261,11 @@ pub extern "C" fn post_format_capacity() -> usize {
 }
 
 #[no_mangle]
+pub extern "C" fn post_format_image_input() -> *mut u16 {
+    BUFFER.with(|buffer| buffer.borrow_mut().image.as_mut_ptr())
+}
+
+#[no_mangle]
 pub extern "C" fn post_format_apply(
     command: u32,
     length: usize,
@@ -216,15 +273,36 @@ pub extern "C" fn post_format_apply(
     end: usize,
     max_length: usize,
 ) -> u32 {
+    prepare_edit(length, max_length, |_, source| {
+        Command::from_number(command).and_then(|command| format(source, start..end, command))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn post_format_insert_image(
+    length: usize,
+    at: usize,
+    max_length: usize,
+    description_length: usize,
+) -> u32 {
+    prepare_edit(length, max_length, |buffer, source| {
+        let (key, description) = buffer.image.split_at(IMAGE_KEY_LENGTH);
+        inline_image(source, at, key, description.get(..description_length)?)
+    })
+}
+
+fn prepare_edit(
+    length: usize,
+    max_length: usize,
+    make_edit: impl FnOnce(&Buffer, &[u16]) -> Option<Edit>,
+) -> u32 {
     BUFFER.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         buffer.edit = None;
         let Some(source) = buffer.input.get(..length) else {
             return 2;
         };
-        let Some(edit) =
-            Command::from_number(command).and_then(|command| format(source, start..end, command))
-        else {
+        let Some(edit) = make_edit(&buffer, source) else {
             return 0;
         };
         if source.len() - edit.range.len() + edit.replacement.len() > max_length.min(BODY_CAPACITY)
@@ -319,5 +397,39 @@ mod tests {
         assert_eq!(post_format_apply(0, 0, 0, 1, BODY_CAPACITY), 0);
         assert_eq!(post_format_apply(0, 0, 0, 0, BODY_CAPACITY), 1);
         assert_eq!(post_format_part(1), "**bold text**".len());
+    }
+
+    #[test]
+    fn image_insertions_keep_paragraphs_and_unicode_at_the_caret() {
+        let first = "Trail 🥾";
+        let source = format!("{first}\n\nSecond paragraph");
+        let mut document: Vec<_> = source.encode_utf16().collect();
+        let key = "a1".repeat(24);
+        let key_units: Vec<_> = key.encode_utf16().collect();
+        let alt: Vec<_> = " Ridge [east] 🌲 ".encode_utf16().collect();
+        let at = first.encode_utf16().count() + 1;
+        let edit = inline_image(&document, at, &key_units, &alt).unwrap();
+        assert!(edit.selection.is_empty());
+        document.splice(edit.range, edit.replacement);
+        assert_eq!(
+            String::from_utf16(&document).unwrap(),
+            format!("{first}\n\n![Ridge \\[east\\] 🌲](inline-image:{key})\n\nSecond paragraph")
+        );
+        assert!(inline_image(&document, 7, &key_units, &alt).is_none());
+    }
+
+    #[test]
+    fn image_insertions_validate_keys_and_default_empty_descriptions() {
+        let invalid = [b'x' as u16; IMAGE_KEY_LENGTH];
+        assert!(inline_image(&[], 0, &invalid, &[]).is_none());
+        let key = [b'3' as u16; IMAGE_KEY_LENGTH];
+        let edit = inline_image(&[], 0, &key, &[]).unwrap();
+        assert_eq!(
+            String::from_utf16(&edit.replacement).unwrap(),
+            format!(
+                "![Inline image](inline-image:{})\n\n",
+                "3".repeat(IMAGE_KEY_LENGTH)
+            )
+        );
     }
 }

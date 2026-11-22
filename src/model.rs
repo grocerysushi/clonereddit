@@ -51,6 +51,10 @@ pub use notification_preferences::NotificationPreferences;
 #[path = "model/post_flair.rs"]
 mod post_flair;
 pub use post_flair::{CommunityPostFlair, COMMUNITY_POST_FLAIR_LABEL_MAX};
+#[path = "model/post_inline_images.rs"]
+mod post_inline_images;
+pub use post_inline_images::inline_image_key;
+use post_inline_images::{InlineImage, InlineTarget};
 #[path = "model/reporting.rs"]
 mod reporting;
 pub use reporting::{ReportReason, ReportedRule};
@@ -330,6 +334,7 @@ pub struct CommunityRestriction {
 pub struct State {
     pub communities: Vec<Community>,
     pub posts: Vec<Post>,
+    inline_images: BTreeMap<String, InlineImage>,
     locked_discussions: BTreeSet<u64>,
     locked_comments: BTreeSet<u64>,
     pub comments: Vec<Comment>,
@@ -524,6 +529,7 @@ impl State {
         Self {
             communities,
             posts,
+            inline_images: BTreeMap::new(),
             locked_discussions: BTreeSet::new(),
             locked_comments: BTreeSet::new(),
             comments,
@@ -958,7 +964,14 @@ impl State {
         updated
             .save(path)
             .map_err(|error| format!("Could not save changes: {error}"))?;
+        let removed_images: Vec<_> = self
+            .inline_images
+            .iter()
+            .filter(|(key, _)| !updated.inline_images.contains_key(*key))
+            .map(|(_, image)| image.asset.clone())
+            .collect();
         *self = updated;
+        crate::media::remove(path, &removed_images);
         Ok(())
     }
 
@@ -1414,6 +1427,8 @@ impl State {
     fn create_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let draft = self.draft_position(form)?;
         let post = self.new_post(form, "Discussion")?;
+        let source = draft.map(|index| InlineTarget::Draft(self.drafts[index].id));
+        self.place_inline_images(&post.body, InlineTarget::Post(post.id), source)?;
         let notice = self.add_post(post, "Post published.")?;
         if let Some(index) = draft {
             self.drafts.remove(index);
@@ -1658,6 +1673,8 @@ impl State {
             spoiler: value(form, "spoiler") == "on",
             brand_affiliate: value(form, "brand_affiliate") == "on",
         };
+        let target = InlineTarget::Draft(id);
+        self.place_inline_images(&draft.body, target, position.map(|_| target))?;
         if let Some(index) = position {
             self.drafts[index] = draft;
         } else {
@@ -1670,7 +1687,8 @@ impl State {
         let index = self
             .draft_position(form)?
             .ok_or("Choose a saved draft to discard.")?;
-        self.drafts.remove(index);
+        let draft = self.drafts.remove(index);
+        self.remove_inline_images(InlineTarget::Draft(draft.id));
         Ok("Draft discarded.")
     }
 
@@ -2351,8 +2369,10 @@ impl State {
             }
             None => None,
         };
-        let post = &mut self.posts[index];
         let (title, body, url) = post_content(form)?;
+        let target = InlineTarget::Post(id);
+        self.place_inline_images(&body, target, Some(target))?;
+        let post = &mut self.posts[index];
         let text_changed = post.title != title || post.body != body || post.url != url;
         if post.title != title {
             post.repost_title_from_source = false;
@@ -2384,6 +2404,7 @@ impl State {
             .position(|post| post.id == id && post.author == self.username)
             .ok_or("You can delete posts from your own profile.")?;
         let post = self.posts.remove(index);
+        self.remove_inline_images(InlineTarget::Post(id));
         self.locked_discussions.remove(&id);
         // Retained community reports keep the scope of the original discussion.
         for report in self
@@ -2627,6 +2648,9 @@ impl State {
                     content_type: decode(content_type)?,
                 });
                 validate_post_media(&post.media).ok()?;
+            }
+            ["inline-image", key, content_type, placement @ ..] => {
+                self.read_inline_image(key, content_type, placement)?;
             }
             ["profile", display_name, bio, public_posts, public_comments, nsfw, flair, created, next_social_link] =>
             {
@@ -3090,6 +3114,7 @@ impl State {
                 )?;
             }
         }
+        self.write_inline_images(file)?;
         for comment in &self.comments {
             let parent = comment.parent.map_or_else(String::new, |id| id.to_string());
             let edited_at = comment

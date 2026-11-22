@@ -53,6 +53,14 @@ pub fn route(
     if request.method == "POST" && request.path == "/feeds/layout" {
         return feed_layout_submission(state, path, &request.form);
     }
+    if request.path == "/posts/inline-image" {
+        if request.method == "POST" {
+            return inline_image_upload(request, state, path);
+        }
+        if request.method == "GET" {
+            return inline_image_response(&request, state, path);
+        }
+    }
     if state.username.is_empty()
         && (request.method == "POST" || session::requires_account(&request))
     {
@@ -361,6 +369,23 @@ pub fn route(
                 publishing_error(state, &request.form, kind, &error)
             }
             Err(error) if action == "create" => text_composer_error(state, &request.form, &error),
+            Err(error) if action == "edit" => {
+                let post =
+                    find_post(state, &request.form).filter(|post| can_edit_post(state, post));
+                if let Some(post) = post {
+                    let content = post_composer::editor(
+                        state,
+                        Some(post),
+                        &post.community,
+                        None,
+                        Some((&request.form, &error)),
+                    );
+                    Response::html(layout(state, "", "Edit post", &content, "", ""))
+                        .with_wasm_client()
+                } else {
+                    form_error(state, &error, back)
+                }
+            }
             Err(error) if action == "send-direct-message" => {
                 message_error(state, auth, &request.form, &error)
             }
@@ -837,6 +862,43 @@ fn comment_submission(
                 "",
             ))
         }
+    }
+}
+
+fn inline_image_upload(request: Request, state: &mut State, path: &Path) -> Response {
+    const TEXT: &str = "text/plain; charset=utf-8";
+    if state.username.is_empty() {
+        return Response::text(401, TEXT, "Sign in to insert an image.");
+    }
+    let Some(upload) = request.upload else {
+        return Response::text(400, TEXT, "Choose an image to insert.");
+    };
+    let mut stored = match media::store(path, vec![upload]) {
+        Ok(stored) => stored,
+        Err(error) => return Response::text(422, TEXT, error),
+    };
+    let Some(asset) = stored.pop() else {
+        return Response::text(500, TEXT, "The image could not be stored.");
+    };
+    match state.stage_inline_image(asset.clone(), path) {
+        Ok(()) => Response::text(200, TEXT, asset.key),
+        Err(error) => {
+            media::remove(path, std::slice::from_ref(&asset));
+            Response::text(422, TEXT, error)
+        }
+    }
+}
+
+fn inline_image_response(request: &Request, state: &State, path: &Path) -> Response {
+    let key = field(&request.query, "key");
+    let asset = if request.query.contains_key("id") {
+        find_post(state, &request.query).and_then(|post| state.post_inline_image(post.id, key))
+    } else {
+        state.inline_upload_preview(key)
+    };
+    match asset.and_then(|asset| media::read(path, asset)) {
+        Some((mime, bytes)) => Response::media(mime, bytes, request.range.as_deref()),
+        None => Response::text(404, "text/plain; charset=utf-8", "Image unavailable."),
     }
 }
 
@@ -2280,7 +2342,7 @@ fn feed(
         .posts
         .iter()
         .filter(|post| !state.is_post_removed(post.id))
-        .filter(|post| !media_only || search::has_media(post))
+        .filter(|post| !media_only || search::has_media(state, post))
         .filter(|post| {
             let group = community(state, &post.community);
             let viewable = group.is_some_and(|item| {
@@ -2835,7 +2897,7 @@ fn compact_post_kind(state: &State, post: &Post) -> Option<&'static str> {
         "Poll"
     } else if post.repost_of.is_some() {
         "Repost"
-    } else if search::has_media(post) {
+    } else if search::has_media(state, post) {
         "Media"
     } else if !post.url.is_empty() {
         "Link"
@@ -2856,10 +2918,12 @@ fn post_preview(state: &State, post: &Post, back: &str, full: bool, sensitive: b
     let body = if body_excerpt.is_empty() {
         String::new()
     } else {
-        format!(
-            "<div class='post-body'>{}</div>",
-            post_rich_text::render(&body_excerpt)
-        )
+        let rendered = post_rich_text::render(&body_excerpt, |key| {
+            state
+                .post_inline_image(post.id, key)
+                .map(|_| format!("/posts/inline-image?id={}&key={key}", post.id))
+        });
+        format!("<div class='post-body'>{rendered}</div>")
     };
     let outgoing = if post.url.starts_with("https://") || post.url.starts_with("http://") {
         format!("<a class='outgoing' href='{}' target='_blank' rel='noopener noreferrer'>Open linked article ↗</a>", escape(&post.url))

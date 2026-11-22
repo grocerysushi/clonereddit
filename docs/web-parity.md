@@ -305,6 +305,12 @@ Workflow **034** is implemented. The composer toolbar adds Markdown for bold, it
 
 Chromium checks at 1440 and 390 CSS pixels covered text selection, adding and editing a link, drafts, publishing and editing, and formatting after restart. HTTP checks covered older posts, formatted media, polls, reposts, and scheduled posts, plus escaped HTML and unsupported link targets.
 
+## Inline post images update
+
+Workflow **038** is implemented. Authors can upload an image in the text post composer and place it between paragraphs. The image stays at the chosen position in drafts and published posts. Published images follow their post’s viewing permissions. This brings the implementation count to **84 implemented, 7 partial, and 9 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered inserting two images between paragraphs, draft recovery, editing placement, and rendering after restart. HTTP checks covered file validation, account and private-community access, moderator removal and restoration, and cleanup after deleting an image, draft, or post.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

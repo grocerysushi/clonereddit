@@ -217,7 +217,8 @@ impl App {
                         .publish_due(&self.state_path, now)
                         .map(|_| ())
                         .map_err(|error| format!("Could not publish scheduled posts. {error}"))
-                });
+                })
+                .and_then(|()| self.state.expire_inline_uploads(&self.state_path, now));
         match result {
             Ok(()) => {
                 if self.retry_after.take().is_some() {

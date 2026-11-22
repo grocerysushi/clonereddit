@@ -1,13 +1,28 @@
+use std::path::Path;
+
 use super::State;
 
 pub const DELETED_ACCOUNT: &str = "[deleted]";
 
 impl State {
+    pub fn delete_account_profiles(
+        &mut self,
+        handles: &[String],
+        path: &Path,
+    ) -> Result<(), String> {
+        let mut updated = self.clone();
+        for handle in handles {
+            updated.delete_account_profile(handle);
+        }
+        self.commit(updated, path)
+    }
+
     pub fn delete_account_profile(&mut self, handle: &str) {
         if self.username == handle {
             self.activate_profile(None);
         }
         self.account_profiles.remove(handle);
+        self.remove_private_inline_images(handle);
         if self.legacy_profile.as_deref() == Some(handle) {
             self.legacy_profile = None;
         }
