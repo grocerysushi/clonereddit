@@ -254,7 +254,10 @@ pub fn route(
         ) {
             return highlight_submission(state, path, action, &request.form);
         }
-        if matches!(action, "save-community-rule" | "move-community-rule") {
+        if matches!(
+            action,
+            "save-community-rule" | "move-community-rule" | "delete-community-rule"
+        ) {
             return community_rule_submission(state, path, action, &request.form);
         }
         if matches!(

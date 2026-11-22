@@ -126,6 +126,22 @@ impl State {
         Ok("Community rule moved.")
     }
 
+    pub(super) fn delete_community_rule(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let index = self.moderated_community_index(form, ModPermission::Content)?;
+        let community = &mut self.communities[index];
+        let position = rule_position(&community.rules, form)?;
+        let id = community.rules.remove(position).id;
+        let slug = community.slug.clone();
+        self.record_moderation_action(
+            &slug,
+            &format!("Community rule #{id} deleted by u/{}", self.username),
+        )?;
+        Ok("Community rule deleted.")
+    }
+
     pub(super) fn read_community_rule(
         &mut self,
         slug: &str,
@@ -191,6 +207,19 @@ mod tests {
 
     struct TestStateFile(PathBuf);
 
+    impl TestStateFile {
+        fn new(scenario: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!(
+                "commonline-community-rules-{scenario}-{}-{nonce}.state",
+                std::process::id()
+            )))
+        }
+    }
+
     impl Drop for TestStateFile {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
@@ -215,14 +244,7 @@ mod tests {
 
     #[test]
     fn rules_are_scoped_and_keep_identity_and_order_after_restart() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let file = TestStateFile(std::env::temp_dir().join(format!(
-            "commonline-community-rules-{}-{nonce}.state",
-            std::process::id()
-        )));
+        let file = TestStateFile::new("ordering");
         let mut state = State::seeded();
         state.activate_profile(Some("rule_owner"));
         state
@@ -395,5 +417,148 @@ mod tests {
             )
             .unwrap();
         assert!(rules(&state, ROOM).last().unwrap().id > other_id);
+    }
+
+    #[test]
+    fn deleted_rules_keep_report_snapshots_and_never_reuse_their_ids() {
+        let file = TestStateFile::new("deletion");
+        let mut state = State::seeded();
+        state.activate_profile(Some("rule_owner"));
+        state
+            .create_community(&form(&[("slug", ROOM), ("name", "Workshop")]))
+            .unwrap();
+        for (handle, role) in [(MODERATOR, "moderator"), (REVIEWER, "appeals-reviewer")] {
+            state
+                .set_moderator_role(&form(&[
+                    ("community", ROOM),
+                    ("handle", handle),
+                    ("role", role),
+                ]))
+                .unwrap();
+        }
+        state
+            .create_post(&form(&[("community", ROOM), ("title", "Reportable post")]))
+            .unwrap();
+        let post = state.posts.last().unwrap().id.to_string();
+        state
+            .create_comment(&form(&[("post", &post), ("body", "Reportable comment")]))
+            .unwrap();
+        let comment = state.comments.last().unwrap().id.to_string();
+
+        let title = "Cite sources";
+        let description = "Include the original link.";
+        let original = form(&[
+            ("community", ROOM),
+            ("title", title),
+            ("description", description),
+        ]);
+        for rule in [
+            form(&[("community", ROOM), ("title", "First rule")]),
+            original,
+            form(&[("community", ROOM), ("title", "Last rule")]),
+        ] {
+            state.apply("save-community-rule", &rule, &file.0).unwrap();
+        }
+        let first = rules(&state, ROOM)[0].id;
+        let reported = rules(&state, ROOM)[1].id;
+        let last = rules(&state, ROOM)[2].id;
+        let reason = format!("rule:{reported}");
+        let reports = [
+            form(&[("kind", "post"), ("id", &post), ("reason", &reason)]),
+            form(&[("kind", "comment"), ("id", &comment), ("reason", &reason)]),
+        ];
+        state.activate_profile(Some("rule_member"));
+        for report in &reports {
+            state.apply("report-content", report, &file.0).unwrap();
+        }
+
+        let snapshot = fs::read_to_string(&file.0).unwrap();
+        let previous_format = snapshot
+            .lines()
+            .filter(|line| !line.starts_with("community-rule-sequence\t"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&file.0, previous_format).unwrap();
+        let mut state = State::load(&file.0).unwrap();
+        let delete_reported = form(&[("community", ROOM), ("id", &reported.to_string())]);
+        for handle in ["rule_member", REVIEWER] {
+            state.activate_profile(Some(handle));
+            assert!(state
+                .apply("delete-community-rule", &delete_reported, &file.0)
+                .is_err());
+        }
+        state.activate_profile(Some(OTHER_OWNER));
+        state
+            .create_community(&form(&[("slug", OTHER), ("name", "Other workshop")]))
+            .unwrap();
+        for target in [ROOM, OTHER] {
+            let forged = form(&[("community", target), ("id", &reported.to_string())]);
+            assert!(state
+                .apply("delete-community-rule", &forged, &file.0)
+                .is_err());
+        }
+
+        state.activate_profile(Some(MODERATOR));
+        assert_eq!(
+            state.apply("delete-community-rule", &delete_reported, &file.0),
+            Ok("Community rule deleted.")
+        );
+        assert_eq!(
+            rules(&state, ROOM)
+                .iter()
+                .map(|rule| rule.id)
+                .collect::<Vec<_>>(),
+            [first, last]
+        );
+        let event = format!("Community rule #{reported} deleted by u/{MODERATOR}");
+        assert!(state
+            .apply("delete-community-rule", &delete_reported, &file.0)
+            .is_err());
+        assert_eq!(
+            state
+                .mod_log
+                .iter()
+                .filter(|entry| entry.community == ROOM && entry.action == event)
+                .count(),
+            1
+        );
+
+        for id in [last, first] {
+            let deletion = form(&[("community", ROOM), ("id", &id.to_string())]);
+            state
+                .apply("delete-community-rule", &deletion, &file.0)
+                .unwrap();
+        }
+        let mut state = State::load(&file.0).unwrap();
+        assert!(rules(&state, ROOM).is_empty());
+        state.activate_profile(Some(MODERATOR));
+        state
+            .apply(
+                "save-community-rule",
+                &form(&[
+                    ("community", ROOM),
+                    ("title", title),
+                    ("description", "Describe why the source is relevant."),
+                ]),
+                &file.0,
+            )
+            .unwrap();
+        assert!(rules(&state, ROOM)[0].id > last);
+
+        state.activate_profile(Some("rule_member"));
+        for report in &reports {
+            assert_eq!(
+                state.apply("report-content", report, &file.0),
+                Err("Choose a rule for this community.".into())
+            );
+        }
+        let state = State::load(&file.0).unwrap();
+        assert_eq!(state.reports.len(), 2);
+        for report in &state.reports {
+            let snapshot = report.rule.as_ref().unwrap();
+            assert_eq!(snapshot.id, reported);
+            assert_eq!(report.reason_label(), Some(title));
+            assert_eq!(snapshot.description, description);
+        }
     }
 }

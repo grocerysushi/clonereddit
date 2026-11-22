@@ -1021,6 +1021,7 @@ impl State {
             "move-highlight" => self.move_highlight(form),
             "save-community-rule" => self.save_community_rule(form),
             "move-community-rule" => self.move_community_rule(form),
+            "delete-community-rule" => self.delete_community_rule(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
             "lock-discussion" => self.set_reply_lock(form, ContentKind::Post, true),
@@ -2383,6 +2384,10 @@ impl State {
             ["community-rule", slug, id, title, description] => {
                 self.read_community_rule(slug, id, title, description)?;
             }
+            ["community-rule-sequence", next] => {
+                let next = canonical_u64(next).filter(|&value| value > 0)?;
+                self.next_community_rule = self.next_community_rule.max(next);
+            }
             ["community-image", slug, kind, content_type, payload] => {
                 let slug = decode(slug)?;
                 let community = self
@@ -2793,6 +2798,11 @@ impl State {
             self.next_feed,
         )?;
         self.write_account_records(file)?;
+        writeln!(
+            file,
+            "community-rule-sequence\t{}",
+            self.next_community_rule
+        )?;
         for community in &self.communities {
             let Some(owner) = &community.owner else {
                 continue;

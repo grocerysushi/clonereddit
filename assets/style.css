@@ -331,8 +331,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment-edit-form { gap: 8px; }
 .comment-delete-confirm h3 { font-size: .98rem; margin: 0; }
 .comment-form-actions { margin-top: 5px; flex-wrap: wrap; }
-.comment-delete-form .button.dark { background: #74362e; }
-.comment-delete-form .button.dark:hover { background: #8c4438; }
+.comment-delete-form .button.dark, .mod-community-rule-delete-form .button.dark { background: #74362e; }
+.comment-delete-form .button.dark:hover, .mod-community-rule-delete-form .button.dark:hover { background: #8c4438; }
 .comment-form-error { margin: 0 0 5px; background: #f8e8de; border-color: #e7c5b4; color: #78382d; }
 .comment-deleted p { margin: 0; color: var(--quiet); font-style: italic; }
 .discussion-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 10px; }

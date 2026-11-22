@@ -172,7 +172,7 @@ pub(super) fn render(
             "automod" => automod::rules(state, item, field(query, "edit"), None),
             "discussions" => workspace.discussions(state),
             "highlights" => workspace.highlights(state),
-            "rules" => workspace.rules(state, field(query, "edit"), None),
+            "rules" => workspace.rules(state, field(query, "edit"), field(query, "delete"), None),
             "members" => workspace.members(state),
             "approved-members" => community_manage::approved_members(state, item, registered, None),
             "roles" => community_manage::roles(state, item, registered, None),
@@ -251,7 +251,7 @@ pub(super) fn rules_error(
     } else {
         ""
     };
-    let body = workspace.rules(state, edit, Some((form, error)));
+    let body = workspace.rules(state, edit, "", Some((form, error)));
     workspace.frame(state, "rules", RULES_TITLE, "", &body)
 }
 
@@ -896,6 +896,7 @@ impl<'a> Workspace<'a> {
         &self,
         state: &State,
         edit: &str,
+        delete: &str,
         rejected: Option<(&BTreeMap<String, String>, &str)>,
     ) -> String {
         let guidelines = if self.item.guidelines.is_empty() {
@@ -914,7 +915,7 @@ impl<'a> Workspace<'a> {
         } else {
             String::new()
         };
-        let mut html = community_rules::render(self.item, edit, rejected);
+        let mut html = community_rules::render(self.item, edit, delete, rejected);
         write!(html, "<section class='panel mod-section'><h2>Topic guidelines</h2>{guidelines}{edit_guidelines}</section>").unwrap();
         html
     }

@@ -245,9 +245,11 @@ Chromium checks at 1440 and 390 CSS pixels covered pinning, reordering, unpinnin
 
 ## Community rules update
 
-Workflow **081** is implemented. Owners and moderators with content permissions can create, edit, and reorder community rules in **Mod Tools → Rules**. The community page and both report forms show the saved order. Reporters can select a rule alongside the standard reasons, and submitted reports keep the rule that applied when they were filed. This brings the implementation count to **77 implemented, 10 partial, and 13 missing**.
+Workflow **081** is implemented. Owners and moderators with content permissions can create, edit, reorder, and delete community rules in **Mod Tools → Rules**. The community page and both report forms show the saved order of active rules. Reporters can select a rule alongside the standard reasons, and submitted reports keep the original rule title and description after an edit or deletion. This brings the implementation count to **77 implemented, 10 partial, and 13 missing**.
 
 Chromium checks at 1440 and 390 CSS pixels covered rule creation, editing, reordering, public rule display, post and comment reports, and rule titles in report history and the moderation queue after restart. Separate server checks covered legacy legal and generic reports, cross-community and private access denials, stale reorder submissions, and saved rule snapshots.
+
+Desktop and mobile checks covered canceling and confirming deletion, removing the last rule, and submitting an open report form after its selected rule was deleted. Deleted rules stayed out of new forms after restart, and both post and comment reports kept their original rule details. Server checks verified migration from existing rules and that a replacement receives a new ID even after every rule is deleted.
 
 ## Remaining work
 
