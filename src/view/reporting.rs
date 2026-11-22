@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use crate::model::{ContentKind, ReportReason, State};
 
-use super::{action_fields, escape, field, visible_post};
+use super::{action_fields, community, escape, field, visible_post};
 
 pub(super) const COMMUNITY_HISTORY: &str = "/reports?view=community";
 
@@ -48,29 +48,59 @@ pub(super) fn content_form(
     };
     let chosen = field(values, "reason");
     let mut options = String::from("<option value=''>Choose a reason</option>");
+    let rules = community(state, &post.community)?.rules();
+    if !rules.is_empty() {
+        options.push_str("<optgroup label='Community rules'>");
+        for rule in rules {
+            append_reason(
+                &mut options,
+                &format!("rule:{}", rule.id),
+                &rule.title,
+                chosen,
+            );
+        }
+        options.push_str("</optgroup><optgroup label='General reasons'>");
+    }
     for reason in ReportReason::ALL {
-        let selected = if reason.as_str() == chosen {
-            " selected"
-        } else {
-            ""
-        };
+        append_reason(&mut options, reason.as_str(), reason.label(), chosen);
+    }
+    if !rules.is_empty() {
+        options.push_str("</optgroup>");
+    }
+    let mut rule_guide = String::new();
+    for rule in rules.iter().filter(|rule| !rule.description.is_empty()) {
         write!(
-            options,
-            "<option value='{}'{selected}>{}</option>",
-            reason.as_str(),
-            escape(reason.label())
+            rule_guide,
+            "<p><strong>{}</strong><br>{}</p>",
+            escape(&rule.title),
+            escape(&rule.description)
         )
         .unwrap();
+    }
+    if !rule_guide.is_empty() {
+        rule_guide = format!("<details class='panel community-guidelines'><summary>Read community rules</summary>{rule_guide}</details>");
     }
     Some(format!(
         r#"<section class="panel standalone report-page"><h1>Report {title}</h1>{context}{error}
 <form class="stack-form content-report-form" method="post" action="/action">{fields}
 <label>Reason<select name="reason" required>{options}</select></label>
+{rule_guide}
 <label>Additional details <small>Optional</small><textarea name="details" maxlength="4000" rows="5">{details}</textarea></label>
 <p class="muted">Community moderators review this report. You can track its status in your reports.</p>
 <div class="form-actions"><a class="button light" href="{back}">Cancel</a><button class="button dark" type="submit">Submit report</button></div></form></section>"#,
         details = escape(field(values, "details")),
     ))
+}
+
+fn append_reason(options: &mut String, value: &str, label: &str, chosen: &str) {
+    let selected = if value == chosen { " selected" } else { "" };
+    write!(
+        options,
+        "<option value='{}'{selected}>{}</option>",
+        escape(value),
+        escape(label)
+    )
+    .unwrap();
 }
 
 pub(super) fn history(state: &State, community: bool) -> String {
@@ -132,10 +162,21 @@ pub(super) fn history(state: &State, community: bool) -> String {
         } else {
             "Pending review"
         };
-        let (type_label, type_value) = report.reason.map_or_else(
+        let (type_label, type_value) = report.reason_label().map_or_else(
             || ("Region", escape(&report.region)),
-            |reason| ("Reason", escape(reason.label())),
+            |reason| ("Reason", escape(reason)),
         );
+        let rule_description = report
+            .rule
+            .as_ref()
+            .filter(|rule| !rule.description.is_empty())
+            .map(|rule| {
+                format!(
+                    "<p class='muted account-message-body'>{}</p>",
+                    escape(&rule.description)
+                )
+            })
+            .unwrap_or_default();
         let details = if report.details.is_empty() {
             String::new()
         } else {
@@ -144,7 +185,7 @@ pub(super) fn history(state: &State, community: bool) -> String {
                 escape(&report.details)
             )
         };
-        write!(html, "<article class='log-item report-record' id='report-{}'><span class='flair'>{status}</span><h2>{title}</h2><p><strong>{type_label}</strong> {type_value}</p>{details}</article>", report.id).unwrap();
+        write!(html, "<article class='log-item report-record' id='report-{}'><span class='flair'>{status}</span><h2>{title}</h2><p><strong>{type_label}</strong> {type_value}</p>{rule_description}{details}</article>", report.id).unwrap();
     }
     html.push_str("</section>");
     html

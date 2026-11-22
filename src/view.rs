@@ -254,6 +254,9 @@ pub fn route(
         ) {
             return highlight_submission(state, path, action, &request.form);
         }
+        if matches!(action, "save-community-rule" | "move-community-rule") {
+            return community_rule_submission(state, path, action, &request.form);
+        }
         if matches!(
             action,
             "remove-content"
@@ -949,6 +952,32 @@ fn highlight_submission(
                 "",
                 "",
             ))
+        }
+    }
+}
+
+fn community_rule_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let slug = field(form, "community");
+    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Content)) {
+        return missing(state);
+    }
+    match state.apply(action, form, path) {
+        Ok(notice) => Response::redirect(&format!(
+            "/moderation/tools?community={}&section=rules&notice={}",
+            encode(slug),
+            encode(notice)
+        )),
+        Err(error) => {
+            let Some(item) = community(state, slug) else {
+                return missing(state);
+            };
+            let body = moderation_workspace::rules_error(state, item, form, &error);
+            Response::html(layout(state, "mod-workspace", "Rules", &body, "", ""))
         }
     }
 }
@@ -1984,6 +2013,9 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         if !item.guidelines.is_empty() {
             write!(html, "<details class='panel community-guidelines'><summary>Topic guidelines</summary><p>{}</p></details>", escape(&item.guidelines)).unwrap();
         }
+        if !item.rules().is_empty() {
+            html.push_str(&community_rules(item));
+        }
     }
     if let Some(item) = selected.filter(|_| !search.is_empty()) {
         let label = if media_only {
@@ -2146,6 +2178,19 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
     for post in posts {
         html.push_str(&post_card(state, post, &back, false, false));
     }
+    html
+}
+
+fn community_rules(item: &Community) -> String {
+    let mut html = String::from("<details class='panel community-guidelines' id='community-rules'><summary>Community rules</summary><ol class='community-rule-list'>");
+    for rule in item.rules() {
+        write!(html, "<li><strong>{}</strong>", escape(&rule.title)).unwrap();
+        if !rule.description.is_empty() {
+            write!(html, "<p>{}</p>", escape(&rule.description)).unwrap();
+        }
+        html.push_str("</li>");
+    }
+    html.push_str("</ol></details>");
     html
 }
 

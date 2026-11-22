@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use super::{
-    bounded, decode, encode, id_field, next_id, number, value, Comment, Community, ContentKind,
-    Post, Report, State,
+    bounded, canonical_u64, decode, encode, id_field, next_id, number, value, Comment, Community,
+    ContentKind, Post, Report, State,
 };
 
 const REPORT_SENT: &str = "Report sent to the community moderators.";
@@ -57,6 +57,13 @@ impl ReportReason {
     }
 }
 
+#[derive(Clone)]
+pub struct ReportedRule {
+    pub id: u64,
+    pub title: String,
+    pub description: String,
+}
+
 impl Report {
     pub fn kind(&self) -> ContentKind {
         if self.comment.is_some() {
@@ -68,6 +75,13 @@ impl Report {
 
     pub fn content_id(&self) -> u64 {
         self.comment.unwrap_or(self.post)
+    }
+
+    pub fn reason_label(&self) -> Option<&str> {
+        self.rule
+            .as_ref()
+            .map(|rule| rule.title.as_str())
+            .or_else(|| self.reason.map(ReportReason::label))
     }
 
     pub(super) fn write_record(&self, file: &mut impl Write) -> io::Result<()> {
@@ -88,6 +102,15 @@ impl Report {
             }
             if let Some(community) = &self.community {
                 write!(file, "\t{}", encode(community))?;
+                if let Some(rule) = &self.rule {
+                    write!(
+                        file,
+                        "\trule\t{}\t{}\t{}",
+                        rule.id,
+                        encode(&rule.title),
+                        encode(&rule.description)
+                    )?;
+                }
             }
         }
         writeln!(file)
@@ -132,17 +155,37 @@ impl State {
             .report_target(kind, id)
             .ok_or("This post or comment is unavailable.")?;
         let community = post.community.clone();
-        let post = post.id;
         let comment = comment.map(|item| item.id);
-        let reason =
-            ReportReason::parse(value(form, "reason")).ok_or("Choose a reason for this report.")?;
+        let raw_reason = value(form, "reason");
+        let (reason, rule) = if let Some(rule_id) = raw_reason.strip_prefix("rule:") {
+            let rule_id = canonical_u64(rule_id).ok_or("Choose a rule for this community.")?;
+            let selected = self
+                .communities
+                .iter()
+                .find(|item| item.slug == community)
+                .and_then(|item| item.rules().iter().find(|rule| rule.id == rule_id))
+                .ok_or("Choose a rule for this community.")?;
+            let snapshot = ReportedRule {
+                id: selected.id,
+                title: selected.title.clone(),
+                description: selected.description.clone(),
+            };
+            (ReportReason::CommunityRuleViolation, Some(snapshot))
+        } else {
+            let reason =
+                ReportReason::parse(raw_reason).ok_or("Choose a reason for this report.")?;
+            (reason, None)
+        };
         let details = bounded(form, "details", "Report details", 4_000)?;
+        let post = post.id;
+        let rule_id = rule.as_ref().map(|rule| rule.id);
         if self.reports.iter().any(|report| {
             !report.reviewed
                 && report.reporter == self.username
                 && report.post == post
                 && report.comment == comment
                 && report.reason == Some(reason)
+                && report.rule.as_ref().map(|rule| rule.id) == rule_id
                 && report.details == details
         }) {
             return Ok(REPORT_SENT);
@@ -153,6 +196,7 @@ impl State {
             post,
             comment,
             reason: Some(reason),
+            rule,
             community: Some(community),
             region: String::new(),
             details: details.into(),
@@ -179,9 +223,19 @@ impl State {
             }
             _ => return None,
         };
-        let community = match scope {
-            [] => None,
-            [slug] => Some(decode(slug)?),
+        let (community, rule) = match scope {
+            [] => (None, None),
+            [slug] => (Some(decode(slug)?), None),
+            [slug, "rule", rule_id, title, description]
+                if reason == Some(ReportReason::CommunityRuleViolation) =>
+            {
+                let rule = ReportedRule {
+                    id: canonical_u64(rule_id)?,
+                    title: decode(title)?,
+                    description: decode(description)?,
+                };
+                (Some(decode(slug)?), Some(rule))
+            }
             _ => return None,
         };
         self.reports.push(Report {
@@ -189,6 +243,7 @@ impl State {
             post: number(post)?,
             comment,
             reason,
+            rule,
             community,
             region: decode(region)?,
             details: decode(details)?,
@@ -372,6 +427,118 @@ mod tests {
             .map(|line| line.split('\t').count())
             .collect();
         assert_eq!(lengths, [11, 10, 7]);
+    }
+
+    #[test]
+    fn reports_keep_the_selected_community_rule_across_edits_and_restarts() {
+        let fixture = Fixture::new();
+        let mut state = State::seeded();
+        state.activate_profile(Some(OTHER_OWNER));
+        room(&mut state, OTHER_ROOM, "public");
+        state
+            .apply(
+                "save-community-rule",
+                &form(&[("community", OTHER_ROOM), ("title", "Foreign rule")]),
+                &fixture.0,
+            )
+            .unwrap();
+        let foreign_id = state.communities.last().unwrap().rules()[0].id;
+
+        state.activate_profile(Some(OWNER));
+        let post = room(&mut state, ROOM, "private").to_string();
+        let title = "Protect members & their data";
+        let description = "Keep <private> details private.\nAsk permission before sharing.";
+        let mut rule_form = form(&[
+            ("community", ROOM),
+            ("title", title),
+            ("description", description),
+        ]);
+        state
+            .apply("save-community-rule", &rule_form, &fixture.0)
+            .unwrap();
+        state
+            .apply(
+                "save-community-rule",
+                &form(&[("community", ROOM), ("title", "Stay on topic")]),
+                &fixture.0,
+            )
+            .unwrap();
+        let rules = state.communities.last().unwrap().rules();
+        let (first, second) = (rules[0].id, rules[1].id);
+        state
+            .approve_member(&form(&[("community", ROOM), ("handle", REPORTER)]))
+            .unwrap();
+        state
+            .create_comment(&form(&[("post", &post), ("body", "Comment subject")]))
+            .unwrap();
+        let comment = state.comments.last().unwrap().id.to_string();
+        let mut post_report = form(&[
+            ("kind", "post"),
+            ("id", &post),
+            ("reason", &format!("rule:{first}")),
+        ]);
+        state.activate_profile(Some(OTHER_OWNER));
+        assert!(state
+            .apply("report-content", &post_report, &fixture.0)
+            .is_err());
+        state.activate_profile(Some(REPORTER));
+        for invalid_reason in [format!("rule:{foreign_id}"), "rule:abc".to_string()] {
+            post_report.insert("reason".into(), invalid_reason);
+            assert!(state
+                .apply("report-content", &post_report, &fixture.0)
+                .is_err());
+        }
+        post_report.insert("reason".into(), format!("rule:{first}"));
+        for _ in 0..2 {
+            state
+                .apply("report-content", &post_report, &fixture.0)
+                .unwrap();
+        }
+        assert_eq!(state.reports.len(), 1);
+
+        post_report.insert(
+            "reason".into(),
+            ReportReason::CommunityRuleViolation.as_str().into(),
+        );
+        state
+            .apply("report-content", &post_report, &fixture.0)
+            .unwrap();
+        post_report.insert("reason".into(), format!("rule:{second}"));
+        state
+            .apply("report-content", &post_report, &fixture.0)
+            .unwrap();
+        let comment_report = form(&[
+            ("kind", "comment"),
+            ("id", &comment),
+            ("community", OTHER_ROOM),
+            ("reason", &format!("rule:{first}")),
+        ]);
+        state
+            .apply("report-content", &comment_report, &fixture.0)
+            .unwrap();
+
+        state.activate_profile(Some(OWNER));
+        rule_form.insert("id".into(), first.to_string());
+        rule_form.insert("title".into(), "Privacy rules updated".into());
+        rule_form.insert("description".into(), "New rule description".into());
+        state
+            .apply("save-community-rule", &rule_form, &fixture.0)
+            .unwrap();
+
+        let state = State::load(&fixture.0).unwrap();
+        assert_eq!(state.reports.len(), 4);
+        assert_eq!(state.reports[3].kind(), ContentKind::Comment);
+        for index in [0, 3] {
+            let report = &state.reports[index];
+            assert_eq!(report.reason_label(), Some(title));
+            assert_eq!(report.community.as_deref(), Some(ROOM));
+            let rule = report.rule.as_ref().unwrap();
+            assert_eq!(rule.id, first);
+            assert_eq!(rule.description, description);
+        }
+        assert!(state.reports[1].rule.is_none());
+        assert_eq!(state.reports[2].reason_label(), Some("Stay on topic"));
+        assert_eq!(state.reports[2].rule.as_ref().unwrap().id, second);
     }
 
     #[test]

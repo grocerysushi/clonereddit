@@ -208,6 +208,9 @@ main { min-width: 0; }
 .community-guidelines { margin-top: 10px; padding: 9px 12px; }
 .community-guidelines summary { font-size: .91rem; font-weight: 650; }
 .community-guidelines p { padding-top: 8px; color: var(--quiet); white-space: pre-wrap; }
+.community-rule-list { margin: 10px 0 0; padding-inline-start: 1.5rem; overflow-wrap: anywhere; }
+.community-rule-list li + li { margin-top: 8px; }
+.community-rule-list p { padding-top: 0; }
 .community-highlights { margin-top: 16px; padding: 13px 15px 15px; }
 .community-highlights h2 { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 1rem; }
 .community-highlights h2 svg { color: #47652a; width: 17px; height: 17px; }
@@ -633,6 +636,14 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-highlight-actions { gap: 5px; }
 .mod-highlight-actions .button { margin: 0; min-height: 34px; padding: 4px 8px; font-size: .8rem; }
 .mod-highlight-actions .button:disabled { opacity: .55; cursor: default; }
+.mod-community-rule-form, .mod-rule-empty { margin-top: 10px; }
+.mod-community-rule-list { margin: 12px 0 0; padding-inline-start: 1.6rem; }
+.mod-community-rule-list li { padding: 9px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.mod-community-rule-list li::marker { color: var(--quiet); font-size: .84rem; font-variant-numeric: tabular-nums; }
+.mod-community-rule-description { margin-top: 3px; color: var(--quiet); white-space: pre-wrap; }
+.mod-community-rule-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.mod-community-rule-actions .button { margin: 0; min-height: 34px; padding: 4px 8px; font-size: .8rem; }
+.mod-community-rule-actions .button:disabled { opacity: .55; cursor: default; }
 .mod-discussion-actions, .mod-discussion-lock-controls, .mod-comment-lock-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .mod-discussion-actions .button { margin: 0; font-size: .8rem; }
 .mod-discussion-lock-controls[data-discussion-locked='true'] .mod-discussion-lock-status,

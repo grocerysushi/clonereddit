@@ -21,6 +21,11 @@ use automod::{AUTOMOD_REMOVED_COMMENT, AUTOMOD_REMOVED_POST};
 #[path = "model/chat_requests.rs"]
 mod chat_requests;
 pub use chat_requests::{ChatRequest, ChatRequestPermission};
+#[path = "model/community_rules.rs"]
+mod community_rules;
+pub use community_rules::{
+    CommunityRule, COMMUNITY_RULE_DESCRIPTION_MAX, COMMUNITY_RULE_TITLE_MAX,
+};
 #[path = "model/content_moderation.rs"]
 mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
@@ -39,7 +44,7 @@ mod notification_preferences;
 pub use notification_preferences::NotificationPreferences;
 #[path = "model/reporting.rs"]
 mod reporting;
-pub use reporting::ReportReason;
+pub use reporting::{ReportReason, ReportedRule};
 #[path = "model/timed_restrictions.rs"]
 mod timed_restrictions;
 use timed_restrictions::{representable_expiration, restriction_expiration};
@@ -69,6 +74,7 @@ pub struct Community {
     pub members: u32,
     pub owner: Option<String>,
     highlighted_posts: Vec<u64>,
+    rules: Vec<CommunityRule>,
     pub topic: String,
     pub visibility: String,
     pub mature: bool,
@@ -148,6 +154,7 @@ pub struct Report {
     pub post: u64,
     pub comment: Option<u64>,
     pub reason: Option<ReportReason>,
+    pub rule: Option<ReportedRule>,
     pub community: Option<String>,
     pub region: String,
     pub details: String,
@@ -366,6 +373,7 @@ pub struct State {
     next_notification: u64,
     next_mod_mail: u64,
     next_mod_event: u64,
+    next_community_rule: u64,
     next_automod_rule: u64,
     next_automod_flag: u64,
     next_saved_response: u64,
@@ -452,6 +460,7 @@ impl State {
                 members,
                 owner: None,
                 highlighted_posts: Vec::new(),
+                rules: Vec::new(),
                 topic: String::new(),
                 visibility: "public".into(),
                 mature: false,
@@ -552,6 +561,7 @@ impl State {
             next_notification: 1,
             next_mod_mail: 1,
             next_mod_event: 1,
+            next_community_rule: 1,
             next_automod_rule: 1,
             next_automod_flag: 1,
             next_saved_response: 1,
@@ -1009,6 +1019,8 @@ impl State {
             "highlight-post" => self.set_highlight(form, true),
             "unhighlight-post" => self.set_highlight(form, false),
             "move-highlight" => self.move_highlight(form),
+            "save-community-rule" => self.save_community_rule(form),
+            "move-community-rule" => self.move_community_rule(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
             "lock-discussion" => self.set_reply_lock(form, ContentKind::Post, true),
@@ -1202,6 +1214,7 @@ impl State {
             members: 1,
             owner: Some(self.username.clone()),
             highlighted_posts: Vec::new(),
+            rules: Vec::new(),
             topic,
             visibility,
             mature,
@@ -1671,6 +1684,7 @@ impl State {
             post,
             comment: None,
             reason: None,
+            rule: None,
             community: None,
             region: region.into(),
             details: details.into(),
@@ -2360,10 +2374,14 @@ impl State {
                     members: number(members)?,
                     owner: Some(decode(owner)?),
                     highlighted_posts: highlights::read_order(highlights)?,
+                    rules: Vec::new(),
                     topic,
                     visibility,
                     mature,
                 });
+            }
+            ["community-rule", slug, id, title, description] => {
+                self.read_community_rule(slug, id, title, description)?;
             }
             ["community-image", slug, kind, content_type, payload] => {
                 let slug = decode(slug)?;
@@ -2795,6 +2813,7 @@ impl State {
                 encode(&community.visibility),
                 community.mature,
             )?;
+            community.write_rules(file)?;
             for (kind, image) in [
                 ("icon", &community.icon_image),
                 ("banner", &community.banner_image),

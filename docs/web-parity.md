@@ -243,11 +243,17 @@ Workflow **089** is implemented. Owners and moderators with content permissions 
 
 Chromium checks at 1440 and 390 CSS pixels covered pinning, reordering, unpinning, scoped permissions, the Settings shortcut, and feed order after restart. A stale reorder kept the newer order and showed a refresh message. Server checks also covered migration from a single pin, older pinned posts in time-filtered feeds, private access, personal filters, and post removal, restoration, and deletion.
 
+## Community rules update
+
+Workflow **081** is implemented. Owners and moderators with content permissions can create, edit, and reorder community rules in **Mod Tools → Rules**. The community page and both report forms show the saved order. Reporters can select a rule alongside the standard reasons, and submitted reports keep the rule that applied when they were filed. This brings the implementation count to **77 implemented, 10 partial, and 13 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered rule creation, editing, reordering, public rule display, post and comment reports, and rule titles in report history and the moderation queue after restart. Separate server checks covered legacy legal and generic reports, cross-community and private access denials, stale reorder submissions, and saved rule snapshots.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-3. Expand community operations. Add community-defined reporting rules, granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
+3. Expand community operations. Add granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 
 ## Reddit Help references

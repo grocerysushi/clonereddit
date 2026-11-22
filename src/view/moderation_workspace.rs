@@ -16,6 +16,8 @@ use super::{restricted, scheduled};
 mod automod;
 #[path = "community_manage.rs"]
 mod community_manage;
+#[path = "community_rules.rs"]
+mod community_rules;
 #[path = "moderate_content.rs"]
 mod moderate_content;
 
@@ -24,6 +26,7 @@ const RESTRICTED_TITLE: &str = "Restricted Users";
 const CONTENT_TITLE: &str = "Posts & comments";
 const HIGHLIGHTS_TITLE: &str = "Community Highlights";
 const AUTOMOD_TITLE: &str = "AutoMod";
+const RULES_TITLE: &str = "Rules";
 
 const TOOLS: &[(&str, &str, &str, &str)] = &[
     (
@@ -82,9 +85,9 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "rules",
-        "Rules",
+        RULES_TITLE,
         "log",
-        "View the community’s topic guidelines.",
+        "Manage reporting rules and view topic guidelines.",
     ),
     (
         "members",
@@ -127,13 +130,13 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
 pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
     let permission = match section {
         "" => return state.can_open_mod_tools(item),
-        "queue" | "discussions" | "rules" | "roles" | "insights" | "log" => ModPermission::Reports,
+        "queue" | "discussions" | "roles" | "insights" | "log" => ModPermission::Reports,
         "members" | "approved-members" => ModPermission::Members,
         "mail" | "responses" => ModPermission::Mail,
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
         "appeals" => ModPermission::Appeals,
-        "content" | "automod" | "highlights" => ModPermission::Content,
+        "content" | "automod" | "highlights" | "rules" => ModPermission::Content,
         _ => return false,
     };
     state.can_moderate(item, permission)
@@ -169,7 +172,7 @@ pub(super) fn render(
             "automod" => automod::rules(state, item, field(query, "edit"), None),
             "discussions" => workspace.discussions(state),
             "highlights" => workspace.highlights(state),
-            "rules" => workspace.rules(state),
+            "rules" => workspace.rules(state, field(query, "edit"), None),
             "members" => workspace.members(state),
             "approved-members" => community_manage::approved_members(state, item, registered, None),
             "roles" => community_manage::roles(state, item, registered, None),
@@ -234,6 +237,22 @@ pub(super) fn highlights_error(state: &State, item: &Community, error: &str) -> 
         workspace.highlights(state)
     );
     workspace.frame(state, "highlights", HIGHLIGHTS_TITLE, "", &body)
+}
+
+pub(super) fn rules_error(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let workspace = Workspace::new(state, item);
+    let edit = if field(form, "action") == "save-community-rule" {
+        field(form, "id")
+    } else {
+        ""
+    };
+    let body = workspace.rules(state, edit, Some((form, error)));
+    workspace.frame(state, "rules", RULES_TITLE, "", &body)
 }
 
 pub(super) fn role_error(
@@ -873,7 +892,12 @@ impl<'a> Workspace<'a> {
         (title, review)
     }
 
-    fn rules(&self, state: &State) -> String {
+    fn rules(
+        &self,
+        state: &State,
+        edit: &str,
+        rejected: Option<(&BTreeMap<String, String>, &str)>,
+    ) -> String {
         let guidelines = if self.item.guidelines.is_empty() {
             "<p class='muted'>No topic guidelines have been added.</p>".to_owned()
         } else {
@@ -882,7 +906,7 @@ impl<'a> Workspace<'a> {
                 escape(&self.item.guidelines)
             )
         };
-        let edit = if community_owner(state, self.item) {
+        let edit_guidelines = if community_owner(state, self.item) {
             format!(
                 "<a class='button light' href='{}'>Edit guidelines</a>",
                 escape(&settings_url(self.item))
@@ -890,7 +914,9 @@ impl<'a> Workspace<'a> {
         } else {
             String::new()
         };
-        format!("<section class='panel mod-section'><h2>Topic guidelines</h2>{guidelines}{edit}</section>")
+        let mut html = community_rules::render(self.item, edit, rejected);
+        write!(html, "<section class='panel mod-section'><h2>Topic guidelines</h2>{guidelines}{edit_guidelines}</section>").unwrap();
+        html
     }
 
     fn members(&self, state: &State) -> String {
@@ -1001,7 +1027,7 @@ pub(super) fn report_record(
     );
     let kind = report.kind();
     let (heading, review) = report_target_links(state, item, post, report);
-    let (source, reason) = report.reason.map_or_else(
+    let (source, reason) = report.reason_label().map_or_else(
         || {
             (
                 "Legal report",
@@ -1011,10 +1037,20 @@ pub(super) fn report_record(
         |reason| {
             (
                 "Community report",
-                format!("<strong>Reason</strong> {}", escape(reason.label())),
+                format!("<strong>Reason</strong> {}", escape(reason)),
             )
         },
     );
+    let rule_description = report
+        .rule
+        .as_ref()
+        .filter(|rule| !rule.description.is_empty())
+        .map_or_else(String::new, |rule| {
+            format!(
+                "<p class='mod-record-detail'><strong>Rule description when reported</strong><br>{}</p>",
+                escape(&rule.description)
+            )
+        });
     let details = if report.details.is_empty() {
         String::new()
     } else {
@@ -1040,7 +1076,7 @@ pub(super) fn report_record(
     } else {
         "panel mod-record"
     };
-    format!("<article class='{class} mod-report' data-report-id='{id}' data-content-kind='{}'><header><span class='flair'>{status}</span><span class='muted'>{source} · Report #{id}</span></header><h2>{heading}</h2><p class='mod-report-meta'>{scope}{} · {reason}</p>{details}<div class='form-actions'>{action}{review}</div></article>", kind.as_str(), kind.label())
+    format!("<article class='{class} mod-report' data-report-id='{id}' data-content-kind='{}'><header><span class='flair'>{status}</span><span class='muted'>{source} · Report #{id}</span></header><h2>{heading}</h2><p class='mod-report-meta'>{scope}{} · {reason}</p>{rule_description}{details}<div class='form-actions'>{action}{review}</div></article>", kind.as_str(), kind.label())
 }
 
 fn report_target_links(
