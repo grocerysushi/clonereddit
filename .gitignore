@@ -3,3 +3,5 @@
 *.state.media/
 *.accounts
 *.accounts.*.tmp
+*.eml
+/mail-outbox/

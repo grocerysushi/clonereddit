@@ -16,6 +16,11 @@ use subtle::ConstantTimeEq;
 
 use crate::http::{valid_session_token, SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECS};
 
+#[path = "auth_security.rs"]
+mod security;
+pub use security::{AccountSecurity, LoginProgress};
+use security::{LoginChallenge, OtpFailures, SecurityData};
+
 const FORMAT: &str = "commonline-accounts-v1";
 const SIGN_IN_ERROR: &str = "The username or password is incorrect.";
 const RECOVERY_ERROR: &str = "The username or recovery code is incorrect.";
@@ -34,6 +39,7 @@ pub struct AuthGrant {
 struct Account {
     password_hash: String,
     recovery_hash: SecretHash,
+    security: SecurityData,
 }
 
 #[derive(Clone)]
@@ -48,6 +54,8 @@ pub struct AuthStore {
     accounts: BTreeMap<String, Account>,
     sessions: BTreeMap<SecretHash, Session>,
     legacy_claims: BTreeMap<String, SecretHash>,
+    login_challenges: BTreeMap<SecretHash, LoginChallenge>,
+    otp_failures: BTreeMap<String, OtpFailures>,
     dummy_hash: String,
 }
 
@@ -63,6 +71,8 @@ impl AuthStore {
             accounts: BTreeMap::new(),
             sessions: BTreeMap::new(),
             legacy_claims: BTreeMap::new(),
+            login_challenges: BTreeMap::new(),
+            otp_failures: BTreeMap::new(),
             dummy_hash,
         };
         let file = match File::open(&store.path) {
@@ -90,6 +100,7 @@ impl AuthStore {
         }
         let now = unix_seconds();
         store.sessions.retain(|_, session| session.expires_at > now);
+        store.validate_security_records(now)?;
         Ok(store)
     }
 
@@ -98,12 +109,22 @@ impl AuthStore {
         if self.accounts.contains_key(&username) || self.legacy_claims.contains_key(&username) {
             return Err("That username is unavailable.".into());
         }
-        self.replace_credentials(username, password)
+        self.replace_credentials(username, password, None)
     }
 
-    pub fn login(&mut self, username: &str, password: &str) -> Result<AuthGrant, String> {
+    #[cfg(test)]
+    fn login(&mut self, username: &str, password: &str) -> Result<AuthGrant, String> {
+        match self.begin_login(username, password)? {
+            LoginProgress::SignedIn(grant) => Ok(grant),
+            LoginProgress::SecondFactor(_) => {
+                Err("Complete sign-in with your authenticator.".into())
+            }
+        }
+    }
+
+    fn verify_password(&self, username: &str, password: &str) -> Result<String, &'static str> {
         if !valid_password(password) {
-            return Err(SIGN_IN_ERROR.into());
+            return Err(SIGN_IN_ERROR);
         }
         let username = checked_username(username).ok();
         let account = username.as_ref().and_then(|name| self.accounts.get(name));
@@ -114,20 +135,27 @@ impl AuthStore {
                 .is_ok()
         });
         if !verified || account.is_none() {
-            return Err(SIGN_IN_ERROR.into());
+            return Err(SIGN_IN_ERROR);
         }
-        let username = username.ok_or(SIGN_IN_ERROR)?;
-        let mut updated = self.clone();
-        let grant = updated.add_session(&username, None)?;
-        self.commit(updated)?;
-        Ok(grant)
+        username.ok_or(SIGN_IN_ERROR)
     }
 
-    pub fn recover(
+    #[cfg(test)]
+    fn recover(
         &mut self,
         username: &str,
         recovery_code: &str,
         new_password: &str,
+    ) -> Result<AuthGrant, String> {
+        self.recover_with_otp(username, recovery_code, new_password, "")
+    }
+
+    pub fn recover_with_otp(
+        &mut self,
+        username: &str,
+        recovery_code: &str,
+        new_password: &str,
+        otp: &str,
     ) -> Result<AuthGrant, String> {
         let username = checked_username(username).map_err(|_| RECOVERY_ERROR)?;
         let code = recovery_code.trim().to_ascii_lowercase();
@@ -143,7 +171,8 @@ impl AuthStore {
         if !expected.is_some_and(|expected| bool::from(expected.ct_eq(&supplied))) {
             return Err(RECOVERY_ERROR.into());
         }
-        self.replace_credentials(username, new_password)
+        let counter = self.verify_active_factor(&username, otp, unix_seconds())?;
+        self.replace_credentials(username, new_password, counter)
     }
 
     pub fn logout(&mut self, token: &str) -> Result<(), String> {
@@ -192,6 +221,7 @@ impl AuthStore {
         &mut self,
         username: String,
         password: &str,
+        counter: Option<u64>,
     ) -> Result<AuthGrant, String> {
         if !valid_password(password) {
             return Err("Use a password with 12 to 128 characters.".into());
@@ -201,20 +231,36 @@ impl AuthStore {
             .map_err(|_| "Could not generate a password salt. Try again.")?;
         let code = random_secret()?;
         let mut updated = self.clone();
-        updated.accounts.insert(
-            username.clone(),
-            Account {
-                password_hash: password_hash(password, &salt)?,
-                recovery_hash: secret_hash(&code),
-            },
-        );
+        let password_hash = password_hash(password, &salt)?;
+        let recovery_hash = secret_hash(&code);
+        if let Some(account) = updated.accounts.get_mut(&username) {
+            account.password_hash = password_hash;
+            account.recovery_hash = recovery_hash;
+            account.security.accept_counter(counter);
+            account.security.invalidate_pending();
+        } else {
+            updated.accounts.insert(
+                username.clone(),
+                Account {
+                    password_hash,
+                    recovery_hash,
+                    security: SecurityData::default(),
+                },
+            );
+        }
         updated.legacy_claims.remove(&username);
-        updated
-            .sessions
-            .retain(|_, session| session.username != username);
+        updated.revoke_authentication(&username);
         let grant = updated.add_session(&username, Some(code))?;
         self.commit(updated)?;
         Ok(grant)
+    }
+
+    fn revoke_authentication(&mut self, username: &str) {
+        self.sessions
+            .retain(|_, session| session.username != username);
+        self.login_challenges
+            .retain(|_, challenge| challenge.username != username);
+        self.otp_failures.remove(username);
     }
 
     fn add_session(
@@ -254,6 +300,7 @@ impl AuthStore {
                     Account {
                         password_hash: (*password_hash).into(),
                         recovery_hash,
+                        security: SecurityData::default(),
                     },
                 );
                 if old.is_some() {
@@ -284,7 +331,7 @@ impl AuthStore {
                     return Err(invalid_store());
                 }
             }
-            _ => return Err(invalid_store()),
+            _ => self.load_security_record(&pieces)?,
         }
         Ok(())
     }
@@ -325,6 +372,7 @@ impl AuthStore {
 
     fn write_records(&self, file: &mut impl Write) -> io::Result<()> {
         writeln!(file, "{FORMAT}")?;
+        let now = unix_seconds();
         for (username, account) in &self.accounts {
             writeln!(
                 file,
@@ -332,8 +380,8 @@ impl AuthStore {
                 account.password_hash,
                 hex(&account.recovery_hash)
             )?;
+            account.security.write_records(file, username, now)?;
         }
-        let now = unix_seconds();
         for (hash, session) in self
             .sessions
             .iter()

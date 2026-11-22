@@ -172,10 +172,23 @@ This release brings the implementation count to **61 implemented, 18 partial, an
 | 044, 045 | All four sorts changed sibling order while preserving the reply tree. Collapsing or expanding one branch left unrelated replies visible. Posting under the chosen sort kept it selected and anchored the new reply. |
 | 053, 054, 066 | Distinct accounts registered, signed out and back in, and retrieved different saved posts. Sign-in and both saved lists were checked after a restart. |
 
+## Account security update
+
+This release brings the implementation count to **65 implemented, 17 partial, and 18 missing**.
+
+| Workflow ID | Implemented in this release |
+| --- | --- |
+| 055 | Add or change a recovery email in Security and prove ownership with a one-time emailed code. The previously verified address remains usable while verification is pending. |
+| 056 | Request an emailed reset code using the username or verified address. Completing the reset invalidates other sessions and requires the authenticator code when enabled. |
+| 057 | Change the password with the current password and any enrolled authenticator. The change issues a new recovery code and invalidates other sessions. |
+| 058 | Enroll a time-based authenticator and complete the second sign-in step. Previously accepted codes cannot be replayed after a restart. |
+
+Independent Chromium profiles at 1440 and 390 CSS pixels each verified an address, reset a password by email, changed the password in settings, and enrolled and used an authenticator. Both profiles rejected old passwords and invalid authenticator codes. Verified addresses and enrolled authenticators persisted after restarting the server. An isolated SMTP test confirmed that an emailed code worked after restart, failed on reuse, and ended prior sessions when redeemed. It also checked that resetting an enrolled account requires an authenticator code. Rust model tests cover replacing a verified address and expiring email codes.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Complete account controls. Add verified email, email recovery, password changes, two-factor sign-in, session revocation, and account deletion. Add notification preferences and chat request controls.
+2. Complete account controls. Add a session list with individual session revocation and account deletion. Add notification preferences and chat request controls.
 3. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 4. Expand community operations. Add structured rules and reporting, granular role permissions, timed restrictions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 5. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.

@@ -1,4 +1,5 @@
 mod account;
+mod account_security;
 mod appeals;
 mod community_appearance;
 mod community_setup;
@@ -21,6 +22,7 @@ use std::path::Path;
 
 use crate::auth::AuthStore;
 use crate::http::{Request, Response};
+use crate::mail::AccountMail;
 use crate::media;
 use crate::model::{
     Comment, Community, ContentKind, CustomFeed, ModPermission, Post, PostDraft, ProfileAvatar,
@@ -33,9 +35,10 @@ pub fn route(
     state: &mut State,
     path: &Path,
     auth: &mut AuthStore,
+    mail: &AccountMail,
 ) -> Response {
     if request.path.starts_with("/account/") {
-        return session::route(&request, state, auth);
+        return session::route(&request, state, auth, mail);
     }
     if state.username.is_empty()
         && (request.method == "POST" || session::requires_account(&request))

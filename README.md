@@ -16,11 +16,37 @@ The server stores changes in `commonline.state` and credentials in `commonline.s
 
 ## Accounts and recovery
 
-Choose **Create account** and save the one-time recovery code. Use **Reset your password** on the sign-in page with that code if you lose access. A reset signs out your other sessions and displays a replacement code. Open **Your profile** to sign out or edit your public profile. Guests can see your public profile and activity you choose to share. Saved posts, drafts, history, and private messages are scoped to your account.
+Choose **Create account** and save the one-time recovery code. From **Your profile → Security**, add a recovery email, enter the verification code from your inbox, or change your password. Your current verified address can still receive reset codes while a replacement address is pending. Verification and emailed reset codes expire after 15 minutes and work once.
+
+If you forget your password, select **Reset by email** on the sign-in page and enter your username or verified email. Follow the email to the reset page and paste the code. You can also select **Use a recovery code** and enter the code you saved at registration or after your last password change. A password reset ends your other sessions and issues a replacement recovery code.
+
+In **Security → Two-factor authentication**, use your password to generate a setup key, add it to a time-based authenticator app, and enter the app’s six-digit code. Once enabled, sign-in and both password reset methods require an authenticator code. Store your authenticator backup securely so you can recover access if your device is lost. Turning off two-factor authentication requires your password and a fresh app code.
+
+Open **Your profile** to sign out or edit your public profile. Guests can see your public profile and activity you choose to share. Saved posts, drafts, history, and private messages are scoped to your account.
 
 The **Messages** and **Notifications** buttons in the header show unread counts. Open a user's public profile or choose a registered recipient in Messages to start a conversation. Notifications cover incoming personal messages and replies to your posts or comments. For a local two-account check, use two separate browser profiles or one regular window and one private window.
 
-To claim a profile from a version that predates accounts, stop the server, keep `COMMONLINE_STATE` set to the same path, and run `cargo run --locked -- --legacy-recovery` from this directory. The command prints the existing username and a one-time claim code. Restart the server, choose **Reset your password**, and enter that username, the claim code, and a new password. Save the replacement recovery code displayed after the reset.
+To claim a profile from a version that predates accounts, stop the server, keep `COMMONLINE_STATE` set to the same path, and run `cargo run --locked -- --legacy-recovery` from this directory. The command prints the existing username and a one-time claim code. Restart the server, choose **Use a recovery code**, and enter that username, the claim code, and a new password. Save the replacement recovery code displayed after the reset.
+
+### Email delivery
+
+For local testing, set `COMMONLINE_MAIL_OUTBOX` to a private directory. Commonline writes the generated messages as `.eml` files that you can open in a mail client.
+
+```powershell
+$env:COMMONLINE_MAIL_OUTBOX = Join-Path (Get-Location) 'mail-outbox'
+cargo run --locked
+```
+
+For delivery to an inbox, run a trusted SMTP relay on the same machine. Set `COMMONLINE_SMTP_ADDR` to its loopback socket and `COMMONLINE_MAIL_FROM` to a sender the relay accepts. Use one delivery mode per server. The relay is responsible for the upstream connection, authentication, and TLS.
+
+```powershell
+Remove-Item Env:COMMONLINE_MAIL_OUTBOX -ErrorAction SilentlyContinue
+$env:COMMONLINE_SMTP_ADDR = '127.0.0.1:2525'
+$env:COMMONLINE_MAIL_FROM = 'notifications@example.com'
+cargo run --locked
+```
+
+Emails link back to the same localhost server. Keep local outbox files private because they contain working one-time codes. Without either delivery mode, saved recovery codes are still available.
 
 ## Try the demo
 
@@ -45,7 +71,7 @@ The America/Chicago conversion follows the U.S. daylight saving schedule. Choose
 
 Uploaded post attachments are stored in `commonline.state.media` by default. The server appends `.media` to a custom state path. Move or back up the state file, accounts file, and media directory together. Keep those private local files out of source control.
 
-The prototype serves accounts over a loopback connection. Passwords use salted Argon2id hashes, and the account file stores hashes of session tokens and recovery codes. A public deployment would require HTTPS and hosting controls, and age labels currently follow the viewer’s feed preferences.
+The prototype serves accounts over a loopback connection. Passwords use salted Argon2id hashes, and the account file stores hashes of session tokens, recovery codes, and emailed codes. Authenticator keys are stored in the private local account file and rely on its filesystem permissions. A public deployment would require HTTPS and hosting controls, and age labels currently follow the viewer’s feed preferences.
 
 ## Feature inventory
 
@@ -56,7 +82,7 @@ The website target is **99 of 100 accepted workflows** on desktop and mobile web
 | Discovery and feeds | For You, Following, Popular, fictional News, Explore, All discussions, community and custom feeds, Recent, site-wide and community search, Best/Hot/New/Top | Saved searches, richer ranking and filters |
 | Posting and discussion | Title-only, text, link, image gallery and video posts, polls, cross-community reposts, post tags, one local text/link draft, post and comment editing and deletion, threaded replies, votes, save and hide | Richer editing and media transcoding |
 | Creator tools | Dashboard, per-post vote and reply totals, community trends, and publishing links | Impression counts, reach, and analytics over time |
-| Identity and communication | Account creation, sign-in and one-time recovery codes, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications, private messages, and mod mail | Email recovery and live chat updates |
+| Identity and communication | Account creation, verified recovery email, emailed password resets, one-time recovery codes, password changes and session revocation, authenticator-app two-factor sign-in, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications, private messages, and mod mail | Individual session management and live chat updates |
 | Community operations | Guided creation, topics and visibility, approved-member access, mature labels, artwork uploads and previews, authenticated owner settings and pinning, scoped moderator workspace and roles, post and comment removal and restoration with author notices, phrase-based AutoMod, community bans and mod mail mutes, restriction appeals and decisions, regional reports and review status, saved responses, activity log, and scheduled posts and events | Recurring schedules and additional AutoMod conditions |
 
 ### Original core workflows

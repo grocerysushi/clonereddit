@@ -36,7 +36,7 @@ pub(super) fn render(state: &State, requested: &str, public: bool, can_message: 
     } else if public {
         String::new()
     } else {
-        format!("<div class='profile-header-actions'><a class='button light' href='/profile/settings?section=identity'>{} Edit profile</a><form method='post' action='/account/logout'><button class='button light' type='submit'>Sign out</button></form></div>", icon("sliders"))
+        format!("<div class='profile-header-actions'><a class='button light' href='/profile/settings?section=identity'>{} Edit profile</a><a class='button light' href='/account/security'>Security</a><form method='post' action='/account/logout'><button class='button light' type='submit'>Sign out</button></form></div>", icon("sliders"))
     };
     let show_avatar =
         state.avatar.is_some() && (!public || !state.profile_nsfw || state.sensitive == "show");

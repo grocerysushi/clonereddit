@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use super::{action_fields, action_form, encode, escape, field, visible_post};
+use super::{account_security, action_fields, action_form, encode, escape, field, visible_post};
 use crate::model::{DirectMessage, Notification, State};
 use crate::schedule_time::{display, to_local};
 
@@ -25,7 +25,7 @@ pub(super) fn auth_form(kind: &str, username: &str, error: &str) -> String {
             "/account/recover",
             "New password",
             "autocomplete='new-password' minlength='12'",
-            "<a class='subtle-link' href='/account/login'>Back to sign in</a>",
+            "<a class='subtle-link' href='/account/reset/request'>Reset by email</a><a class='subtle-link' href='/account/login'>Back to sign in</a>",
         ),
         _ => (
             "Sign in",
@@ -33,7 +33,7 @@ pub(super) fn auth_form(kind: &str, username: &str, error: &str) -> String {
             "/account/login",
             "Password",
             "autocomplete='current-password'",
-            "<a class='subtle-link' href='/account/register'>Create an account</a><a class='subtle-link' href='/account/recover'>Reset your password</a>",
+            "<a class='subtle-link' href='/account/register'>Create an account</a><a class='subtle-link' href='/account/reset/request'>Reset by email</a><a class='subtle-link' href='/account/recover'>Use a recovery code</a>",
         ),
     };
     let alert = if error.is_empty() {
@@ -54,11 +54,16 @@ pub(super) fn auth_form(kind: &str, username: &str, error: &str) -> String {
     } else {
         ""
     };
+    let otp = if kind == "recover" {
+        account_security::otp_field(false)
+    } else {
+        String::new()
+    };
     format!(
         r#"<section class="panel standalone account-auth"><h1>{title}</h1>{alert}
 <form class="stack-form account-auth-form" action="{endpoint}" method="post">
 <label>Username<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="2" maxlength="24" required value="{}"></label>
-{code}<label>{password_label}<input type="password" name="password" {password_attributes} maxlength="128" required>{password_help}</label>
+{code}<label>{password_label}<input type="password" name="password" {password_attributes} maxlength="128" required>{password_help}</label>{otp}
 <button class="button dark" type="submit">{submit}</button></form>
 <div class="account-auth-links">{footer}</div></section>"#,
         escape(username)

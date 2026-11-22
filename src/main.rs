@@ -1,8 +1,10 @@
 mod auth;
 mod http;
+mod mail;
 mod media;
 mod model;
 mod schedule_time;
+mod totp;
 mod view;
 
 use std::{
@@ -15,6 +17,7 @@ use std::{
 
 use auth::AuthStore;
 use http::{Request, Response};
+use mail::AccountMail;
 use model::State;
 
 const DEFAULT_PORT: u16 = 4173;
@@ -83,6 +86,7 @@ fn run() -> io::Result<()> {
     let mut app = App {
         state,
         auth: AuthStore::load(&state_path)?,
+        mail: AccountMail::from_env()?,
         state_path,
         retry_after: None,
     };
@@ -139,6 +143,7 @@ fn run() -> io::Result<()> {
 struct App {
     state: State,
     auth: AuthStore,
+    mail: AccountMail,
     state_path: PathBuf,
     retry_after: Option<Instant>,
 }
@@ -149,7 +154,13 @@ impl App {
         let token = request.cookie.as_deref().and_then(auth::session_token);
         let username = token.and_then(|token| self.auth.username(token));
         self.state.activate_profile(username);
-        view::route(request, &mut self.state, &self.state_path, &mut self.auth)
+        view::route(
+            request,
+            &mut self.state,
+            &self.state_path,
+            &mut self.auth,
+            &self.mail,
+        )
     }
 
     fn publish_due(&mut self) {
