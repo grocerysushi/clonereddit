@@ -1,3 +1,4 @@
+mod account;
 mod community_appearance;
 mod community_setup;
 mod creator;
@@ -10,17 +11,35 @@ mod profile_panel;
 mod publishing;
 mod restricted;
 mod scheduled;
+mod session;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
 
+use crate::auth::AuthStore;
 use crate::http::{Request, Response};
 use crate::media;
 use crate::model::{Comment, Community, CustomFeed, Post, PostDraft, ProfileAvatar, State};
 use crate::schedule_time;
 
-pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
+pub fn route(
+    mut request: Request,
+    state: &mut State,
+    path: &Path,
+    auth: &mut AuthStore,
+) -> Response {
+    if request.path.starts_with("/account/") {
+        return session::route(&request, state, auth);
+    }
+    if state.username.is_empty()
+        && (request.method == "POST" || session::requires_account(&request))
+    {
+        return Response::redirect("/account/login");
+    }
+    if let Some(profile_path) = request.path.strip_prefix("/u/") {
+        return public_profile(state, auth, &request, profile_path);
+    }
     if request.method == "POST" && request.path == "/posts/media/new" {
         return media_submission(request, state, path);
     }
@@ -159,6 +178,12 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
         } else {
             field(&request.form, "action")
         };
+        if action == "profile" && field(&request.form, "username") != state.username {
+            return form_error(state, "Your account username stays the same.", back);
+        }
+        if action == "send-direct-message" && !auth.has_account(field(&request.form, "recipient")) {
+            return message_error(state, auth, &request.form, "Choose a registered recipient.");
+        }
         if matches!(
             action,
             "schedule-item" | "edit-scheduled-item" | "cancel-scheduled-item"
@@ -192,6 +217,14 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
                         .map(|item| community_url(&item.slug)),
                     "create-feed" => state.custom_feeds.last().map(|item| custom_url(item.id)),
                     "save-draft" => Some("/new?draft=1".into()),
+                    "send-direct-message" => Some(format!(
+                        "/messages?peer={}",
+                        encode(
+                            &field(&request.form, "recipient")
+                                .trim()
+                                .to_ascii_lowercase()
+                        )
+                    )),
                     _ => None,
                 }
                 .unwrap_or_else(|| back.to_owned());
@@ -215,13 +248,15 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
                 };
                 publishing_error(state, &request.form, kind, &error)
             }
+            Err(error) if action == "send-direct-message" => {
+                message_error(state, auth, &request.form, &error)
+            }
             Err(error) => form_error(state, &error, back),
         };
     }
 
     let query = &request.query;
     let notice = field(query, "notice");
-    let own_public_profile = request.path == profile_url(state);
     let profile_tab = field(query, "tab");
     let (title, active, content) = match request.path.as_str() {
         "/" => {
@@ -233,7 +268,10 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
             if community(state, active).is_some_and(|item| !state.can_view_community(item)) {
                 return missing(state);
             }
-            if field(query, "q").is_empty() && community(state, active).is_some() {
+            if !state.username.is_empty()
+                && field(query, "q").is_empty()
+                && community(state, active).is_some()
+            {
                 state.record_visit(active, path);
             }
             let title = community(state, active)
@@ -251,7 +289,9 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
                     .and_then(|post| community(state, &post.community))
                     .is_some_and(|item| state.can_view_community(item))
                 {
-                    state.record_post_visit(id, path);
+                    if !state.username.is_empty() {
+                        state.record_post_visit(id, path);
+                    }
                 } else {
                     return missing(state);
                 }
@@ -378,6 +418,19 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
             None => return missing(state),
         },
         "/settings" => ("Feed controls", "settings", preferences(state)),
+        "/messages" => {
+            let recipients = auth.usernames().map(str::to_owned).collect::<Vec<_>>();
+            (
+                "Messages",
+                "messages",
+                account::inbox(state, query, &recipients),
+            )
+        }
+        "/notifications" => (
+            "Notifications",
+            "notifications",
+            account::notifications(state),
+        ),
         "/policy" => ("Moderation policy", "policy", policy()),
         "/reports" => ("Legal review log", "policy", reports(state)),
         "/report" => match find_post(state, query) {
@@ -387,7 +440,7 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
         "/profile" => (
             "Your profile",
             "profile",
-            profile::render(state, profile_tab, false),
+            profile::render(state, profile_tab, false, false),
         ),
         "/profile/settings" => (
             "Profile settings",
@@ -402,24 +455,19 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
                 profile_panel::trophies(state)
             ),
         ),
-        "/feeds/shared" => match field(query, "id").parse::<u64>().ok().and_then(|id| {
-            state
-                .custom_feeds
-                .iter()
-                .find(|item| item.id == id && !item.private)
-        }) {
+        "/feeds/shared" => match field(query, "id")
+            .parse::<u64>()
+            .ok()
+            .and_then(|id| state.shared_custom_feed(id))
+            .filter(|feed| !feed.private)
+        {
             Some(item) => (item.name.as_str(), "public-feed", shared_feed(state, item)),
             None => return missing(state),
         },
-        _ if own_public_profile => (
-            profile_name(state),
-            "public-profile",
-            profile::render(state, profile_tab, true),
-        ),
         _ => return missing(state),
     };
-    let right = matches!(active, "profile" | "public-profile")
-        .then(|| profile_panel::render(state, &request.origin, own_public_profile, profile_tab));
+    let right = (active == "profile")
+        .then(|| profile_panel::render(state, &request.origin, false, profile_tab));
     Response::html(layout_with_rail(
         state,
         active,
@@ -428,6 +476,60 @@ pub fn route(mut request: Request, state: &mut State, path: &Path) -> Response {
         field(query, "q"),
         notice,
         right,
+    ))
+}
+
+fn message_error(
+    state: &State,
+    auth: &AuthStore,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> Response {
+    let recipients = auth.usernames().map(str::to_owned).collect::<Vec<_>>();
+    let query = BTreeMap::from([("peer".into(), field(form, "recipient").to_owned())]);
+    let content = account::inbox_draft(state, &query, &recipients, field(form, "body"), error);
+    Response::html(layout(state, "messages", "Messages", &content, "", ""))
+}
+
+fn public_profile(
+    viewer: &State,
+    auth: &AuthStore,
+    request: &Request,
+    profile_path: &str,
+) -> Response {
+    let (handle, image) = profile_path.split_once('/').unwrap_or((profile_path, ""));
+    if handle.is_empty() || handle != handle.to_ascii_lowercase() {
+        return missing(viewer);
+    }
+    let registered = auth.has_account(handle);
+    if !registered && !viewer.has_profile(handle) {
+        return missing(viewer);
+    }
+    let Some(mut profile) = viewer.profile_snapshot(handle) else {
+        return missing(viewer);
+    };
+    profile.sensitive.clone_from(&viewer.sensitive);
+    if !image.is_empty() {
+        let asset = match image {
+            "avatar" => profile.avatar.as_ref(),
+            "cover" => profile.cover.as_ref(),
+            _ => None,
+        };
+        return image_response(
+            asset.filter(|_| !profile.profile_nsfw || viewer.sensitive == "show"),
+        );
+    }
+    let tab = field(&request.query, "tab");
+    let can_message = registered && !viewer.username.is_empty() && viewer.username != handle;
+    let content = profile::render(&profile, tab, true, can_message);
+    Response::html(layout_with_rail(
+        viewer,
+        "public-profile",
+        profile_name(&profile),
+        &content,
+        "",
+        "",
+        Some(profile_panel::render(&profile, &request.origin, true, tab)),
     ))
 }
 
@@ -798,6 +900,7 @@ fn icon(name: &str) -> String {
         "news" => "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='M7 9h4v4H7zm7 0h3m-3 4h3m-10 3h10'/>",
         "trend" => "<path d='m3 17 6-6 4 3 7-8m-5 0h5v5'/>",
         "mail" => "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='m4 7 8 6 8-6'/>",
+        "bell" => "<path d='M12 4a5 5 0 0 0-5 5c0 5-2 6-2 7h14c0-1-2-2-2-7a5 5 0 0 0-5-5Zm-2 15a2 2 0 0 0 4 0'/>",
         "calendar" => "<rect x='3.5' y='5.5' width='17' height='15' rx='2'/><path d='M3.5 10h17M8 3.5v4m8-4v4m-8 7h3m3 0h3'/>",
         "image" => "<rect x='3' y='4' width='18' height='16' rx='2'/><circle cx='8' cy='9' r='1.4'/><path d='m4 18 5-5 4 4 3-3 4 4'/>",
         "tag" => "<path d='M3 12 12 3h7l2 2v7l-9 9-9-9Z'/><circle cx='16.5' cy='7.5' r='1'/>",
@@ -814,7 +917,8 @@ fn community<'a>(state: &'a State, slug: &str) -> Option<&'a Community> {
 }
 
 fn can_write_here(state: &State, slug: &str) -> bool {
-    community(state, slug).is_some_and(|item| state.can_contribute(item))
+    !state.username.is_empty()
+        && community(state, slug).is_some_and(|item| state.can_contribute(item))
 }
 
 fn can_edit_post(state: &State, post: &Post) -> bool {
@@ -846,8 +950,8 @@ fn community_owner(state: &State, item: &Community) -> bool {
     item.owner.as_deref() == Some(state.username.as_str())
 }
 
-fn community_members(item: &Community) -> String {
-    let total = item.members;
+fn community_members(state: &State, item: &Community) -> String {
+    let total = state.community_member_count(item);
     if total == 1 {
         "1 member".into()
     } else {
@@ -951,6 +1055,7 @@ fn layout_with_rail(
         )
         .unwrap();
     }
+    let signed_in = !state.username.is_empty();
     let main_nav = [
         ("/", "Home", "home", "home"),
         ("/?view=popular", "Popular", "trend", "popular"),
@@ -964,6 +1069,7 @@ fn layout_with_rail(
         ),
     ]
     .into_iter()
+    .filter(|(_, _, _, key)| signed_in || *key != "start-community")
     .map(|(url, label, glyph, key)| {
         nav_link(
             url,
@@ -1103,18 +1209,42 @@ fn layout_with_rail(
     } else {
         ""
     };
-    let owner_nav = if public_preview {
+    let owner_nav = if public_preview || !signed_in {
         String::new()
     } else {
         format!(
             r#"<div class="nav-group community-nav"><h2>Your communities</h2>{communities}</div><div class="sidebar-sections">{groups}</div><div class="nav-group utility-nav">{utility_nav}</div>"#
         )
     };
-    let account_actions = if public_preview {
-        String::from("<a class='button light' href='/'>Browse Commonline</a>")
+    let account_actions = if !signed_in {
+        String::from("<a class='button light' href='/account/login'>Sign in</a><a class='button dark' href='/account/register'>Create account</a>")
     } else {
+        let unread_messages = state
+            .messages
+            .iter()
+            .filter(|item| item.to == state.username && !item.read)
+            .count();
+        let unread_notifications = state
+            .notifications
+            .iter()
+            .filter(|item| item.recipient == state.username && !item.read)
+            .count();
+        let messages = account_shortcut(
+            "/messages",
+            "Messages",
+            "mail",
+            unread_messages,
+            active == "messages",
+        );
+        let notifications = account_shortcut(
+            "/notifications",
+            "Notifications",
+            "bell",
+            unread_notifications,
+            active == "notifications",
+        );
         format!(
-            r#"<a class="button light settings-top" href="/settings">{}<span>Feed controls</span></a><a class="button dark" href="{compose}">{}<span>New post</span></a><a class="avatar avatar-me" href="/profile" aria-label="Your profile">{avatar}</a>"#,
+            r#"<a class="button light settings-top" href="/settings">{}<span>Feed controls</span></a><a class="button dark account-compose" href="{compose}" aria-label="New post">{}<span>New post</span></a>{messages}{notifications}<a class="avatar avatar-me" href="/profile" aria-label="Your profile">{avatar}</a>"#,
             icon("sliders"),
             icon("plus")
         )
@@ -1144,6 +1274,26 @@ fn layout_with_rail(
     )
 }
 
+fn account_shortcut(url: &str, label: &str, glyph: &str, unread: usize, selected: bool) -> String {
+    let current = if selected { " aria-current='page'" } else { "" };
+    let accessible = if unread == 0 {
+        label.to_owned()
+    } else {
+        format!("{label}, {unread} unread")
+    };
+    let badge = if unread == 0 {
+        String::new()
+    } else {
+        let count = if unread > 99 {
+            "99+".to_owned()
+        } else {
+            unread.to_string()
+        };
+        format!("<span class='account-shortcut-count' aria-hidden='true'>{count}</span>")
+    };
+    format!("<a class='account-shortcut' href='{url}' aria-label='{accessible}' title='{accessible}'{current}>{}{badge}</a>", icon(glyph))
+}
+
 fn right_rail(state: &State) -> String {
     let mut items = String::new();
     let mut popular: Vec<&Community> = state
@@ -1151,9 +1301,9 @@ fn right_rail(state: &State) -> String {
         .iter()
         .filter(|item| item.visibility == "public")
         .collect();
-    popular.sort_by_key(|item| std::cmp::Reverse(item.members));
+    popular.sort_by_key(|item| std::cmp::Reverse(state.community_member_count(item)));
     for (index, item) in popular.into_iter().take(4).enumerate() {
-        write!(items, "<li><span class='rank'>{:02}</span><a href='/?view={}'>{}<span><strong>{}</strong><small>{}</small></span></a></li>", index+1, encode(&item.slug), community_icon(item), escape(&item.name), community_members(item)).unwrap();
+        write!(items, "<li><span class='rank'>{:02}</span><a href='/?view={}'>{}<span><strong>{}</strong><small>{}</small></span></a></li>", index+1, encode(&item.slug), community_icon(item), escape(&item.name), community_members(state, item)).unwrap();
     }
     format!(
         r#"<section class="right-policy" aria-labelledby="policy-title"><div class="policy-label">{}<span>THE COMMONLINE POLICY</span></div><h2 id="policy-title">Lawful speech<br>stays up.</h2><p>You choose what shows up in your feed.</p><a class="button policy-button" href="/policy">Read the policy</a></section>
@@ -1295,7 +1445,7 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         write!(
             html,
             "<div class='community-bar'><span>{}</span>{}{}",
-            community_members(item),
+            community_members(state, item),
             action_form(
                 "join",
                 &back,
@@ -1545,7 +1695,7 @@ fn community_directory(state: &State, query: &str, topic: &str) -> String {
         } else {
             ""
         };
-        write!(html, "<article class='panel directory-item'><a href='{}'>{}<h2>{}</h2></a><p>{}</p><small>{}{joined}</small></article>", community_url(&item.slug), community_icon(item), escape(&item.name), escape(&item.description), community_members(item)).unwrap();
+        write!(html, "<article class='panel directory-item'><a href='{}'>{}<h2>{}</h2></a><p>{}</p><small>{}{joined}</small></article>", community_url(&item.slug), community_icon(item), escape(&item.name), escape(&item.description), community_members(state, item)).unwrap();
     }
     html.push_str("</div>");
     html
@@ -1687,8 +1837,7 @@ fn action_form(
 }
 
 fn score(state: &State, post: &Post) -> i32 {
-    post.score
-        .saturating_add(i32::from(*state.votes.get(&post.id).unwrap_or(&0)))
+    state.post_score(post)
 }
 
 fn votes(action: &str, id: u64, score: i32, vote: i8, back: &str) -> String {
@@ -1850,10 +1999,10 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
         kind = if full { " full-post" } else { "" },
         slug = encode(&post.community),
         name = escape(name),
-        author = if post.author == state.username {
+        author = if state.has_profile(&post.author) {
             format!(
                 "<a class='post-author' href='{}'>u/{}</a>",
-                profile_url(state),
+                format_args!("/u/{}", encode(&post.author)),
                 escape(&post.author)
             )
         } else {
@@ -2066,6 +2215,8 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
     let can_reply = can_write_here(state, &post.community);
     if can_reply {
         html.push_str(&reply_form(post.id, None, &back));
+    } else if state.username.is_empty() {
+        html.push_str("<p class='community-restriction-note muted'><a class='subtle-link' href='/account/login'>Sign in</a> to reply.</p>");
     } else if state.is_banned(&post.community, &state.username) {
         html.push_str("<p class='community-restriction-note muted'>Your account is banned from replying in this community.</p>");
     } else {
@@ -2130,10 +2281,7 @@ fn comment_branches(state: &State, post: u64) -> BTreeMap<Option<u64>, Vec<&Comm
         branches.entry(comment.parent).or_default().push(comment);
     }
     for siblings in branches.values_mut() {
-        siblings.sort_by_key(|comment| {
-            let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
-            std::cmp::Reverse(comment.score.saturating_add(i32::from(vote)))
-        });
+        siblings.sort_by_key(|comment| std::cmp::Reverse(state.comment_score(comment)));
     }
     branches
 }
@@ -2148,6 +2296,15 @@ fn comment_card(
 ) -> String {
     let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
     let avatar = escape(&initials(&comment.author));
+    let handle = escape(&comment.author);
+    let author = if state.has_profile(&comment.author) {
+        format!(
+            "<a class='post-author' href='/u/{}'>u/{handle}</a>",
+            encode(&comment.author)
+        )
+    } else {
+        format!("<strong>u/{handle}</strong>")
+    };
     let owns = comment.author == state.username;
     let (body, controls) = match action {
         CommentAction::Edit { id, draft, error } if id == comment.id && owns && can_reply => (
@@ -2188,8 +2345,8 @@ fn comment_card(
     } else {
         String::new()
     };
-    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span><strong>u/{}</strong><span>· {}</span>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_link}</div>{controls}</article>",
-        depth.min(3), comment.id, escape(&comment.author), escape(&comment.age), votes("comment-vote", comment.id, comment.score.saturating_add(i32::from(vote)), vote, back)
+    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<span>· {}</span>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_link}</div>{controls}</article>",
+        depth.min(3), comment.id, escape(&comment.age), votes("comment-vote", comment.id, state.comment_score(comment), vote, back)
     )
 }
 
@@ -2406,11 +2563,17 @@ fn policy() -> String {
 }
 
 fn reports(state: &State) -> String {
-    let mut html = String::from("<section class='panel standalone'><h1>Legal review log</h1><p>Reports submitted on this device appear here. This screen simulates intake and review status.</p>");
-    if state.reports.is_empty() {
+    let mut html = String::from("<section class='panel standalone'><h1>Legal review log</h1><p>Reports you submitted appear here.</p>");
+    let mut reports = state
+        .reports
+        .iter()
+        .rev()
+        .filter(|report| report.reporter == state.username)
+        .peekable();
+    if reports.peek().is_none() {
         html.push_str("<div class='log-empty'><h2>No reports yet</h2><p>Use a post’s menu to report a legal concern.</p></div>");
     }
-    for report in state.reports.iter().rev() {
+    for report in reports {
         let title = state
             .posts
             .iter()

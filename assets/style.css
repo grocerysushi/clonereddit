@@ -50,6 +50,36 @@ h1, h2, p { margin: 0; overflow-wrap: anywhere; }
 .avatar-me { width: 36px; height: 36px; margin-left: 4px; }
 .avatar-me:hover { box-shadow: 0 0 0 2px #c5cbba; }
 .avatar-me img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.account-shortcut { position: relative; display: grid; place-items: center; width: 39px; height: 39px; flex: none; border: 1px solid var(--line); border-radius: 9px; }
+.account-shortcut:hover, .account-shortcut[aria-current] { background: var(--light-lime); border-color: #b8c998; }
+.account-shortcut-count { position: absolute; right: -4px; top: -5px; min-width: 17px; padding: 0 3px; border: 1px solid var(--card); border-radius: 8px; background: #324b24; color: var(--card); text-align: center; font-size: .64rem; font-weight: 750; line-height: 15px; }
+
+.account-auth { max-width: 530px; margin-inline: auto; }
+.account-auth p { margin-bottom: 1rem; }
+.account-auth-links { display: flex; flex-wrap: wrap; gap: .7rem 1.2rem; margin-top: 1rem; font-size: .92rem; }
+.account-auth-form small { color: var(--quiet); font-weight: 400; }
+.account-secret { display: grid; gap: .4rem; font-weight: 650; }
+.account-secret input { width: 100%; min-height: 43px; padding: .6rem; border: 1px solid #b8c998; border-radius: 7px; background: var(--light-lime); font: .95rem ui-monospace, Consolas, monospace; }
+.account-inbox-grid { display: grid; grid-template-columns: minmax(155px, 1fr) minmax(0, 2fr); gap: 18px; margin-top: 20px; }
+.account-conversations { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); align-self: start; }
+.account-conversations header, .account-conversation header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.account-conversations h2, .account-conversation h2 { font: 700 1rem/1.3 var(--sans); }
+.account-conversations ul, .account-message-list, .account-notification-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.account-conversations a { font-size: .85rem; }
+.account-conversations li a { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding: .45rem; border-radius: 6px; overflow-wrap: anywhere; }
+.account-conversations li a:hover, .account-conversations li a[aria-current] { background: var(--light-lime); }
+.account-inbox-content { min-width: 0; }
+.account-message-list { margin-bottom: 18px; }
+.account-message { width: fit-content; max-width: min(94%, 600px); padding: .65rem .85rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+.account-message-own { justify-self: end; background: var(--light-lime); border-color: #d1deb6; }
+.account-message-body { white-space: pre-wrap; }
+.account-message-meta, .account-notification-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; font-size: .78rem; color: var(--quiet); }
+.account-message-meta strong { color: var(--ink); }
+.account-message-form { margin-top: 16px; }
+.account-notification { padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.account-notification > p { margin: .32rem 0; }
+.account-unread { width: fit-content; padding: 1px .45rem; border-radius: 20px; background: var(--light-lime); color: #324b24; font-size: .75rem; font-weight: 700; }
+.account-empty { margin-top: .5rem; }
 
 .page-shell { display: grid; grid-template-columns: 205px minmax(0, 1fr) 284px; align-items: start; gap: 30px; max-width: 1440px; margin: auto; padding: 27px 43px 56px; }
 .left-rail { align-self: stretch; border-right: 1px solid var(--line); padding-right: 16px; }
@@ -185,7 +215,7 @@ main { min-width: 0; }
 .stack-form { display: grid; gap: 17px; margin-top: 20px; }
 .stack-form label { display: grid; gap: 5px; font-size: .9rem; font-weight: 650; }
 .stack-form small { color: var(--quiet); font-weight: 400; }
-.stack-form :is(input:not([type]), input[type="url"], select, textarea), .reply-form textarea { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
+.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .reply-form textarea { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
 textarea { resize: vertical; }
 .stack-form .muted { margin: 0; }
 .stack-form button { justify-self: start; }
@@ -513,6 +543,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 @media (max-width: 900px) {
   .page-shell { grid-template-columns: 155px minmax(0, 1fr); }
   .top-inner { grid-template-columns: 155px minmax(130px, 1fr) auto; }
+  .top-inner .wordmark { font-size: 1.5rem; }
+  .settings-top { display: none; }
   .right-rail { display: none; }
   .right-rail.profile-rail { display: grid; grid-column: 2; }
   .masthead h1 { font-size: clamp(3.1rem, 7.7vw, 4.5rem); }
@@ -521,11 +553,15 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 }
 @media (max-width: 650px) {
   .topbar { position: static; }
-  .top-inner { grid-template-columns: 1fr auto; gap: 10px; padding: 10px 14px; }
+  .top-inner { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 14px; }
   .search { grid-row: 2; grid-column: 1 / -1; width: 100%; }
   .search input[type="search"] { font-size: 1rem; }
   .header-actions { gap: 6px; }
-  .settings-top { display: none; }
+  .top-inner .header-actions > .button { padding-inline: 9px; font-size: .81rem; }
+  .account-compose { padding-inline: 8px; }
+  .account-compose > span { display: none; }
+  .account-shortcut { width: 34px; height: 35px; }
+  .account-inbox-grid { grid-template-columns: minmax(0, 1fr); }
   .top-inner .wordmark { font-size: 1.48rem; }
   .brand-mark { width: 31px; height: 31px; margin-right: 7px; }
   .page-shell { grid-template-columns: minmax(0, 1fr); padding: 0 12px 24px; gap: 13px; }
@@ -560,7 +596,11 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 }
 @media (max-width: 360px) {
   .directory { grid-template-columns: 1fr; }
-  .top-inner .avatar-me { display: none; }
+  .top-inner { padding-inline: 10px; column-gap: 6px; }
+  .top-inner .avatar-me { width: 30px; height: 30px; margin-left: 0; }
+  .top-inner .wordmark { font-size: 1.18rem; }
+  .top-inner .brand-mark { width: 28px; height: 28px; margin-right: 5px; }
+  .top-inner .header-actions > .button { padding-inline: 6px; font-size: .75rem; }
   .comment.depth-2 { margin-left: 22px; }
   .comment.depth-3 { margin-left: 30px; }
 }

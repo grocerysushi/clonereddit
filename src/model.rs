@@ -5,6 +5,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "model/account_data.rs"]
+mod account_data;
+use account_data::ProfileData;
+
 const FORMAT: &str = "commonline-v2";
 const LEGACY_FORMAT: &str = "commonline-v1";
 const TEXT_LIMIT: usize = 8_000;
@@ -90,6 +94,27 @@ pub struct Report {
     pub region: String,
     pub details: String,
     pub reviewed: bool,
+    pub reporter: String,
+}
+
+#[derive(Clone)]
+pub struct DirectMessage {
+    pub id: u64,
+    pub from: String,
+    pub to: String,
+    pub body: String,
+    pub at: u64,
+    pub read: bool,
+}
+
+#[derive(Clone)]
+pub struct Notification {
+    pub id: u64,
+    pub recipient: String,
+    pub body: String,
+    pub at: u64,
+    pub read: bool,
+    pub post: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -140,6 +165,7 @@ pub struct SetupArtwork {
     pub icon: Option<ProfileAvatar>,
     pub banner: Option<ProfileAvatar>,
     community: Option<String>,
+    creator: String,
 }
 
 impl SetupArtwork {
@@ -230,6 +256,8 @@ pub struct State {
     pub keywords: Vec<String>,
     pub sensitive: String,
     pub reports: Vec<Report>,
+    pub messages: Vec<DirectMessage>,
+    pub notifications: Vec<Notification>,
     pub mod_mail: Vec<ModMail>,
     pub mod_log: Vec<ModerationEvent>,
     pub saved_responses: Vec<SavedResponse>,
@@ -252,9 +280,14 @@ pub struct State {
     pub social_links: Vec<SocialLink>,
     pub profile_created: u64,
     pub draft: Option<PostDraft>,
+    account_profiles: BTreeMap<String, ProfileData>,
+    managed_profiles: bool,
+    legacy_profile: Option<String>,
     next_post: u64,
     next_comment: u64,
     next_report: u64,
+    next_message: u64,
+    next_notification: u64,
     next_mod_mail: u64,
     next_mod_event: u64,
     next_saved_response: u64,
@@ -391,6 +424,8 @@ impl State {
             keywords: Vec::new(),
             sensitive: "blur".into(),
             reports: Vec::new(),
+            messages: Vec::new(),
+            notifications: Vec::new(),
             mod_mail: Vec::new(),
             mod_log: Vec::new(),
             saved_responses: Vec::new(),
@@ -413,9 +448,14 @@ impl State {
             social_links: Vec::new(),
             profile_created: unix_seconds(),
             draft: None,
+            account_profiles: BTreeMap::new(),
+            managed_profiles: false,
+            legacy_profile: None,
             next_post: 10,
             next_comment: 7,
             next_report: 1,
+            next_message: 1,
+            next_notification: 1,
             next_mod_mail: 1,
             next_mod_event: 1,
             next_saved_response: 1,
@@ -460,6 +500,9 @@ impl State {
                 )
             })?;
         }
+        if state.guest() {
+            state.activate_profile(None);
+        }
         if legacy {
             let first_id = state.next_post;
             state.next_post = first_id.checked_add(2).ok_or_else(|| {
@@ -474,7 +517,8 @@ impl State {
     }
 
     pub fn record_visit(&mut self, slug: &str, path: &Path) {
-        if self.recent.first().is_some_and(|recent| recent == slug)
+        if self.guest()
+            || self.recent.first().is_some_and(|recent| recent == slug)
             || !self
                 .communities
                 .iter()
@@ -497,6 +541,9 @@ impl State {
         form: &BTreeMap<String, String>,
         path: &Path,
     ) -> Result<&'static str, String> {
+        if self.guest() {
+            return Err("Sign in to continue.".into());
+        }
         let mut updated = self.clone();
         let message = updated.change(action, form)?;
         self.commit(updated, path)?;
@@ -577,7 +624,8 @@ impl State {
     }
 
     pub fn record_post_visit(&mut self, id: u64, path: &Path) {
-        if self.history.first() == Some(&id)
+        if self.guest()
+            || self.history.first() == Some(&id)
             || !self
                 .community_for_post(id)
                 .is_some_and(|community| self.can_view_community(community))
@@ -600,6 +648,9 @@ impl State {
         bytes: Vec<u8>,
         path: &Path,
     ) -> Result<&'static str, String> {
+        if self.guest() {
+            return Err("Sign in to continue.".into());
+        }
         let avatar = checked_image(content_type, bytes)?;
         let mut updated = self.clone();
         let message = match kind {
@@ -620,6 +671,7 @@ impl State {
     pub fn setup_artwork(&self, id: u64) -> Option<&SetupArtwork> {
         self.pending_artwork.iter().find(|artwork| {
             artwork.id == id
+                && artwork.creator == self.username
                 && artwork
                     .community
                     .as_deref()
@@ -640,6 +692,9 @@ impl State {
         remove_icon: bool,
         remove_banner: bool,
     ) -> Result<Option<u64>, String> {
+        if self.guest() {
+            return Err("Sign in to continue.".into());
+        }
         let previous = original
             .map(|id| {
                 self.setup_artwork(id)
@@ -655,6 +710,7 @@ impl State {
             icon: None,
             banner: None,
             community: None,
+            creator: self.username.clone(),
         });
         artwork.update(icon, banner, remove_icon, remove_banner)?;
         if artwork.icon.is_none() && artwork.banner.is_none() {
@@ -697,6 +753,7 @@ impl State {
                 icon: community.icon_image.clone(),
                 banner: community.banner_image.clone(),
                 community: Some(slug.to_owned()),
+                creator: self.username.clone(),
             },
         };
         artwork.update(icon, banner, remove_icon, remove_banner)?;
@@ -727,7 +784,11 @@ impl State {
     fn take_artwork(&mut self, id: u64, slug: Option<&str>) -> Result<SetupArtwork, String> {
         self.pending_artwork
             .iter()
-            .position(|artwork| artwork.id == id && artwork.community.as_deref() == slug)
+            .position(|artwork| {
+                artwork.id == id
+                    && artwork.creator == self.username
+                    && artwork.community.as_deref() == slug
+            })
             .and_then(|index| self.pending_artwork.remove(index))
             .ok_or_else(|| ARTWORK_PREVIEW_EXPIRED.into())
     }
@@ -815,6 +876,9 @@ impl State {
             "edit-comment" => self.edit_comment(form),
             "delete-comment" => self.delete_comment(form),
             "report" => self.create_report(form),
+            "send-direct-message" => self.send_direct_message(form),
+            "read-conversation" => self.read_conversation(form),
+            "read-notifications" => self.read_notifications(),
             "review-report" => self.review_report(form),
             "send-mod-mail" => self.send_mod_mail(form),
             "reply-mod-mail" => self.reply_mod_mail(form),
@@ -930,10 +994,10 @@ impl State {
         if !self.can_view_community(&self.communities[index]) {
             return Err("This community isn’t available.".into());
         }
-        let community = &mut self.communities[index];
-        let joined = toggle(&mut self.joined, community.slug.clone());
-        if community.owner.is_some() {
-            community.members = u32::from(joined);
+        let slug = self.communities[index].slug.clone();
+        let joined = toggle(&mut self.joined, slug.clone());
+        if self.communities[index].owner.is_some() {
+            self.communities[index].members = self.account_join_count(&slug);
         }
         if joined {
             Ok("Community joined.")
@@ -1138,6 +1202,9 @@ impl State {
         media: Vec<PostMedia>,
         path: &Path,
     ) -> Result<&'static str, String> {
+        if self.guest() {
+            return Err("Sign in to continue.".into());
+        }
         validate_post_media(&media)?;
         let mut updated = self.clone();
         let mut post = updated.new_post(form, "Discussion")?;
@@ -1361,6 +1428,7 @@ impl State {
         if let Some(post) = self.posts.iter_mut().find(|post| post.id == post_id) {
             post.reply_count = post.reply_count.saturating_add(1);
         }
+        self.notify_comment(post_id, parent)?;
         Ok("Comment posted.")
     }
 
@@ -1411,6 +1479,10 @@ impl State {
         comment.score = 0;
         self.comment_votes.remove(&comment.id);
         self.profile_hidden_comments.remove(&comment.id);
+        for profile in self.account_profiles.values_mut() {
+            profile.comment_votes.remove(&comment.id);
+            profile.hidden_comments.remove(&comment.id);
+        }
         if let Some(post) = self.posts.iter_mut().find(|post| post.id == comment.post) {
             post.reply_count = post.reply_count.saturating_sub(1);
         }
@@ -1428,6 +1500,7 @@ impl State {
             region: region.into(),
             details: details.into(),
             reviewed: false,
+            reporter: self.username.clone(),
         });
         Ok("Report saved to the legal review log.")
     }
@@ -1700,6 +1773,9 @@ impl State {
 
     fn update_profile(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let username = checked_handle(value(form, "username"))?;
+        if self.managed_profiles && username != self.username {
+            return Err("Your account handle cannot be changed.".into());
+        }
         if form.contains_key("display_name") {
             self.display_name = bounded(form, "display_name", "Display name", 60)?.into();
         }
@@ -1749,6 +1825,35 @@ impl State {
             message.sender.clone_from(&username);
         }
         if username != self.username {
+            for report in self
+                .reports
+                .iter_mut()
+                .filter(|report| report.reporter == self.username)
+            {
+                report.reporter.clone_from(&username);
+            }
+            for message in &mut self.messages {
+                if message.from == self.username {
+                    message.from.clone_from(&username);
+                }
+                if message.to == self.username {
+                    message.to.clone_from(&username);
+                }
+            }
+            for notification in self
+                .notifications
+                .iter_mut()
+                .filter(|item| item.recipient == self.username)
+            {
+                notification.recipient.clone_from(&username);
+            }
+            for artwork in self
+                .pending_artwork
+                .iter_mut()
+                .filter(|artwork| artwork.creator == self.username)
+            {
+                artwork.creator.clone_from(&username);
+            }
             for poll in self.posts.iter_mut().filter_map(|post| post.poll.as_mut()) {
                 if let Some(option) = poll.votes.remove(&self.username) {
                     poll.votes.entry(username.clone()).or_insert(option);
@@ -1912,6 +2017,14 @@ impl State {
         self.hidden.remove(&id);
         self.history.retain(|visited| *visited != id);
         self.profile_hidden_posts.remove(&id);
+        self.notifications.retain(|entry| entry.post != Some(id));
+        for profile in self.account_profiles.values_mut() {
+            profile.votes.remove(&id);
+            profile.saved.remove(&id);
+            profile.hidden.remove(&id);
+            profile.history.retain(|visited| *visited != id);
+            profile.hidden_posts.remove(&id);
+        }
         if let Some(community) = self
             .communities
             .iter_mut()
@@ -1925,6 +2038,10 @@ impl State {
             }
             self.comment_votes.remove(&comment.id);
             self.profile_hidden_comments.remove(&comment.id);
+            for profile in self.account_profiles.values_mut() {
+                profile.comment_votes.remove(&comment.id);
+                profile.hidden_comments.remove(&comment.id);
+            }
             false
         });
         Ok("Post deleted.")
@@ -1933,6 +2050,29 @@ impl State {
     fn read_record(&mut self, line: &str) -> Option<()> {
         let fields: Vec<&str> = line.split('\t').collect();
         match fields.as_slice() {
+            ["account-mode", active, legacy] => {
+                let active = decode(active)?;
+                let legacy = decode(legacy)?;
+                if active != self.username {
+                    return None;
+                }
+                self.managed_profiles = true;
+                self.legacy_profile = (!legacy.is_empty()).then_some(legacy);
+            }
+            ["account-data", handle, sensitive, records] => {
+                let handle = decode(handle)?;
+                if !self.managed_profiles
+                    || handle == self.username
+                    || checked_handle(&handle).ok()? != handle
+                {
+                    return None;
+                }
+                let profile =
+                    ProfileData::from_records(&handle, decode(sensitive)?, &decode(records)?)?;
+                if self.account_profiles.insert(handle, profile).is_some() {
+                    return None;
+                }
+            }
             ["settings", username, sensitive, next_post, next_comment, next_report, counters @ ..] =>
             {
                 self.username = decode(username)?;
@@ -2125,9 +2265,10 @@ impl State {
                 });
             }
             ["report", id, post, region, details, status @ ..] => {
-                let reviewed = match status {
-                    [] => false,
-                    [reviewed] => number(reviewed)?,
+                let (reviewed, reporter) = match status {
+                    [] => (false, self.username.clone()),
+                    [reviewed] => (number(reviewed)?, self.username.clone()),
+                    [reviewed, reporter] => (number(reviewed)?, decode(reporter)?),
                     _ => return None,
                 };
                 self.reports.push(Report {
@@ -2136,7 +2277,30 @@ impl State {
                     region: decode(region)?,
                     details: decode(details)?,
                     reviewed,
+                    reporter,
                 });
+            }
+            ["message-sequence", next_message, next_notification] => {
+                self.next_message = number(next_message)?;
+                self.next_notification = number(next_notification)?;
+            }
+            ["direct-message", id, from, to, body, at, read] => self.messages.push(DirectMessage {
+                id: number(id)?,
+                from: decode(from)?,
+                to: decode(to)?,
+                body: decode(body)?,
+                at: number(at)?,
+                read: number(read)?,
+            }),
+            ["notification", id, recipient, body, at, read, post] => {
+                self.notifications.push(Notification {
+                    id: number(id)?,
+                    recipient: decode(recipient)?,
+                    body: decode(body)?,
+                    at: number(at)?,
+                    read: number(read)?,
+                    post: optional_number(post)?,
+                })
             }
             ["mod-mail", id, community, sender, subject, body, reply] => {
                 self.mod_mail.push(ModMail {
@@ -2290,58 +2454,18 @@ impl State {
             file,
             "settings\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             encode(&self.username),
-            encode(&self.sensitive),
+            encode(if self.guest() {
+                "blur"
+            } else {
+                &self.sensitive
+            }),
             self.next_post,
             self.next_comment,
             self.next_report,
             self.next_mod_mail,
             self.next_feed,
         )?;
-        writeln!(
-            file,
-            "profile\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            encode(&self.display_name),
-            encode(&self.bio),
-            self.public_posts,
-            self.public_comments,
-            self.profile_nsfw,
-            encode(&self.profile_flair),
-            self.profile_created,
-            self.next_social_link
-        )?;
-        for (kind, image) in [("avatar", &self.avatar), ("cover", &self.cover)] {
-            if let Some(image) = image {
-                writeln!(
-                    file,
-                    "profile-image\t{kind}\t{}\t{}",
-                    image.content_type,
-                    encode_image(&image.bytes)
-                )?;
-            }
-        }
-        for link in &self.social_links {
-            writeln!(
-                file,
-                "social-link\t{}\t{}\t{}",
-                link.id,
-                encode(&link.label),
-                encode(&link.url)
-            )?;
-        }
-        if let Some(draft) = &self.draft {
-            writeln!(
-                file,
-                "draft\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                encode(&draft.community),
-                encode(&draft.title),
-                encode(&draft.body),
-                encode(&draft.url),
-                encode(&draft.flair),
-                draft.sensitive,
-                draft.spoiler,
-                draft.brand_affiliate
-            )?;
-        }
+        self.write_account_records(file)?;
         for community in &self.communities {
             let Some(owner) = &community.owner else {
                 continue;
@@ -2453,12 +2577,44 @@ impl State {
         for report in &self.reports {
             writeln!(
                 file,
-                "report\t{}\t{}\t{}\t{}\t{}",
+                "report\t{}\t{}\t{}\t{}\t{}\t{}",
                 report.id,
                 report.post,
                 encode(&report.region),
                 encode(&report.details),
                 report.reviewed,
+                encode(&report.reporter),
+            )?;
+        }
+        writeln!(
+            file,
+            "message-sequence\t{}\t{}",
+            self.next_message, self.next_notification
+        )?;
+        for message in &self.messages {
+            writeln!(
+                file,
+                "direct-message\t{}\t{}\t{}\t{}\t{}\t{}",
+                message.id,
+                encode(&message.from),
+                encode(&message.to),
+                encode(&message.body),
+                message.at,
+                message.read
+            )?;
+        }
+        for notification in &self.notifications {
+            let post = notification
+                .post
+                .map_or_else(String::new, |id| id.to_string());
+            writeln!(
+                file,
+                "notification\t{}\t{}\t{}\t{}\t{}\t{post}",
+                notification.id,
+                encode(&notification.recipient),
+                encode(&notification.body),
+                notification.at,
+                notification.read
             )?;
         }
         for message in &self.mod_mail {
@@ -2524,54 +2680,6 @@ impl State {
                 encode(&item.reason),
                 item.created_at
             )?;
-        }
-        for feed in &self.custom_feeds {
-            write!(
-                file,
-                "F\t{}\t{}\t@\t{}\t{}\t{}",
-                feed.id,
-                encode(&feed.name),
-                encode(&feed.description),
-                feed.private,
-                feed.show_on_profile
-            )?;
-            for slug in &feed.communities {
-                write!(file, "\t{}", encode(slug))?;
-            }
-            writeln!(file)?;
-        }
-        for slug in &self.recent {
-            writeln!(file, "V\t{}", encode(slug))?;
-        }
-        for id in &self.history {
-            writeln!(file, "H\t{id}")?;
-        }
-        for (label, votes) in [("vote", &self.votes), ("comment-vote", &self.comment_votes)] {
-            for (id, vote) in votes {
-                writeln!(file, "{label}\t{id}\t{vote}")?;
-            }
-        }
-        for (label, ids) in [
-            ("saved", &self.saved),
-            ("hidden", &self.hidden),
-            ("profile-hidden-post", &self.profile_hidden_posts),
-            ("profile-hidden-comment", &self.profile_hidden_comments),
-        ] {
-            for id in ids {
-                writeln!(file, "{label}\t{id}")?;
-            }
-        }
-        for (label, values) in [
-            ("joined", &self.joined),
-            ("muted", &self.muted),
-            ("blocked", &self.blocked),
-        ] {
-            for value in values {
-                writeln!(file, "{label}\t{}", encode(value))?;
-            }
-        }
-        for keyword in &self.keywords {
-            writeln!(file, "keyword\t{}", encode(keyword))?;
         }
         Ok(())
     }

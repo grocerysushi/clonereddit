@@ -25,6 +25,8 @@ const MAX_PART_HEADERS: usize = 4 * 1024;
 const MAX_WIZARD_FIELD_BYTES: usize = 8 * 1024;
 const MAX_CONNECTIONS: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const SESSION_COOKIE_NAME: &str = "commonline_session";
+pub(crate) const SESSION_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 const WIZARD_FIELDS: &[&str] = &[
     "review_community",
     "setup_step",
@@ -68,6 +70,7 @@ pub struct Request {
     pub community_uploads: BTreeMap<String, Upload>,
     pub post_uploads: Vec<Upload>,
     pub range: Option<String>,
+    pub cookie: Option<String>,
 }
 
 pub struct Upload {
@@ -88,6 +91,7 @@ pub struct Response {
     location: Option<String>,
     media_length: Option<usize>,
     body_slice: Option<Range<usize>>,
+    session_cookie: Option<String>,
 }
 
 impl Response {
@@ -121,7 +125,20 @@ impl Response {
             location: None,
             media_length: None,
             body_slice: None,
+            session_cookie: None,
         }
+    }
+
+    pub fn with_session_cookie(mut self, token: Option<&str>) -> Self {
+        let (value, max_age) = match token {
+            Some(value) if valid_session_token(value) => (value, SESSION_MAX_AGE_SECS),
+            Some(_) => return self,
+            None => ("", 0),
+        };
+        self.session_cookie = Some(format!(
+            "{SESSION_COOKIE_NAME}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
+        ));
+        self
     }
 
     pub fn media(content_type: &'static str, bytes: Vec<u8>, range: Option<&str>) -> Self {
@@ -188,6 +205,9 @@ impl Response {
         if let Some(location) = &self.location {
             headers.push_str(&format!("Location: {location}\r\n"));
         }
+        if let Some(cookie) = &self.session_cookie {
+            headers.push_str(&format!("Set-Cookie: {cookie}\r\n"));
+        }
         if self.status == 405 {
             headers.push_str("Allow: GET, HEAD, POST\r\n");
         }
@@ -210,6 +230,13 @@ impl Response {
         }
         stream.flush()
     }
+}
+
+pub(crate) fn valid_session_token(token: &str) -> bool {
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn byte_range(value: &str, length: usize) -> Option<Range<usize>> {
@@ -379,8 +406,10 @@ fn read_request(
         community_uploads: BTreeMap::new(),
         post_uploads: Vec::new(),
         range: None,
+        cookie: None,
     };
     let headers = parse_headers(lines)?;
+    request.cookie = headers.get("cookie").cloned();
     if let Some(range) = headers.get("range") {
         if !range
             .bytes()
@@ -550,6 +579,7 @@ fn parse_headers<'a>(lines: impl Iterator<Item = &'a str>) -> Result<Fields, Res
                     | "origin"
                     | "sec-fetch-site"
                     | "range"
+                    | "cookie"
             )
         {
             return Err(Response::error(400, "Duplicate request header."));

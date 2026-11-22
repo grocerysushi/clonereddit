@@ -110,7 +110,12 @@ pub(super) fn render(state: &State, origin: &str, public: bool, active_tab: &str
 
 fn avatar(state: &State, public: bool) -> String {
     if state.avatar.is_some() && !(public && state.profile_nsfw && state.sensitive != "show") {
-        "<span class='profile-card-avatar'><img src='/profile/avatar' alt=''></span>".into()
+        let base = if public {
+            profile_url(state)
+        } else {
+            "/profile".to_owned()
+        };
+        format!("<span class='profile-card-avatar'><img src='{base}/avatar' alt=''></span>")
     } else {
         format!(
             "<span class='profile-card-avatar' aria-hidden='true'>{}</span>",
@@ -119,12 +124,17 @@ fn avatar(state: &State, public: bool) -> String {
     }
 }
 
-fn cover(state: &State, public: bool) -> &'static str {
+fn cover(state: &State, public: bool) -> String {
     let reveal = !public || !state.profile_nsfw || state.sensitive == "show";
     if state.cover.is_some() && reveal {
-        "<div class='profile-cover'><img src='/profile/cover' alt=''></div>"
+        let base = if public {
+            profile_url(state)
+        } else {
+            "/profile".to_owned()
+        };
+        format!("<div class='profile-cover'><img src='{base}/cover' alt=''></div>")
     } else {
-        "<div class='profile-cover profile-cover-default' aria-hidden='true'></div>"
+        "<div class='profile-cover profile-cover-default' aria-hidden='true'></div>".into()
     }
 }
 
@@ -141,7 +151,8 @@ fn profile_posts(state: &State, public: bool) -> impl DoubleEndedIterator<Item =
 
 fn profile_comments(state: &State, public: bool) -> impl DoubleEndedIterator<Item = &Comment> {
     state.comments.iter().filter(move |comment| {
-        comment.author == state.username
+        !comment.deleted
+            && comment.author == state.username
             && (!public
                 || state.public_comments
                     && !state.profile_hidden_comments.contains(&comment.id)
@@ -170,8 +181,7 @@ fn statistics(state: &State, public: bool) -> String {
         .collect();
     for comment in profile_comments(state, public) {
         contributions += 1;
-        votes += i64::from(comment.score)
-            + i64::from(*state.comment_votes.get(&comment.id).unwrap_or(&0));
+        votes += i64::from(state.comment_score(comment));
         communities.extend(post_communities.get(&comment.post).copied());
     }
     let joined = if state.profile_created > 0 {
@@ -274,7 +284,7 @@ fn owned_communities(state: &State, back: &str, public: bool) -> String {
             community_url(&item.slug),
             community_icon(item),
             escape(&item.name),
-            community_members(item)
+            community_members(state, item)
         )
         .unwrap();
     }
@@ -321,7 +331,7 @@ pub(super) fn settings(state: &State, section: &str) -> String {
 fn identity(state: &State) -> String {
     let fields = action_fields("profile", &settings_url("identity"), &[]);
     format!(
-        "<form class='stack-form' method='post' action='/action'>{fields}<label>Username<input name='username' value='{}' minlength='2' maxlength='24' pattern='[A-Za-z0-9_]+' required></label><label>Display name<input name='display_name' value='{}' maxlength='60'></label><label>Bio<textarea name='bio' rows='5' maxlength='280'>{}</textarea></label><button class='button dark' type='submit'>Save profile</button></form>",
+        "<form class='stack-form' method='post' action='/action'>{fields}<label>Username<input name='username' value='{}' readonly></label><label>Display name<input name='display_name' value='{}' maxlength='60'></label><label>Bio<textarea name='bio' rows='5' maxlength='280'>{}</textarea></label><button class='button dark' type='submit'>Save profile</button></form>",
         escape(&state.username),
         escape(&state.display_name),
         escape(&state.bio)

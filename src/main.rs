@@ -1,3 +1,4 @@
+mod auth;
 mod http;
 mod media;
 mod model;
@@ -12,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use auth::AuthStore;
 use http::{Request, Response};
 use model::State;
 
@@ -28,13 +30,40 @@ fn main() {
 
 fn run() -> io::Result<()> {
     let mut args = env::args().skip(1);
+    let state_path = env::var_os("COMMONLINE_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("commonline.state"));
     let port = match args.next().as_deref() {
         Some("--help" | "-h") => {
-            println!("Usage: commonline [--port PORT]");
+            println!("Usage: commonline [--port PORT | --legacy-recovery]");
             println!("COMMONLINE_PORT sets the default port ({DEFAULT_PORT}). Use 0 for an available port.");
             println!(
                 "COMMONLINE_STATE sets the path to the state file (default: ./commonline.state)."
             );
+            println!(
+                "Stop the server before using --legacy-recovery to claim a pre-account profile."
+            );
+            return Ok(());
+        }
+        Some("--legacy-recovery") if args.next().is_none() => {
+            if !state_path.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "No existing state file to recover.",
+                ));
+            }
+            let state = State::load(&state_path)?;
+            let mut auth = AuthStore::load(&state_path)?;
+            let username = state.legacy_username().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "No pre-account profile to recover.",
+                )
+            })?;
+            let code = auth
+                .issue_legacy_recovery(username)
+                .map_err(io::Error::other)?;
+            println!("Recovery code for {username}: {code}");
             return Ok(());
         }
         Some("--port") => parse_port(&args.next().ok_or_else(usage_error)?)?,
@@ -48,14 +77,12 @@ fn run() -> io::Result<()> {
     if args.next().is_some() {
         return Err(usage_error());
     }
-    let state_path = env::var_os("COMMONLINE_STATE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("commonline.state"));
     let state = State::load(&state_path).map_err(|error| {
         io::Error::new(error.kind(), format!("{}: {error}", state_path.display()))
     })?;
     let mut app = App {
         state,
+        auth: AuthStore::load(&state_path)?,
         state_path,
         retry_after: None,
     };
@@ -111,6 +138,7 @@ fn run() -> io::Result<()> {
 
 struct App {
     state: State,
+    auth: AuthStore,
     state_path: PathBuf,
     retry_after: Option<Instant>,
 }
@@ -118,7 +146,10 @@ struct App {
 impl App {
     fn route(&mut self, request: Request) -> Response {
         self.publish_due();
-        view::route(request, &mut self.state, &self.state_path)
+        let token = request.cookie.as_deref().and_then(auth::session_token);
+        let username = token.and_then(|token| self.auth.username(token));
+        self.state.activate_profile(username);
+        view::route(request, &mut self.state, &self.state_path, &mut self.auth)
     }
 
     fn publish_due(&mut self) {
@@ -161,6 +192,6 @@ fn parse_port(value: &str) -> io::Result<u16> {
 fn usage_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "usage: commonline [--port PORT]",
+        "usage: commonline [--port PORT | --legacy-recovery]",
     )
 }

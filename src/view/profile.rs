@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::fmt::Write;
 
 use super::{
-    community, community_url, escape, icon, initials, post_card, profile_name, profile_url,
+    community, community_url, encode, escape, icon, initials, post_card, profile_name, profile_url,
 };
 use crate::model::{Comment, Post, State};
 
@@ -17,7 +17,7 @@ const TABS: &[(&str, &str)] = &[
     ("downvoted", "Downvoted"),
 ];
 
-pub(super) fn render(state: &State, requested: &str, public: bool) -> String {
+pub(super) fn render(state: &State, requested: &str, public: bool, can_message: bool) -> String {
     let available = if public { &TABS[..3] } else { TABS };
     let tab = available
         .iter()
@@ -30,22 +30,25 @@ pub(super) fn render(state: &State, requested: &str, public: bool) -> String {
         "/profile".into()
     };
     let back = format!("{base}?tab={tab}");
-    let controls = if public {
+    let controls = if can_message {
+        format!("<div class='profile-header-actions'><a class='button light' href='/messages?peer={}'>{} Message</a></div>", encode(&state.username), icon("mail"))
+    } else if public {
         String::new()
     } else {
-        format!("<div class='profile-header-actions'><a class='button light' href='/profile/settings?section=identity'>{} Edit profile</a><a class='button dark' href='/new'>{} New post</a></div>", icon("sliders"), icon("plus"))
+        format!("<div class='profile-header-actions'><a class='button light' href='/profile/settings?section=identity'>{} Edit profile</a><form method='post' action='/account/logout'><button class='button light' type='submit'>Sign out</button></form></div>", icon("sliders"))
     };
-    let avatar =
-        if state.avatar.is_some() && !(public && state.profile_nsfw && state.sensitive != "show") {
-            String::from(
-            "<img class='profile-main-avatar' src='/profile/avatar' width='74' height='74' alt=''>",
+    let show_avatar =
+        state.avatar.is_some() && (!public || !state.profile_nsfw || state.sensitive == "show");
+    let avatar = if show_avatar {
+        format!(
+            "<img class='profile-main-avatar' src='{base}/avatar' width='74' height='74' alt=''>"
         )
-        } else {
-            format!(
+    } else {
+        format!(
             "<span class='profile-main-avatar profile-main-initials' aria-hidden='true'>{}</span>",
             escape(&initials(profile_name(state)))
         )
-        };
+    };
     let avatar_edit = if public {
         String::new()
     } else {
@@ -122,6 +125,7 @@ pub(super) fn render(state: &State, requested: &str, public: bool) -> String {
 
 fn public_post(state: &State, post: &Post) -> bool {
     community(state, &post.community).is_some_and(|item| item.visibility != "private")
+        && !(super::is_sensitive(state, post) && state.sensitive == "hide")
 }
 
 fn posts<'a>(state: &'a State, tab: &str, public: bool) -> Vec<&'a Post> {
@@ -172,14 +176,21 @@ fn comments(state: &State, public: bool) -> Vec<&Comment> {
         .comments
         .iter()
         .filter(|item| {
-            item.author == state.username
-                && (!public
-                    || !state.profile_hidden_comments.contains(&item.id)
-                        && state
-                            .posts
-                            .iter()
-                            .find(|post| post.id == item.post)
-                            .is_some_and(|post| public_post(state, post)))
+            !item.deleted
+                && item.author == state.username
+                && state
+                    .posts
+                    .iter()
+                    .find(|post| post.id == item.post)
+                    .is_some_and(|post| {
+                        if public {
+                            !state.profile_hidden_comments.contains(&item.id)
+                                && public_post(state, post)
+                        } else {
+                            community(state, &post.community)
+                                .is_some_and(|item| state.can_view_community(item))
+                        }
+                    })
         })
         .collect();
     list.sort_by_key(|item| Reverse(item.id));

@@ -94,7 +94,7 @@ pub(super) fn render(state: &State, item: &Community, query: &BTreeMap<String, S
             "discussions" => workspace.discussions(state),
             "rules" => workspace.rules(),
             "members" => workspace.members(state),
-            "insights" => workspace.insights(),
+            "insights" => workspace.insights(state),
             "log" => workspace.log(state),
             "responses" => workspace.responses(state),
             _ => workspace.queue(query),
@@ -469,12 +469,12 @@ impl<'a> Workspace<'a> {
             "private" => "Private",
             _ => "Public",
         };
-        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><a class='button light' href='{}'>View community</a></section>", escape(owner), self.item.members, community_url(&self.item.slug))
+        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><a class='button light' href='{}'>View community</a></section>", escape(owner), state.community_member_count(self.item), community_url(&self.item.slug))
     }
 
-    fn insights(&self) -> String {
+    fn insights(&self, state: &State) -> String {
         let pending = self.pending();
-        format!("<section class='panel mod-section'><h2>Community totals</h2><dl class='mod-metrics'><div><dt>Members</dt><dd>{}</dd></div><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Legal reports</dt><dd>{}</dd></div><div><dt>Pending review</dt><dd>{pending}</dd></div><div><dt>Reviewed</dt><dd>{}</dd></div></dl></section>", self.item.members, self.posts.len(), self.comments, self.reports.len(), self.reports.len() - pending)
+        format!("<section class='panel mod-section'><h2>Community totals</h2><dl class='mod-metrics'><div><dt>Members</dt><dd>{}</dd></div><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Legal reports</dt><dd>{}</dd></div><div><dt>Pending review</dt><dd>{pending}</dd></div><div><dt>Reviewed</dt><dd>{}</dd></div></dl></section>", state.community_member_count(self.item), self.posts.len(), self.comments, self.reports.len(), self.reports.len() - pending)
     }
 
     fn log(&self, state: &State) -> String {

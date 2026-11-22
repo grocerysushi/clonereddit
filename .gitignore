@@ -1,3 +1,5 @@
 /target/
 *.state
 *.state.media/
+*.accounts
+*.accounts.*.tmp
