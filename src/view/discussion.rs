@@ -1,4 +1,4 @@
-use super::{action_fields, action_form, escape, icon, reporting};
+use super::{action_fields, action_form, encode, escape, icon, reporting};
 use crate::model::{Comment, ContentKind, State};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,7 +46,12 @@ impl CommentSort {
     }
 }
 
-pub(super) fn sort_tabs(post: u64, current: CommentSort) -> String {
+pub(super) fn sort_tabs(post: u64, current: CommentSort, query: &str) -> String {
+    let search = if query.is_empty() {
+        String::new()
+    } else {
+        format!("&comment_q={}", encode(query))
+    };
     let links: String = [
         CommentSort::Best,
         CommentSort::Top,
@@ -62,7 +67,7 @@ pub(super) fn sort_tabs(post: u64, current: CommentSort) -> String {
         };
         format!(
             "<a href='{}#comments'{selection}>{}</a>",
-            escape(&sort.thread_url(post)),
+            escape(&format!("{}{search}", sort.thread_url(post))),
             sort.label()
         )
     })

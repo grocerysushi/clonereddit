@@ -6,6 +6,7 @@ mod community_setup;
 mod creator;
 mod custom;
 mod discussion;
+mod discussion_search;
 mod feed_layout;
 mod moderation;
 mod moderation_workspace;
@@ -450,6 +451,7 @@ pub fn route(
                         state,
                         post,
                         discussion::CommentSort::parse(field(query, "comment_sort")),
+                        field(query, "comment_q"),
                         CommentAction::from_query(query),
                         &request.origin,
                     ),
@@ -867,7 +869,7 @@ fn comment_submission(state: &mut State, path: &Path, action: &str, request: &Re
                     error: &error,
                 },
             };
-            let body = thread(state, post, sort, interaction, &request.origin);
+            let body = thread(state, post, sort, "", interaction, &request.origin);
             Response::html(layout(
                 state,
                 &post.community,
@@ -3130,19 +3132,22 @@ fn thread(
     state: &State,
     post: &Post,
     sort: discussion::CommentSort,
+    query: &str,
     action: CommentAction<'_>,
     origin: &str,
 ) -> String {
     let back = sort.thread_url(post.id);
+    let query = discussion_search::normalize_query(query);
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
     let pinned = community(state, &post.community).is_some_and(|item| item.is_highlighted(post.id));
     html.push_str(&post_card(state, post, &back, PostView::Thread, pinned));
-    write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort)).unwrap();
+    write!(html, "<section class='panel discussion' id='comments'><header class='discussion-heading'><h2>Discussion</h2>{}</header>", discussion::sort_tabs(post.id, sort, &query)).unwrap();
+    let mut replies = String::new();
     let can_write = can_write_here(state, &post.community);
     let locked = state.is_discussion_locked(post.id);
     let can_reply = can_write && !locked;
     if locked {
-        html.push_str("<p class='community-restriction-note discussion-lock-note muted'><strong>Discussion locked.</strong> A moderator can reopen it.</p>");
+        replies.push_str("<p class='community-restriction-note discussion-lock-note muted'><strong>Discussion locked.</strong> A moderator can reopen it.</p>");
     } else if can_reply {
         let (draft, error) = match action {
             CommentAction::Reply {
@@ -3152,19 +3157,19 @@ fn thread(
             } => (draft, error),
             _ => ("", ""),
         };
-        html.push_str(&reply_form(post.id, None, &back, sort, draft, error));
+        replies.push_str(&reply_form(post.id, None, &back, sort, draft, error));
     } else if state.username.is_empty() {
-        html.push_str("<p class='community-restriction-note muted'><a class='subtle-link' href='/account/login'>Sign in</a> to reply.</p>");
+        replies.push_str("<p class='community-restriction-note muted'><a class='subtle-link' href='/account/login'>Sign in</a> to reply.</p>");
     } else if state.is_banned(&post.community, &state.username) {
-        html.push_str("<p class='community-restriction-note muted'>Your account is banned from replying in this community. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
+        replies.push_str("<p class='community-restriction-note muted'>Your account is banned from replying in this community. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
     } else {
-        html.push_str(
+        replies.push_str(
             "<p class='community-restriction-note muted'>Approved members and moderators can reply here.</p>",
         );
     }
     let branches = comment_branches(state, post.id, sort);
     if branches.is_empty() {
-        html.push_str(if can_reply {
+        replies.push_str(if can_reply {
             "<p class='muted'>Be the first to reply.</p>"
         } else {
             "<p class='muted'>No replies yet.</p>"
@@ -3174,6 +3179,7 @@ fn thread(
         Comment(&'a Comment, usize),
         EndBranch,
     }
+    let mut searchable_comments = Vec::new();
     let mut stack: Vec<_> = branches
         .get(&None)
         .into_iter()
@@ -3183,12 +3189,12 @@ fn thread(
         .collect();
     while let Some(node) = stack.pop() {
         let Node::Comment(comment, depth) = node else {
-            html.push_str("</details>");
+            replies.push_str("</details>");
             continue;
         };
         let blocked = state.blocked.contains(&comment.author);
         if comment.deleted {
-            write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
+            write!(replies, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment deleted</p></article>", depth.min(3), comment.id).unwrap();
         } else if state.is_comment_removed(comment.id) {
             let review = content_tool_url(state, &post.community, ContentKind::Comment, comment.id)
                 .map_or_else(String::new, |url| {
@@ -3197,9 +3203,12 @@ fn thread(
                         escape(&url)
                     )
                 });
-            write!(html, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment removed by moderators.{review}</p></article>", depth.min(3), comment.id).unwrap();
+            write!(replies, "<article class='comment comment-deleted depth-{}' id='comment-{}'><p>Comment removed by moderators.{review}</p></article>", depth.min(3), comment.id).unwrap();
         } else if !blocked {
-            html.push_str(&comment_card(
+            if !query.is_empty() {
+                searchable_comments.push(comment);
+            }
+            replies.push_str(&comment_card(
                 state,
                 &post.community,
                 comment,
@@ -3213,7 +3222,7 @@ fn thread(
         }
         if let Some(children) = branches.get(&Some(comment.id)) {
             if !blocked {
-                html.push_str(&discussion::open_branch(comment.id, depth));
+                replies.push_str(&discussion::open_branch(comment.id, depth));
                 stack.push(Node::EndBranch);
             }
             stack.extend(
@@ -3224,6 +3233,14 @@ fn thread(
             );
         }
     }
+    html.push_str(&discussion_search::render(
+        post.id,
+        &back,
+        sort,
+        &query,
+        searchable_comments.into_iter(),
+    ));
+    html.push_str(&replies);
     html.push_str("</section><script type='module' src='/comment-share.js'></script>");
     html
 }

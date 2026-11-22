@@ -343,7 +343,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment.depth-3 { margin-left: 54px; }
 .comment-head { display: flex; align-items: center; gap: 8px; font-size: .86rem; }
 .comment-head > span:not(.avatar) { color: var(--quiet); }
-.comment-head strong { min-width: 0; overflow-wrap: anywhere; }
+.comment-head :is(strong, .post-author) { min-width: 0; overflow-wrap: anywhere; }
 .comment p { white-space: pre-line; margin-top: 4px; }
 .comment .post-actions { margin-top: 5px; }
 .comment-edited { color: var(--quiet); font-size: .74rem; }
@@ -373,6 +373,21 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment-sort a { padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; font-weight: 650; }
 .comment-sort a:hover { background: var(--pale); }
 .comment-sort a[aria-current='page'] { border-color: #c5d7a9; color: var(--ink); background: var(--light-lime); }
+.discussion-search { margin-bottom: 14px; }
+.discussion-search label { display: block; width: fit-content; margin-bottom: 4px; font-size: .86rem; font-weight: 650; }
+.discussion-search-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.discussion-search input[type='search'] { flex: 1 1 120px; min-height: 41px; padding: 7px 10px; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); }
+.discussion-search-clear { color: var(--quiet); }
+.discussion-search-clear:hover { background: var(--pale); color: var(--ink); }
+.discussion-search-results { margin-bottom: 14px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.discussion-search-results h3 { margin: 2px 7px 4px; font-size: .91rem; }
+.discussion-search-results ul { margin: 0; padding: 0; list-style: none; }
+.discussion-search-results li + li { border-top: 1px solid var(--line); }
+.discussion-search-results li a { display: grid; gap: 1px; padding: 5px 7px; border-radius: 6px; overflow-wrap: anywhere; }
+.discussion-search-results li a:hover { background: var(--light-lime); }
+.discussion-search-results li a strong { font-size: .8rem; }
+.discussion-search-excerpt { font-size: .9rem; line-height: 1.4; }
+.discussion-search-excerpt mark { background: var(--lime); color: var(--ink); }
 .comment-permalink { color: var(--quiet); text-decoration: none; white-space: nowrap; }
 .comment-permalink:hover { text-decoration: underline; }
 .comment-branch { --branch-indent: 0px; }

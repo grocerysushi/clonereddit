@@ -329,6 +329,12 @@ Workflow **049** is implemented. Signed-in users can save or unsave individual c
 
 Chromium checks at 1440 and 390 CSS pixels covered saving and unsaving in both places, jumping to a nested reply, and persistence across independent accounts and a restart. HTTP checks covered idempotent requests, older saved posts, private access changes, moderation, and public-profile privacy.
 
+## Discussion comment search update
+
+Workflow **050** is implemented. Readers can search the comments in a discussion by word or phrase and follow a highlighted result to its reply in the thread. Search keeps the selected sort and respects the reader’s existing access. This brings the implementation count to **88 implemented, 5 partial, and 7 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered keyboard and button submission, highlighted excerpts, jumping into collapsed reply branches, sort retention, and clearing the search. HTTP checks covered guest and signed-in searches, matching and escaping, exact comment links, changes to comment text, deleted and removed comments, blocks, private access changes, and restart.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
