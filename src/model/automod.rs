@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::iter::once_with;
 
 use super::{
     bounded, canonical_u64, decode, encode, next_id, number, required, unix_seconds, value,
@@ -92,12 +93,44 @@ impl AutoModAction {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AutoModMatchMode {
+    #[default]
+    All,
+    Any,
+}
+
+impl AutoModMatchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Any => "any",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All conditions",
+            Self::Any => "Any condition",
+        }
+    }
+
+    fn parse(mode: &str) -> Option<Self> {
+        match mode {
+            "all" => Some(Self::All),
+            "any" => Some(Self::Any),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AutoModRule {
     pub id: u64,
     pub community: String,
     pub name: String,
     pub scope: AutoModScope,
+    pub match_mode: AutoModMatchMode,
     pub phrase: String,
     pub account_age_under_days: Option<u32>,
     pub domains: Vec<String>,
@@ -142,6 +175,12 @@ impl State {
         let scope = AutoModScope::parse(value(form, "scope")).ok_or("Choose a content scope.")?;
         let phrase = bounded(form, "phrase", "Trigger phrase", PHRASE_LIMIT)?;
         let previous = existing.map(|index| &self.automod_rules[index]);
+        let match_mode = match form.get("match_mode") {
+            Some(mode) => {
+                AutoModMatchMode::parse(mode).ok_or("Choose how conditions must match.")?
+            }
+            None => previous.map(|rule| rule.match_mode).unwrap_or_default(),
+        };
         let account_age_under_days = match form.get("account_age_under_days") {
             Some(days) => parse_account_age(days)?,
             None => previous.and_then(|rule| rule.account_age_under_days),
@@ -170,6 +209,7 @@ impl State {
             community: community.clone(),
             name: name.into(),
             scope,
+            match_mode,
             phrase: phrase.into(),
             account_age_under_days,
             domains,
@@ -317,40 +357,50 @@ impl State {
                 rule.enabled && rule.community == community && rule.scope.applies_to(kind)
             })
             .filter(|rule| {
-                if let Some(days) = rule.account_age_under_days {
+                let age_matches = once_with(|| {
+                    let days = rule.account_age_under_days?;
                     let age = account_age_seconds.get_or_insert_with(|| {
                         self.profile_creation_time(content.author)
                             .and_then(|created_at| now.checked_sub(created_at))
                     });
-                    if !age.is_some_and(|seconds| seconds < u64::from(days) * SECONDS_PER_DAY) {
-                        return false;
-                    }
+                    Some(age.is_some_and(|seconds| seconds < u64::from(days) * SECONDS_PER_DAY))
+                });
+                let phrase_matches = once_with(|| {
+                    (!rule.phrase.is_empty()).then(|| {
+                        let phrase = rule.phrase.to_lowercase();
+                        let fields = lowercase.get_or_insert_with(|| {
+                            [content.title, content.body, content.url].map(str::to_lowercase)
+                        });
+                        fields.iter().any(|field| field.contains(&phrase))
+                    })
+                });
+                let domain_matches = once_with(|| {
+                    (!rule.domains.is_empty()).then(|| {
+                        hosts
+                            .get_or_insert_with(|| {
+                                domains::linked_hosts(
+                                    content.url,
+                                    content.title,
+                                    content.body,
+                                    content.markdown,
+                                )
+                            })
+                            .iter()
+                            .any(|host| {
+                                rule.domains
+                                    .iter()
+                                    .any(|domain| domains::matches(host, domain))
+                            })
+                    })
+                });
+                let mut matches = age_matches
+                    .chain(phrase_matches)
+                    .chain(domain_matches)
+                    .flatten();
+                match rule.match_mode {
+                    AutoModMatchMode::All => matches.all(|matched| matched),
+                    AutoModMatchMode::Any => matches.any(|matched| matched),
                 }
-                if !rule.phrase.is_empty() {
-                    let phrase = rule.phrase.to_lowercase();
-                    let fields = lowercase.get_or_insert_with(|| {
-                        [content.title, content.body, content.url].map(str::to_lowercase)
-                    });
-                    if !fields.iter().any(|field| field.contains(&phrase)) {
-                        return false;
-                    }
-                }
-                rule.domains.is_empty()
-                    || hosts
-                        .get_or_insert_with(|| {
-                            domains::linked_hosts(
-                                content.url,
-                                content.title,
-                                content.body,
-                                content.markdown,
-                            )
-                        })
-                        .iter()
-                        .any(|host| {
-                            rule.domains
-                                .iter()
-                                .any(|domain| domains::matches(host, domain))
-                        })
             })
             .min_by_key(|rule| (rule.action != AutoModAction::Remove, rule.id))
     }
@@ -406,14 +456,16 @@ impl State {
                 let name = decode(name)?;
                 let phrase = decode(phrase)?;
                 let reason = decode(reason)?;
-                let (account_age_under_days, domains) = match optional {
-                    [] => (None, Vec::new()),
-                    ["conditions", days, domains] => (
-                        parse_account_age(days).ok()?,
-                        domains::parse_list(&decode(domains)?).ok()?,
-                    ),
+                let (days, domains, match_mode) = match optional {
+                    [] => ("", "", AutoModMatchMode::All),
+                    ["conditions", days, domains] => (*days, *domains, AutoModMatchMode::All),
+                    ["conditions", days, domains, mode] => {
+                        (*days, *domains, AutoModMatchMode::parse(mode)?)
+                    }
                     _ => return None,
                 };
+                let account_age_under_days = parse_account_age(days).ok()?;
+                let domains = domains::parse_list(&decode(domains)?).ok()?;
                 if self.automod_rules.iter().any(|rule| rule.id == id)
                     || !self
                         .communities
@@ -431,6 +483,7 @@ impl State {
                     community,
                     name,
                     scope: AutoModScope::parse(scope)?,
+                    match_mode,
                     phrase,
                     account_age_under_days,
                     domains,
@@ -492,7 +545,10 @@ impl State {
                 encode(&rule.reason),
                 rule.enabled,
             )?;
-            if rule.account_age_under_days.is_some() || !rule.domains.is_empty() {
+            if rule.account_age_under_days.is_some()
+                || !rule.domains.is_empty()
+                || rule.match_mode == AutoModMatchMode::Any
+            {
                 let days = rule
                     .account_age_under_days
                     .map(|days| days.to_string())
@@ -502,6 +558,9 @@ impl State {
                     "\tconditions\t{days}\t{}",
                     encode(&rule.domains.join(","))
                 )?;
+                if rule.match_mode == AutoModMatchMode::Any {
+                    write!(file, "\t{}", rule.match_mode.as_str())?;
+                }
             }
             writeln!(file)?;
         }
@@ -617,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn compound_rules_require_all_conditions_and_skip_unknown_age() {
+    fn compound_rules_match_all_or_any_configured_conditions() {
         let mut state = community_fixture();
         let mut compound = rule("Compound flag", "both", "launch", "flag", "Check the offer");
         compound.insert("account_age_under_days".into(), "7".into());
@@ -706,6 +765,52 @@ mod tests {
                 true
             ));
         }
+
+        state.automod_rules[0].match_mode = AutoModMatchMode::Any;
+        assert!(!matches_author(&state, "Offer", "", "", true));
+        assert!(matches_author(&state, "Launch", "", "", true));
+        assert!(matches_author(
+            &state,
+            "Offer",
+            "",
+            "https://shop.second.example/",
+            true
+        ));
+        state.profile_created = boundary + 1;
+        assert!(matches_author(&state, "Offer", "", "", true));
+    }
+
+    #[test]
+    fn match_mode_survives_reload_and_omitted_edits() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        let mut settings = rule("Review offers", "both", "offer", "flag", "Check the offer");
+        settings.insert("match_mode".into(), "any".into());
+        state
+            .apply("save-automod-rule", &settings, &fixture.0)
+            .unwrap();
+        let mut state = State::load(&fixture.0).unwrap();
+        assert_eq!(state.automod_rules[0].match_mode, AutoModMatchMode::Any);
+
+        settings.insert("id".into(), state.automod_rules[0].id.to_string());
+        for invalid in ["", "either"] {
+            settings.insert("match_mode".into(), invalid.into());
+            assert!(state
+                .apply("save-automod-rule", &settings, &fixture.0)
+                .is_err());
+        }
+        settings.remove("match_mode");
+        state
+            .apply("save-automod-rule", &settings, &fixture.0)
+            .unwrap();
+        assert_eq!(state.automod_rules[0].match_mode, AutoModMatchMode::Any);
+
+        settings.insert("match_mode".into(), "all".into());
+        state
+            .apply("save-automod-rule", &settings, &fixture.0)
+            .unwrap();
+        let state = State::load(&fixture.0).unwrap();
+        assert_eq!(state.automod_rules[0].match_mode, AutoModMatchMode::All);
     }
 
     #[test]
@@ -750,6 +855,8 @@ mod tests {
             .apply("save-automod-rule", &compound, &fixture.0)
             .unwrap();
         let mut state = State::load(&fixture.0).unwrap();
+        assert_eq!(state.automod_rules[0].match_mode, AutoModMatchMode::All);
+        assert_eq!(state.automod_rules[1].match_mode, AutoModMatchMode::All);
         assert_eq!(state.automod_rules[0].phrase, "older phrase");
         assert!(state.automod_rules[0].domains.is_empty());
         assert_eq!(state.automod_rules[0].account_age_under_days, None);

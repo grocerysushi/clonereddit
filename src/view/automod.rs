@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use crate::model::{
-    AutoModAction, AutoModFlag, AutoModRule, AutoModScope, Community, ModPermission, State,
+    AutoModAction, AutoModFlag, AutoModMatchMode, AutoModRule, AutoModScope, Community,
+    ModPermission, State,
 };
 use crate::schedule_time;
 
@@ -39,7 +40,7 @@ pub(super) fn rules(
         html.push_str(&error_notice("That rule is unavailable in this community."));
     }
 
-    write!(html, "<div class='mod-automod-intro'><p>AutoMod checks posts and comments when they’re published or edited. A rule applies when all the conditions you enter match.</p><a class='button light' href='{flags_url}'>View AutoMod flags</a></div><details class='panel mod-section mod-automod-help'><summary>How rules apply</summary><p>Flag sends content to the queue while it stays visible. Remove hides content and sends the rule reason to its author. If several rules match, removals take priority. Among matching rules with the same action, the earliest rule wins. Scheduled posts are checked when they publish.</p></details>").unwrap();
+    write!(html, "<div class='mod-automod-intro'><p>AutoMod checks posts and comments when they’re published or edited.</p><a class='button light' href='{flags_url}'>View AutoMod flags</a></div><details class='panel mod-section mod-automod-help'><summary>How rules apply</summary><p>Flag sends content to the queue while it stays visible. Remove hides content and sends the rule reason to its author. If several rules match, removals take priority. Among matching rules with the same action, the earliest rule wins. Scheduled posts are checked when they publish.</p></details>").unwrap();
     let submitted = draft
         .filter(|(form, _)| {
             field(form, "action") == "save-automod-rule" && (edit.is_empty() || selected.is_some())
@@ -69,7 +70,10 @@ pub(super) fn rules(
 }
 
 fn summarize_conditions(rule: &AutoModRule) -> String {
-    let mut html = String::new();
+    let mut html = format!(
+        "<p class='mod-record-detail'><strong>{}</strong></p>",
+        rule.match_mode.label()
+    );
     if !rule.phrase.is_empty() {
         write!(
             html,
@@ -162,6 +166,16 @@ fn rule_form(
         .into_iter()
         .map(|value| option(value.as_str(), value.label(), action))
         .collect();
+    let match_modes = [AutoModMatchMode::All, AutoModMatchMode::Any];
+    let selected_match_mode = submitted
+        .map(|form| field(form, "match_mode"))
+        .and_then(|mode| match_modes.into_iter().find(|value| value.as_str() == mode))
+        .or_else(|| rule.map(|rule| rule.match_mode))
+        .unwrap_or(AutoModMatchMode::All);
+    let match_options: String = match_modes
+        .into_iter()
+        .map(|value| option(value.as_str(), value.label(), selected_match_mode.as_str()))
+        .collect();
     let (title, button, cancel) = if rule.is_some() {
         (
             "Edit rule",
@@ -176,6 +190,8 @@ fn rule_form(
 <form class='stack-form' action='/action' method='post'>{fields}
 <label>Rule name<input name='name' value='{name}' maxlength='80' required></label>
 <fieldset class='mod-automod-conditions'><legend>Conditions <small>Enter at least one</small></legend>
+<label>Match conditions<select name='match_mode' aria-describedby='automod-match-help'>{match_options}</select></label>
+<small id='automod-match-help' class='muted'>With Any condition, one or more entered conditions can trigger the rule.</small>
 <label>Keyword or phrase<input name='phrase' value='{phrase}' maxlength='240'></label>
 <label>Account younger than (days)<input type='number' name='account_age_under_days' min='1' max='36500' step='1' value='{account_age}'></label>
 <label>Link domains<textarea name='domains' rows='2' maxlength='4096' aria-describedby='automod-domain-help'>{domains}</textarea></label>

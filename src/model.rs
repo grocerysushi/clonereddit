@@ -18,7 +18,7 @@ mod approved_members;
 pub use approved_members::ApprovedMember;
 #[path = "model/automod.rs"]
 mod automod;
-pub use automod::{AutoModAction, AutoModFlag, AutoModRule, AutoModScope};
+pub use automod::{AutoModAction, AutoModFlag, AutoModMatchMode, AutoModRule, AutoModScope};
 use automod::{AUTOMOD_REMOVED_COMMENT, AUTOMOD_REMOVED_POST};
 #[path = "model/chat_requests.rs"]
 mod chat_requests;

@@ -363,9 +363,13 @@ Chromium checks at 1440 and 390 CSS pixels covered native schedule creation, cad
 
 ## Compound AutoMod rules update
 
-Workflow **095** is implemented. Moderators can combine a case-insensitive phrase, a maximum account age, and a list of link domains before flagging or removing posts or comments. All entered conditions must match. A link to any listed host or subdomain satisfies the domain condition. Earlier phrase-only rules carry over. This brings the implementation count to **93 implemented, 5 partial, and 2 missing**.
+Workflow **095** is implemented. Moderators can combine a case-insensitive phrase, a maximum account age, and a list of link domains before flagging or removing posts or comments. A link to any listed host or subdomain satisfies the domain condition. Earlier phrase-only rules carry over. This brings the implementation count to **93 implemented, 5 partial, and 2 missing**.
 
 Chromium checks at 1440 and 390 CSS pixels covered creating and editing compound rules, near misses for each condition, flagging, removal notices, delegated permissions, and restart. HTTP and Rust checks covered actual link hosts, account creation dates, Markdown edits, the scheduled post author’s age, and rule priority.
+
+Moderators can choose **All conditions** to require every configured condition or **Any condition** to require at least one. **All conditions** is the default for new rules and for rules saved before this choice was added.
+
+Chromium checks at 1440 and 390 CSS pixels verified that each condition can trigger a rule in **Any condition** mode, for both flagging and removal. They also verified mode changes after restart and **All conditions** behavior for existing rules.
 
 ## Remaining work
 
