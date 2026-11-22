@@ -307,6 +307,7 @@ pub struct State {
     pub communities: Vec<Community>,
     pub posts: Vec<Post>,
     locked_discussions: BTreeSet<u64>,
+    locked_comments: BTreeSet<u64>,
     pub comments: Vec<Comment>,
     pub votes: BTreeMap<u64, i8>,
     pub comment_votes: BTreeMap<u64, i8>,
@@ -490,6 +491,7 @@ impl State {
             communities,
             posts,
             locked_discussions: BTreeSet::new(),
+            locked_comments: BTreeSet::new(),
             comments,
             votes: BTreeMap::new(),
             comment_votes: BTreeMap::new(),
@@ -1004,8 +1006,10 @@ impl State {
             "revoke-approved-member" => self.revoke_approved_member(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
-            "lock-discussion" => self.set_discussion_lock(form, true),
-            "unlock-discussion" => self.set_discussion_lock(form, false),
+            "lock-discussion" => self.set_reply_lock(form, ContentKind::Post, true),
+            "unlock-discussion" => self.set_reply_lock(form, ContentKind::Post, false),
+            "lock-comment" => self.set_reply_lock(form, ContentKind::Comment, true),
+            "unlock-comment" => self.set_reply_lock(form, ContentKind::Comment, false),
             "save-automod-rule" => self.save_automod_rule(form),
             "delete-automod-rule" => self.delete_automod_rule(form),
             "dismiss-automod-flag" => self.dismiss_automod_flag(form),
@@ -1576,6 +1580,9 @@ impl State {
                 if parent.deleted || self.is_comment_removed(id) {
                     return Err("This comment is no longer open for replies.".into());
                 }
+                if self.is_comment_locked(id) {
+                    return Err("Replies to this comment are locked.".into());
+                }
                 Some(id)
             }
         };
@@ -1662,6 +1669,7 @@ impl State {
             post.reply_count = post.reply_count.saturating_sub(1);
         }
         let id = comment.id;
+        self.locked_comments.remove(&id);
         self.clear_automod_flag(ContentKind::Comment, id);
         Ok("Comment deleted.")
     }
@@ -2281,6 +2289,7 @@ impl State {
             if comment.post != id {
                 return true;
             }
+            self.locked_comments.remove(&comment.id);
             self.comment_votes.remove(&comment.id);
             self.profile_hidden_comments.remove(&comment.id);
             for profile in self.account_profiles.values_mut() {
@@ -2524,6 +2533,17 @@ impl State {
                     edited_at,
                     deleted,
                 });
+            }
+            ["comment-lock", id] => {
+                let id = number(id)?;
+                if !self
+                    .comments
+                    .iter()
+                    .any(|comment| comment.id == id && !comment.deleted)
+                {
+                    return None;
+                }
+                self.locked_comments.insert(id);
             }
             fields @ ["report", ..] => self.read_report_record(fields)?,
             ["message-sequence", next_message, next_notification] => {
@@ -2887,6 +2907,9 @@ impl State {
                 comment.score,
                 comment.deleted,
             )?;
+            if self.is_comment_locked(comment.id) {
+                writeln!(file, "comment-lock\t{}", comment.id)?;
+            }
         }
         self.write_content_removals(file)?;
         self.write_automod_records(file)?;

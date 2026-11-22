@@ -250,7 +250,12 @@ pub fn route(
         }
         if matches!(
             action,
-            "remove-content" | "restore-content" | "lock-discussion" | "unlock-discussion"
+            "remove-content"
+                | "restore-content"
+                | "lock-discussion"
+                | "unlock-discussion"
+                | "lock-comment"
+                | "unlock-comment"
         ) {
             return content_submission(state, path, action, &request.form, back);
         }
@@ -921,7 +926,10 @@ fn content_submission(
         return missing(state);
     }
 
-    let locking = matches!(action, "lock-discussion" | "unlock-discussion");
+    let locking = matches!(
+        action,
+        "lock-discussion" | "unlock-discussion" | "lock-comment" | "unlock-comment"
+    );
     match state.apply(action, form, path) {
         Ok(notice) if locking => {
             let delimiter = if back.contains('?') { '&' } else { '?' };
@@ -2888,7 +2896,8 @@ fn comment_card(
     can_write: bool,
 ) -> String {
     let vote = *state.comment_votes.get(&comment.id).unwrap_or(&0);
-    let can_reply = can_write && !state.is_discussion_locked(comment.post);
+    let locked = state.is_comment_locked(comment.id);
+    let can_reply = can_write && !locked && !state.is_discussion_locked(comment.post);
     let avatar = if comment.author == DELETED_ACCOUNT {
         "–".into()
     } else {
@@ -2938,7 +2947,9 @@ fn comment_card(
         .unwrap_or_default();
     let moderation = content_tool_url(state, community, ContentKind::Comment, comment.id);
     let menu = discussion::menu(state, comment, back, can_write, moderation.as_deref());
-    let reply_link = if can_reply {
+    let reply_control = if locked {
+        "<span class='comment-lock-note muted'>Replies to this comment are locked.</span>".into()
+    } else if can_reply {
         format!(
             "<a class='action' href='{}'>{} Reply</a>",
             escape(&discussion::action_url(back, "reply", comment.id)),
@@ -2948,7 +2959,7 @@ fn comment_card(
         String::new()
     };
     let permalink = escape(&discussion::comment_url(back, comment.id));
-    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment, {}'>· {}</a>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_link}</div>{controls}</article>",
+    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment, {}'>· {}</a>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_control}</div>{controls}</article>",
         depth.min(3), comment.id, escape(&comment.age), escape(&comment.age), votes("comment-vote", comment.id, state.comment_score(comment), vote, back)
     )
 }

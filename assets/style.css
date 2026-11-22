@@ -610,10 +610,11 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-appeal-decision[open] > summary { background: var(--light-lime); }
 .mod-appeal-record .moderation-reply { overflow-wrap: anywhere; }
 .mod-discussion-row { flex-wrap: wrap; }
-.mod-discussion-actions, .mod-discussion-lock-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mod-discussion-actions, .mod-discussion-lock-controls, .mod-comment-lock-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .mod-discussion-actions .button { margin: 0; font-size: .8rem; }
-.mod-discussion-lock-controls[data-discussion-locked='true'] .mod-discussion-lock-status { background: #f8e8de; color: #78382d; }
-.mod-content-detail > .mod-discussion-lock-controls { margin-top: 10px; }
+.mod-discussion-lock-controls[data-discussion-locked='true'] .mod-discussion-lock-status,
+.mod-comment-lock-controls[data-comment-locked='true'] .mod-comment-lock-status { background: #f8e8de; color: #78382d; }
+.mod-content-detail > :is(.mod-discussion-lock-controls, .mod-comment-lock-controls) { margin-top: 10px; }
 .mod-content-controls, .mod-content-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 15px; }
 .mod-content-pagination { justify-content: center; margin-top: 12px; }
 .mod-content-search { margin-block: 10px; }

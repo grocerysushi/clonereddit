@@ -75,26 +75,53 @@ pub(super) fn discussion_lock_controls(
     post: &Post,
     back: &str,
 ) -> String {
+    reply_lock_controls(state, item, Entry::Post(post), back)
+}
+
+fn reply_lock_controls(state: &State, item: &Community, entry: Entry<'_>, back: &str) -> String {
     if !state.can_moderate(item, ModPermission::Content) {
         return String::new();
     }
 
-    let id = post.id;
-    let locked = state.is_discussion_locked(id);
-    let (status, action, button) = if locked {
-        ("Replies locked", "unlock-discussion", "Unlock discussion")
+    let id = entry.id();
+    let kind = entry.kind().as_str();
+    let (scope, subject, locked, discussion_locked) = match entry {
+        Entry::Post(_) => (
+            "discussion",
+            "discussion",
+            state.is_discussion_locked(id),
+            false,
+        ),
+        Entry::Comment(_, post) => (
+            "comment",
+            "replies",
+            state.is_comment_locked(id),
+            state.is_discussion_locked(post.id),
+        ),
+    };
+    let status = if locked {
+        "Replies locked"
+    } else if discussion_locked {
+        "Replies blocked by discussion lock"
     } else {
-        ("Replies open", "lock-discussion", "Lock discussion")
+        "Replies open"
+    };
+    let (verb, label) = if locked {
+        ("unlock", "Unlock")
+    } else {
+        ("lock", "Lock")
     };
     let form = action_form(
-        action,
+        &format!("{verb}-{scope}"),
         back,
         &[("community", &item.slug), ("id", &id.to_string())],
-        button,
+        &format!("{label} {subject}"),
         "",
         "button light",
     );
-    format!("<div class='mod-discussion-lock-controls' data-post-id='{id}' data-discussion-locked='{locked}'><span class='flair mod-discussion-lock-status'>{status}</span>{form}</div>")
+    format!(
+        "<div class='mod-{scope}-lock-controls' data-{kind}-id='{id}' data-{scope}-locked='{locked}'><span class='flair mod-{scope}-lock-status'>{status}</span>{form}</div>"
+    )
 }
 
 pub(super) fn render(
@@ -310,8 +337,8 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
             )
             .unwrap();
         }
-        html.push_str(&discussion_lock_controls(state, item, post, &target));
     }
+    html.push_str(&reply_lock_controls(state, item, entry, &target));
     let fields = [
         ("community", item.slug.as_str()),
         ("kind", kind.as_str()),

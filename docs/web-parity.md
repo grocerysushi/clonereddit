@@ -233,6 +233,10 @@ Workflow **088** is implemented. Moderators can lock or unlock a post’s discus
 
 Independent Chromium profiles at 1440 and 390 CSS pixels tested both Mod Tools controls, the locked thread notice, and top-level and nested replies after reopening. A separate server check verified community permissions, both states across restarts, existing comment edits and reports, and audit entries for each change.
 
+Moderators can also lock or unlock direct replies to an individual comment from its detail view. Existing replies stay visible, and participants can still start new top-level comments or reply to other comments. The local lock persists independently of the discussion-wide lock and uses the same community permissions and moderation log.
+
+Chromium checks at 1440 and 390 CSS pixels covered the Mod Tools comment list, the thread’s **Moderate comment** shortcut, and replying to other comments while the target was locked. The tests also checked moderator permissions, both lock states across restarts, and the effect of a discussion-wide lock after reopening an individual comment.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
