@@ -283,8 +283,12 @@ pub(super) fn decision_error(
     form: &BTreeMap<String, String>,
     error: &str,
 ) -> String {
-    let body = community_manage::appeals(state, item, &BTreeMap::new(), Some((form, error)));
+    let body = community_manage::appeals(state, item, form, Some((form, error)));
     Workspace::new(state, item).frame(state, "appeals", "Appeals", "", &body)
+}
+
+pub(super) fn appeal_return_url(item: &Community, form: &BTreeMap<String, String>) -> String {
+    community_manage::appeal_return_url(item, form)
 }
 
 pub(super) fn schedule_error(

@@ -898,6 +898,14 @@ fn community_management_submission(
         return missing(state);
     };
     let slug = item.slug.clone();
+    let return_url = if section == "appeals" {
+        moderation_workspace::appeal_return_url(item, form)
+    } else {
+        format!(
+            "/moderation/tools?community={}&section={section}",
+            encode(&slug)
+        )
+    };
     let handle = field(form, "handle").trim().to_ascii_lowercase();
     let handle = handle.strip_prefix("u/").unwrap_or(&handle);
     let result =
@@ -907,11 +915,7 @@ fn community_management_submission(
             state.apply(action, form, path)
         };
     match result {
-        Ok(notice) => Response::redirect(&format!(
-            "/moderation/tools?community={}&section={section}&notice={}",
-            encode(&slug),
-            encode(notice)
-        )),
+        Ok(notice) => Response::redirect(&format!("{return_url}&notice={}", encode(notice))),
         Err(error) => {
             let Some(item) = community(state, &slug) else {
                 return missing(state);

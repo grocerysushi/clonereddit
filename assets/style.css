@@ -614,7 +614,6 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-role-help dl { display: grid; gap: .3rem; margin-block: .5rem 0; }
 .mod-role-help dt { font-weight: 700; }
 .mod-role-help dd { margin: 0 0 .4rem; color: var(--quiet); }
-.mod-appeal-tabs { margin-bottom: 10px; }
 .mod-appeal-decision { margin-top: 10px; }
 .mod-appeal-decision summary { list-style: none; }
 .mod-appeal-decision summary::-webkit-details-marker { display: none; }

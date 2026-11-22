@@ -6,7 +6,9 @@ use crate::model::{
 };
 use crate::schedule_time;
 
-use super::super::{account_byline, action_fields, action_form, community_owner, escape, field};
+use super::super::{
+    account_byline, action_fields, action_form, community_owner, escape, field, hidden,
+};
 use super::{empty, tools_url};
 
 type Draft<'a> = Option<(&'a BTreeMap<String, String>, &'a str)>;
@@ -162,6 +164,63 @@ fn role_options(selected: &str) -> String {
         .collect()
 }
 
+const APPEAL_TYPES: &[(&str, &str)] = &[
+    ("all", "All types"),
+    ("post", "Post removal"),
+    ("comment", "Comment removal"),
+    ("ban", "Ban"),
+    ("mute", "Mute"),
+];
+
+#[derive(Clone, Copy)]
+struct AppealFilters {
+    kind: &'static str,
+    resolved: bool,
+}
+
+impl AppealFilters {
+    fn read(query: &BTreeMap<String, String>) -> Self {
+        let requested = field(query, "kind");
+        let kind = APPEAL_TYPES
+            .iter()
+            .find_map(|&(kind, _)| (kind == requested).then_some(kind))
+            .unwrap_or("all");
+        Self {
+            kind,
+            resolved: field(query, "status") == "resolved",
+        }
+    }
+
+    fn matches(self, kind: &str) -> bool {
+        self.kind == "all" || self.kind == kind
+    }
+
+    fn url(self, item: &Community) -> String {
+        let mut url = tools_url(item, "appeals");
+        if self.resolved {
+            url.push_str("&status=resolved");
+        }
+        if self.kind != "all" {
+            write!(url, "&kind={}", self.kind).unwrap();
+        }
+        url
+    }
+
+    fn form(self, item: &Community) -> String {
+        let options: String = APPEAL_TYPES
+            .iter()
+            .map(|&(kind, label)| option(kind, label, self.kind))
+            .collect();
+        let status = if self.resolved { "resolved" } else { "pending" };
+        format!("<form class='mod-queue-sort mod-appeal-filters' action='/moderation/tools' method='get'>{}{}{}<label>Appeal type<select name='kind'>{options}</select></label><button type='submit' class='button light'>Apply filters</button></form>",
+            hidden("community", &item.slug), hidden("section", "appeals"), hidden("status", status))
+    }
+}
+
+pub(super) fn appeal_return_url(item: &Community, form: &BTreeMap<String, String>) -> String {
+    AppealFilters::read(form).url(item)
+}
+
 pub(super) fn appeals(
     state: &State,
     item: &Community,
@@ -172,15 +231,27 @@ pub(super) fn appeals(
         Restriction(&'a Appeal),
         Removal(&'a ContentAppeal),
     }
-    let resolved = field(query, "status") == "resolved";
-    let base = tools_url(item, "appeals");
-    let pending_url = escape(&base);
-    let resolved_url = escape(&format!("{base}&status=resolved"));
+    let filters = AppealFilters::read(query);
+    let resolved = filters.resolved;
+    let pending_url = escape(
+        &AppealFilters {
+            resolved: false,
+            ..filters
+        }
+        .url(item),
+    );
+    let resolved_url = escape(
+        &AppealFilters {
+            resolved: true,
+            ..filters
+        }
+        .url(item),
+    );
     let current = |selected| if selected { " aria-current='page'" } else { "" };
     let mut cases: Vec<_> = state
         .appeals
         .iter()
-        .filter(|case| case.community == item.slug)
+        .filter(|case| case.community == item.slug && filters.matches(&case.kind))
         .map(|case| {
             (
                 case.status,
@@ -192,7 +263,7 @@ pub(super) fn appeals(
             state
                 .content_appeals
                 .iter()
-                .filter(|case| case.community == item.slug)
+                .filter(|case| case.community == item.slug && filters.matches(case.kind.as_str()))
                 .map(|case| {
                     (
                         case.status,
@@ -207,21 +278,22 @@ pub(super) fn appeals(
         .filter(|(status, _, _)| *status == AppealStatus::Pending)
         .count();
     let completed = cases.len() - pending;
-    let mut html = format!("{}<nav class='mod-queue-tabs mod-appeal-tabs' aria-label='Appeal status'><a href='{pending_url}'{}>Pending<span>{pending}</span></a><a href='{resolved_url}'{}>Resolved<span>{completed}</span></a></nav>", alert(draft), current(!resolved), current(resolved));
+    let mut html = format!("{}<div class='mod-queue-controls'><nav class='mod-queue-tabs mod-appeal-tabs' aria-label='Appeal status'><a href='{pending_url}'{}>Pending<span>{pending}</span></a><a href='{resolved_url}'{}>Resolved<span>{completed}</span></a></nav>{}</div>", alert(draft), current(!resolved), current(resolved), filters.form(item));
 
     cases.retain(|(status, _, _)| (*status != AppealStatus::Pending) == resolved);
     cases.sort_by_key(|(_, key, _)| std::cmp::Reverse(*key));
     if cases.is_empty() {
-        let (title, text) = if resolved {
-            (
-                "No resolved appeals",
-                "Decisions on appeals for this community will appear here.",
-            )
+        let title = if resolved {
+            "No resolved appeals"
         } else {
-            (
-                "No appeals to review",
-                "Appeals of content removals, community bans, and mod mail mutes will appear here.",
-            )
+            "No appeals to review"
+        };
+        let text = if filters.kind != "all" {
+            "No appeals match this type and status."
+        } else if resolved {
+            "Decisions on appeals for this community will appear here."
+        } else {
+            "Appeals of content removals, community bans, and mod mail mutes will appear here."
         };
         html.push_str(&empty(title, text, "shield"));
     }
@@ -235,10 +307,10 @@ pub(super) fn appeals(
                         restriction.id == case.restriction_id && restriction.community == item.slug
                     })
                     .map_or("", |restriction| restriction.reason.as_str());
-                render_appeal(&mut html, case, item, &base, reason, draft);
+                render_appeal(&mut html, case, item, filters, reason, draft);
             }
             Case::Removal(case) => {
-                render_content_appeal(&mut html, state, case, item, &base, draft)
+                render_content_appeal(&mut html, state, case, item, filters, draft)
             }
         }
     }
@@ -249,7 +321,7 @@ fn render_appeal(
     html: &mut String,
     case: &Appeal,
     item: &Community,
-    back: &str,
+    filters: AppealFilters,
     reason: &str,
     draft: Draft<'_>,
 ) {
@@ -265,7 +337,7 @@ fn render_appeal(
         write!(html, "<blockquote class='moderation-reply'><strong>Moderator’s restriction reason</strong><p class='mod-record-detail'>{}</p></blockquote>", escape(reason)).unwrap();
     }
     if case.status == AppealStatus::Pending {
-        decision_form(html, item, back, &id, None, draft);
+        decision_form(html, item, filters, &id, None, draft);
     } else {
         render_decision(
             html,
@@ -283,7 +355,7 @@ fn render_content_appeal(
     state: &State,
     case: &ContentAppeal,
     item: &Community,
-    back: &str,
+    filters: AppealFilters,
     draft: Draft<'_>,
 ) {
     let id = case.id.to_string();
@@ -311,7 +383,7 @@ fn render_content_appeal(
                 }
             }
         }
-        decision_form(html, item, back, &id, Some(case.kind), draft);
+        decision_form(html, item, filters, &id, Some(case.kind), draft);
     } else {
         render_decision(
             html,
@@ -327,7 +399,7 @@ fn render_content_appeal(
 fn decision_form(
     html: &mut String,
     item: &Community,
-    back: &str,
+    filters: AppealFilters,
     id: &str,
     content: Option<ContentKind>,
     draft: Draft<'_>,
@@ -349,7 +421,15 @@ fn decision_form(
             "Response to appellant",
         ),
     };
-    let fields = action_fields(action, back, &[("community", &item.slug), ("appeal", id)]);
+    let fields = action_fields(
+        action,
+        &filters.url(item),
+        &[
+            ("community", &item.slug),
+            ("appeal", id),
+            ("kind", filters.kind),
+        ],
+    );
     let case_draft =
         draft.filter(|(form, _)| field(form, "appeal") == id && field(form, "action") == action);
     let (decision, response, opened) = case_draft.map_or(("", "", ""), |(form, _)| {

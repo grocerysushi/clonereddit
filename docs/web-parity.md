@@ -261,6 +261,8 @@ Authors can appeal post and comment removals from their private removal notifica
 
 Desktop and mobile Chromium checks covered notification-led appeals, approval and restoration, denial with surviving replies, quiet moderation notices, and decisions after restart. Server checks exercised migration of active removals and restriction appeals, community and author scope, and rejection of duplicate requests and stale decisions.
 
+The Appeals queue can filter post removals, comment removals, bans, and mutes in both Pending and Resolved. Desktop and mobile Chromium checks verified that the selected type scopes the counts and stays selected when switching status, saving a decision, or correcting a validation error.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
