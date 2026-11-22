@@ -126,6 +126,20 @@ fn run() -> io::Result<()> {
                         include_bytes!("../assets/plaza.jpg").as_slice(),
                     )
                 }
+                "/chat-live.js" => {
+                    return Response::text(
+                        200,
+                        "text/javascript; charset=utf-8",
+                        include_bytes!("../assets/chat-live.js").as_slice(),
+                    )
+                }
+                "/chat-live.wasm" => {
+                    return Response::text(
+                        200,
+                        "application/wasm",
+                        include_bytes!("../assets/chat-live.wasm").as_slice(),
+                    )
+                }
                 _ => {}
             }
         }
@@ -153,8 +167,12 @@ struct App {
 
 impl App {
     fn route(&mut self, request: Request) -> Response {
-        self.run_maintenance();
         let token = request.cookie.as_deref().and_then(auth::session_token);
+        if request.method == "GET" && request.path == "/messages/live" {
+            let viewer = token.and_then(|token| self.auth.username(token));
+            return view::live_messages(&self.state, viewer, &request.query);
+        }
+        self.run_maintenance();
         let username = token.and_then(|token| self.auth.username(token));
         self.state.activate_profile(username);
         view::route(

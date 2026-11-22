@@ -93,6 +93,7 @@ pub struct Response {
     media_length: Option<usize>,
     body_slice: Option<Range<usize>>,
     session_cookie: Option<String>,
+    chat_client: bool,
 }
 
 impl Response {
@@ -127,7 +128,13 @@ impl Response {
             media_length: None,
             body_slice: None,
             session_cookie: None,
+            chat_client: false,
         }
+    }
+
+    pub fn with_chat_client(mut self) -> Self {
+        self.chat_client = true;
+        self
     }
 
     pub fn with_session_cookie(mut self, token: Option<&str>) -> Self {
@@ -175,6 +182,7 @@ impl Response {
             206 => "Partial Content",
             303 => "See Other",
             400 => "Bad Request",
+            401 => "Unauthorized",
             403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
@@ -193,11 +201,16 @@ impl Response {
             Some(selection) => &self.body[selection.clone()],
             None => self.body.as_slice(),
         };
+        let chat_policy = if self.chat_client {
+            "; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'"
+        } else {
+            ""
+        };
         let mut headers = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
              Connection: close\r\nCache-Control: no-store\r\n\
              X-Content-Type-Options: nosniff\r\nReferrer-Policy: same-origin\r\n\
-             Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'\r\n",
+             Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'{chat_policy}\r\n",
             self.status,
             reason,
             self.content_type,

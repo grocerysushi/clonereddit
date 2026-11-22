@@ -14,6 +14,13 @@ Open [127.0.0.1:4173](http://127.0.0.1:4173/) in your browser. If the port is oc
 
 The server stores changes in `commonline.state` and credentials in `commonline.state.accounts` in the working directory. Set `COMMONLINE_STATE` to another file path for a separate demo and the server will append `.accounts` to it. Choose an unused path to start with the original sample data. Run one server per state path.
 
+The browser chat controller is written in Rust and distributed as a WebAssembly asset. A small browser binding handles fetch requests, timers, and DOM insertion. After editing the controller, rebuild the asset from the project directory.
+
+```sh
+rustup target add wasm32-unknown-unknown
+rustc --target wasm32-unknown-unknown --edition 2021 --crate-type cdylib -C opt-level=z -C panic=abort -C strip=symbols -o assets/chat-live.wasm client/chat_live.rs
+```
+
 ## Accounts and recovery
 
 Choose **Create account** and save the one-time recovery code. From **Your profile → Security**, add a recovery email, enter the verification code from your inbox, or change your password. Your current verified address can still receive reset codes while a replacement address is pending. Verification and emailed reset codes expire after 15 minutes and work once.
@@ -31,6 +38,8 @@ Open **Your profile** to sign out or edit your public profile. Guests can see yo
 The **Messages** and **Notifications** buttons in the header show unread counts. In **Messages**, choose a registered recipient or open **Message** from their profile. An existing conversation opens directly. For a new conversation, send a chat request with an opening message. The recipient can read it in **Messages → Requests**, then accept to open the conversation or decline to discard the request. Declining prevents repeat requests from that sender. The recipient can still initiate a request later. For a local two-account check, use two separate browser profiles or one regular window and one private window.
 
 In **Account Settings → Chat requests**, choose **Anyone with an account**, **Accounts with verified email**, or **Nobody**. By default, anyone with an account can send a request. Changes apply to new requests. Existing conversations and pending requests remain available according to their existing access and block settings.
+
+Open a conversation in **Messages** to receive new messages automatically. Incoming messages leave the composer and its draft in place. The transcript follows new messages when you are at the bottom, and you can mark the conversation read when you are ready.
 
 Open **Your profile → Account settings** or **Notifications → Settings** to choose which new in-app alerts you receive for replies, direct messages, and moderation updates. All three are on by default. Changing a preference applies to future alerts. Messages still arrive in your inbox, and private moderation notices and reasons remain available under **Notifications → Moderation updates**.
 
@@ -90,7 +99,7 @@ The website target is **99 of 100 accepted workflows** on desktop and mobile web
 | Discovery and feeds | For You, Following, Popular, fictional News, Explore, All discussions, community and custom feeds, Recent, site-wide and community search, Best/Hot/New/Top | Saved searches, richer ranking and filters |
 | Posting and discussion | Title-only, text, link, image gallery and video posts, polls, cross-community reposts, post tags, one local text/link draft, post and comment editing and deletion, threaded replies, votes, save and hide | Richer editing and media transcoding |
 | Creator tools | Dashboard, per-post vote and reply totals, community trends, and publishing links | Impression counts, reach, and analytics over time |
-| Identity and communication | Account creation and deletion, verified recovery email, emailed password resets, one-time recovery codes, password changes, authenticator-app two-factor sign-in, active sessions with individual and bulk sign-out, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications with per-category preferences, chat requests with sender permissions and recipient approval, private messages, and mod mail | Live chat updates |
+| Identity and communication | Account creation and deletion, verified recovery email, emailed password resets, one-time recovery codes, password changes, authenticator-app two-factor sign-in, active sessions with individual and bulk sign-out, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications with per-category preferences, chat requests with sender permissions and recipient approval, private messages with live conversation updates, and mod mail | Profile following and mention alerts |
 | Community operations | Guided creation, topics and visibility, approved-member access, mature labels, artwork uploads and previews, authenticated owner settings and pinning, scoped moderator workspace and roles, post and comment removal and restoration with author notices, phrase-based AutoMod, community bans and mod mail mutes, restriction appeals and decisions, regional reports and review status, saved responses, activity log, and scheduled posts and events | Recurring schedules and additional AutoMod conditions |
 
 ### Original core workflows

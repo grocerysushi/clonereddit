@@ -209,6 +209,12 @@ Workflow **072** is implemented. Account Settings controls who can send a new ch
 
 Independent Chromium profiles at 1440 and 390 CSS pixels changed request permissions, rejected new requests under **Nobody**, and exercised the verified-email policy through a local outbox. A pending request stayed private and survived a restart. Acceptance opened its conversation with the original note, declining stopped repeat requests, and blocked accounts could not send requests. Existing and accepted conversations remained accessible after restart.
 
+## Live chat update
+
+Workflow **071** is implemented. Established message conversations fetch new messages automatically and add them in order. Receiving a message keeps the composer draft and focus in place. This brings the implementation count to **70 implemented, 16 partial, and 14 missing**.
+
+Independent Chromium profiles at 1440 and 390 CSS pixels exchanged live messages without a page reload. Draft text and selection survived receipt, and a scrolled-back transcript stayed in place. The browser caught up once per message after an interrupted connection. An access check confirmed the signed-in viewer could poll only their own conversation and that revoking the session stopped updates. A separate server check verified ordered catch-up after restart.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

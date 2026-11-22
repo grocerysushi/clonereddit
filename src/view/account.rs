@@ -10,6 +10,9 @@ use crate::schedule_time::{display, to_local};
 
 #[path = "account_chat.rs"]
 mod chat;
+#[path = "account_live.rs"]
+mod live;
+pub(crate) use live::live_messages;
 
 const INBOX: &str = "/messages";
 const NOTIFICATIONS: &str = "/notifications";
@@ -161,7 +164,7 @@ pub(super) fn inbox_draft(
             None
         };
     let navigation = conversations(peers, selected);
-    let thread = selected.map_or_else(String::new, |peer| conversation(state, peer));
+    let thread = selected.map_or_else(String::new, |peer| live::conversation(state, peer));
     let compose = chat::compose(state, &contacts, selected, draft);
     let tabs = chat::tabs(state, false);
     let alert = if error.is_empty() {
@@ -231,55 +234,6 @@ fn conversations(peers: BTreeMap<&str, Conversation>, selected: Option<&str>) ->
         html.push_str("</ul>");
     }
     html.push_str("</nav>");
-    html
-}
-
-fn conversation(state: &State, peer: &str) -> String {
-    let username = state.username.as_str();
-    let mut messages: Vec<_> = state
-        .messages
-        .iter()
-        .filter(|message| other_participant(message, username) == Some(peer))
-        .collect();
-    messages.sort_by_key(|message| (message.at, message.id));
-    let read = if messages
-        .iter()
-        .any(|message| message.to == username && !message.read)
-    {
-        action_form(
-            "read-conversation",
-            &inbox_url(peer),
-            &[("peer", peer)],
-            "Mark conversation as read",
-            "check",
-            "button light account-read-form",
-        )
-    } else {
-        String::new()
-    };
-    let mut html = format!(
-        "<section class='account-conversation'><header><h2>u/{}</h2>{read}</header>",
-        escape(peer)
-    );
-    if !messages.is_empty() {
-        html.push_str("<ul class='account-message-list'>");
-        for message in messages {
-            let (style, sender) = if message.from == username {
-                (" account-message-own", "You".to_owned())
-            } else {
-                ("", format!("u/{}", escape(&message.from)))
-            };
-            write!(
-                html,
-                "<li class='account-message{style}'><div class='account-message-meta'><strong>{sender}</strong>{}</div><p class='account-message-body'>{}</p></li>",
-                time(message.at),
-                escape(&message.body)
-            )
-            .unwrap();
-        }
-        html.push_str("</ul>");
-    }
-    html.push_str("</section>");
     html
 }
 

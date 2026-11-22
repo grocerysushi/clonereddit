@@ -16,6 +16,8 @@ mod scheduled;
 mod search;
 mod session;
 
+pub(crate) use account::live_messages;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
@@ -493,11 +495,8 @@ pub fn route(
         }
         "/messages" => {
             let recipients = auth.usernames().map(str::to_owned).collect::<Vec<_>>();
-            (
-                "Messages",
-                "messages",
-                account::inbox(state, query, &recipients),
-            )
+            let content = account::inbox(state, query, &recipients);
+            return inbox_response(state, query, &content, notice);
         }
         "/notifications" => (
             "Notifications",
@@ -605,7 +604,22 @@ fn message_error(
     let recipients = auth.usernames().map(str::to_owned).collect::<Vec<_>>();
     let query = BTreeMap::from([("peer".into(), field(form, "recipient").to_owned())]);
     let content = account::inbox_draft(state, &query, &recipients, field(form, "body"), error);
-    Response::html(layout(state, "messages", "Messages", &content, "", ""))
+    inbox_response(state, &query, &content, "")
+}
+
+fn inbox_response(
+    state: &State,
+    query: &BTreeMap<String, String>,
+    content: &str,
+    notice: &str,
+) -> Response {
+    let response = Response::html(layout(state, "messages", "Messages", content, "", notice));
+    let peer = field(query, "peer").trim().to_ascii_lowercase();
+    if state.has_chat_conversation(&peer) {
+        response.with_chat_client()
+    } else {
+        response
+    }
 }
 
 fn public_profile(

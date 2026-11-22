@@ -100,6 +100,7 @@ h1, h2, p { margin: 0; overflow-wrap: anywhere; }
 .account-conversations li a:hover, .account-conversations li a[aria-current] { background: var(--light-lime); }
 .account-inbox-content { min-width: 0; }
 .account-message-list { margin-bottom: 18px; }
+[data-live-messages] { max-height: clamp(155px, 52vh, 33rem); overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
 .account-message { width: fit-content; max-width: min(94%, 600px); padding: .65rem .85rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
 .account-message-own { justify-self: end; background: var(--light-lime); border-color: #d1deb6; }
 .account-message-body { white-space: pre-wrap; }
