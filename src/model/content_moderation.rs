@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use super::{
-    bounded, canonical_u64, checked_handle, decode, encode, number, required, unix_seconds, value,
-    CommunityRule, ModPermission, Post, State, COMMUNITY_RULE_DESCRIPTION_MAX,
+    bounded, canonical_u64, checked_handle, decode, encode, next_id, number, required,
+    unix_seconds, value, CommunityRule, ModPermission, Post, State, COMMUNITY_RULE_DESCRIPTION_MAX,
     COMMUNITY_RULE_TITLE_MAX,
 };
 
@@ -41,6 +41,7 @@ impl ContentKind {
 
 #[derive(Clone)]
 pub struct ContentRemoval {
+    pub episode: u64,
     pub kind: ContentKind,
     pub id: u64,
     pub post_id: u64,
@@ -51,6 +52,24 @@ pub struct ContentRemoval {
     pub moderator: String,
     pub removed_at: u64,
     pub automated: bool,
+}
+
+impl ContentRemoval {
+    pub fn reason_summary(&self) -> String {
+        let Some(rule) = &self.rule else {
+            return self.reason.clone();
+        };
+        let mut reason = format!("Community rule: {}", rule.title);
+        if !rule.description.is_empty() {
+            reason.push('\n');
+            reason.push_str(&rule.description);
+        }
+        if !self.note.is_empty() {
+            reason.push_str("\n\nNote from the moderators: ");
+            reason.push_str(&self.note);
+        }
+        reason
+    }
 }
 
 impl State {
@@ -126,17 +145,12 @@ impl State {
         let label = kind.as_str();
         if restore {
             let index = existing.ok_or("This post or comment is already visible.")?;
-            self.content_removals.remove(index);
-            let context = if kind == ContentKind::Comment && self.is_post_removed(post_id) {
-                " The discussion is still removed."
-            } else {
-                ""
-            };
+            let removal = self.restore_content_removal(index)?;
+            self.resolve_manually_restored_content_appeal(removal.episode);
+            let context = self.restoration_context(&removal);
             let notice =
                 format!("Moderators restored your {label} #{id} in c/{community}.{context}");
             self.push_moderation_notification(&author, notice)?;
-            let log = format!("{} #{id} restored by u/{}", kind.label(), self.username);
-            self.record_moderation_action(&community, &log)?;
             return Ok("Content restored.");
         }
         if existing.is_some() {
@@ -161,8 +175,10 @@ impl State {
             let note = bounded(form, "reason", "Note to the author", REASON_LIMIT)?;
             (selected.title.clone(), Some(selected.clone()), note.into())
         };
+        let episode = next_id(&mut self.next_removal_episode)?;
         self.record_content_removal(
             ContentRemoval {
+                episode,
                 kind,
                 id,
                 post_id,
@@ -195,8 +211,10 @@ impl State {
             .content_moderation_target(kind, id, community)
             .ok_or("This post or comment is unavailable in this community.")?;
         let author = author.to_owned();
+        let episode = next_id(&mut self.next_removal_episode)?;
         self.record_content_removal(
             ContentRemoval {
+                episode,
                 kind,
                 id,
                 post_id,
@@ -224,26 +242,13 @@ impl State {
         } else {
             "Moderators"
         };
-        let mut notice = format!(
-            "{source} removed your {} #{} in c/{}.\n\n",
+        let notice = format!(
+            "{source} removed your {} #{} in c/{}.\n\n{}",
             removal.kind.as_str(),
             removal.id,
             removal.community,
+            removal.reason_summary(),
         );
-        if let Some(rule) = &removal.rule {
-            notice.push_str("Community rule: ");
-            notice.push_str(&rule.title);
-            if !rule.description.is_empty() {
-                notice.push('\n');
-                notice.push_str(&rule.description);
-            }
-            if !removal.note.is_empty() {
-                notice.push_str("\n\nNote from the moderators: ");
-                notice.push_str(&removal.note);
-            }
-        } else {
-            notice.push_str(&removal.reason);
-        }
         let actor = match automod_rule_name {
             Some(rule_name) => format!("AutoMod ({rule_name})"),
             None => format!("u/{}", removal.moderator),
@@ -254,10 +259,33 @@ impl State {
             removal.id
         );
         self.clear_automod_flag(removal.kind, removal.id);
-        self.push_moderation_notification(author, notice)?;
+        self.push_removal_notification(author, notice, removal.episode)?;
         self.record_moderation_action(&removal.community, &log)?;
         self.content_removals.push(removal);
         Ok(())
+    }
+
+    pub(super) fn restore_content_removal(
+        &mut self,
+        index: usize,
+    ) -> Result<ContentRemoval, String> {
+        let removal = self.content_removals.remove(index);
+        let log = format!(
+            "{} #{} restored by u/{}",
+            removal.kind.label(),
+            removal.id,
+            self.username
+        );
+        self.record_moderation_action(&removal.community, &log)?;
+        Ok(removal)
+    }
+
+    pub(super) fn restoration_context(&self, removal: &ContentRemoval) -> &'static str {
+        if removal.kind == ContentKind::Comment && self.is_post_removed(removal.post_id) {
+            " The discussion is still removed."
+        } else {
+            ""
+        }
     }
 
     pub(super) fn read_content_removal(&mut self, fields: &[&str]) -> Option<()> {
@@ -272,6 +300,21 @@ impl State {
         let (post_id, _) = self.content_moderation_target(kind, id, &community)?;
         let reason = decode(reason)?;
         let moderator = decode(moderator)?;
+        let (episode, source) = match source {
+            ["episode", id, source @ ..] => {
+                let episode = canonical_u64(id).filter(|&id| id != 0)?;
+                if self
+                    .content_removals
+                    .iter()
+                    .any(|entry| entry.episode == episode)
+                {
+                    return None;
+                }
+                self.next_removal_episode = self.next_removal_episode.max(episode.checked_add(1)?);
+                (episode, source)
+            }
+            _ => (next_id(&mut self.next_removal_episode).ok()?, source),
+        };
         let (automated, rule, note) = match source {
             [] if checked_handle(&moderator).ok()? == moderator => (false, None, String::new()),
             ["automod"] if moderator.is_empty() => (true, None, String::new()),
@@ -301,6 +344,7 @@ impl State {
             return None;
         }
         self.content_removals.push(ContentRemoval {
+            episode,
             kind,
             id,
             post_id,
@@ -319,13 +363,14 @@ impl State {
         for item in &self.content_removals {
             write!(
                 file,
-                "content-removal\t{}\t{}\t{}\t{}\t{}\t{}",
+                "content-removal\t{}\t{}\t{}\t{}\t{}\t{}\tepisode\t{}",
                 item.kind.as_str(),
                 item.id,
                 encode(&item.community),
                 encode(&item.reason),
                 encode(&item.moderator),
                 item.removed_at,
+                item.episode,
             )?;
             if item.automated {
                 write!(file, "\tautomod")?;

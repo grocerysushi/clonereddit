@@ -255,6 +255,12 @@ Moderators can also select an active community rule when removing a post or comm
 
 Desktop and mobile Chromium checks covered a rule-based post removal with a note, a comment removal without one, and preservation of the original reason after editing, deleting, and restarting. Server checks covered foreign and deleted rule rejection, legacy and AutoMod notices, private delivery, and restoration.
 
+## Content removal appeals update
+
+Authors can appeal post and comment removals from their private removal notification or from **Your appeals**. **Mod Tools → Appeals** shows those requests alongside ban and mute appeals. Approval restores the specific removal under review, while denial keeps it in effect. Both decisions require an explanation the author can read privately. Older notifications link to the author’s active removals.
+
+Desktop and mobile Chromium checks covered notification-led appeals, approval and restoration, denial with surviving replies, quiet moderation notices, and decisions after restart. Server checks exercised migration of active removals and restriction appeals, community and author scope, and rejection of duplicate requests and stale decisions.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

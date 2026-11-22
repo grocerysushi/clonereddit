@@ -13,6 +13,8 @@ pub enum AppealStatus {
     Denied,
     Lifted,
     Expired,
+    Restored,
+    Unavailable,
 }
 
 impl AppealStatus {
@@ -23,26 +25,32 @@ impl AppealStatus {
             Self::Denied => "Denied",
             Self::Lifted => "Restriction lifted",
             Self::Expired => "Restriction expired",
+            Self::Restored => "Content restored",
+            Self::Unavailable => "Content unavailable",
         }
     }
 
-    fn as_record(self) -> &'static str {
+    pub(super) fn as_record(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Approved => "approved",
             Self::Denied => "denied",
             Self::Lifted => "lifted",
             Self::Expired => "expired",
+            Self::Restored => "restored",
+            Self::Unavailable => "unavailable",
         }
     }
 
-    fn from_record(status: &str) -> Option<Self> {
+    pub(super) fn from_record(status: &str) -> Option<Self> {
         match status {
             "pending" => Some(Self::Pending),
             "approved" => Some(Self::Approved),
             "denied" => Some(Self::Denied),
             "lifted" => Some(Self::Lifted),
             "expired" => Some(Self::Expired),
+            "restored" => Some(Self::Restored),
+            "unavailable" => Some(Self::Unavailable),
             _ => None,
         }
     }

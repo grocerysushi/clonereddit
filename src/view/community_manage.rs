@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::model::{Appeal, AppealStatus, Community, ModeratorRole, State};
+use crate::model::{
+    Appeal, AppealStatus, Community, ContentAppeal, ContentKind, ModeratorRole, State,
+};
 use crate::schedule_time;
 
 use super::super::{account_byline, action_fields, action_form, community_owner, escape, field};
@@ -166,6 +168,10 @@ pub(super) fn appeals(
     query: &BTreeMap<String, String>,
     draft: Draft<'_>,
 ) -> String {
+    enum Case<'a> {
+        Restriction(&'a Appeal),
+        Removal(&'a ContentAppeal),
+    }
     let resolved = field(query, "status") == "resolved";
     let base = tools_url(item, "appeals");
     let pending_url = escape(&base);
@@ -175,18 +181,36 @@ pub(super) fn appeals(
         .appeals
         .iter()
         .filter(|case| case.community == item.slug)
+        .map(|case| {
+            (
+                case.status,
+                (case.decided_at.unwrap_or(case.created_at), case.id),
+                Case::Restriction(case),
+            )
+        })
+        .chain(
+            state
+                .content_appeals
+                .iter()
+                .filter(|case| case.community == item.slug)
+                .map(|case| {
+                    (
+                        case.status,
+                        (case.decided_at.unwrap_or(case.created_at), case.id),
+                        Case::Removal(case),
+                    )
+                }),
+        )
         .collect();
     let pending = cases
         .iter()
-        .filter(|case| case.status == AppealStatus::Pending)
+        .filter(|(status, _, _)| *status == AppealStatus::Pending)
         .count();
     let completed = cases.len() - pending;
     let mut html = format!("{}<nav class='mod-queue-tabs mod-appeal-tabs' aria-label='Appeal status'><a href='{pending_url}'{}>Pending<span>{pending}</span></a><a href='{resolved_url}'{}>Resolved<span>{completed}</span></a></nav>", alert(draft), current(!resolved), current(resolved));
 
-    cases.retain(|case| (case.status != AppealStatus::Pending) == resolved);
-    cases.sort_by_key(|case| {
-        std::cmp::Reverse((case.decided_at.unwrap_or(case.created_at), case.id))
-    });
+    cases.retain(|(status, _, _)| (*status != AppealStatus::Pending) == resolved);
+    cases.sort_by_key(|(_, key, _)| std::cmp::Reverse(*key));
     if cases.is_empty() {
         let (title, text) = if resolved {
             (
@@ -196,20 +220,27 @@ pub(super) fn appeals(
         } else {
             (
                 "No appeals to review",
-                "Appeals of community bans and mod mail mutes will appear here.",
+                "Appeals of content removals, community bans, and mod mail mutes will appear here.",
             )
         };
         html.push_str(&empty(title, text, "shield"));
     }
-    for case in cases {
-        let reason = state
-            .restrictions
-            .iter()
-            .find(|restriction| {
-                restriction.id == case.restriction_id && restriction.community == item.slug
-            })
-            .map_or("", |restriction| restriction.reason.as_str());
-        render_appeal(&mut html, case, item, &base, reason, draft);
+    for (_, _, case) in cases {
+        match case {
+            Case::Restriction(case) => {
+                let reason = state
+                    .restrictions
+                    .iter()
+                    .find(|restriction| {
+                        restriction.id == case.restriction_id && restriction.community == item.slug
+                    })
+                    .map_or("", |restriction| restriction.reason.as_str());
+                render_appeal(&mut html, case, item, &base, reason, draft);
+            }
+            Case::Removal(case) => {
+                render_content_appeal(&mut html, state, case, item, &base, draft)
+            }
+        }
     }
     html
 }
@@ -234,30 +265,112 @@ fn render_appeal(
         write!(html, "<blockquote class='moderation-reply'><strong>Moderator’s restriction reason</strong><p class='mod-record-detail'>{}</p></blockquote>", escape(reason)).unwrap();
     }
     if case.status == AppealStatus::Pending {
-        let fields = action_fields(
-            "decide-appeal",
-            back,
-            &[("community", &item.slug), ("appeal", &id)],
-        );
-        let case_draft = draft.filter(|(form, _)| field(form, "appeal") == id);
-        let (decision, response, opened) = case_draft.map_or(("", "", ""), |(form, _)| {
-            (field(form, "decision"), field(form, "response"), " open")
-        });
-        let options = option("", "Choose a decision", decision)
-            + &option("approve", "Approve and lift this restriction", decision)
-            + &option("deny", "Deny appeal", decision);
-        write!(html, "<details class='mod-appeal-decision'{opened}><summary class='button light'>Review appeal</summary><form class='stack-form' action='/action' method='post'>{fields}<label>Decision<select name='decision' required>{options}</select></label><label>Response to appellant<textarea name='response' rows='4' maxlength='4000' required>{}</textarea></label><button class='button dark' type='submit'>Save decision</button></form></details>", escape(response)).unwrap();
+        decision_form(html, item, back, &id, None, draft);
     } else {
-        let reviewer = case
-            .reviewer
-            .as_deref()
-            .map_or_else(String::new, |handle| format!(" by u/{}", escape(handle)));
-        let decided = case
-            .decided_at
-            .map_or_else(String::new, |timestamp| format!(" · {}", time(timestamp)));
-        write!(html, "<blockquote class='moderation-reply'><strong>{}{reviewer}</strong><small class='muted'>{decided}</small><p class='mod-record-detail'>{}</p></blockquote>", case.status.label(), escape(&case.response)).unwrap();
+        render_decision(
+            html,
+            case.status,
+            case.reviewer.as_deref(),
+            case.decided_at,
+            &case.response,
+        );
     }
     html.push_str("</article>");
+}
+
+fn render_content_appeal(
+    html: &mut String,
+    state: &State,
+    case: &ContentAppeal,
+    item: &Community,
+    back: &str,
+    draft: Draft<'_>,
+) {
+    let id = case.id.to_string();
+    let label = case.kind.label();
+    write!(html, "<article class='panel mod-record mod-appeal-record mod-content-appeal' data-appeal-id='{id}'><header><span class='flair'>{}</span><span class='muted'>Appeal #{id}</span></header><h2>{label} removal</h2><p class='muted'>u/{} · {label} #{} · {}</p><p class='mod-record-detail'>{}</p><blockquote class='moderation-reply'><strong>Original removal reason</strong><p class='mod-record-detail'>{}</p></blockquote>", case.status.label(), escape(&case.appellant), case.content_id, time(case.created_at), escape(&case.body), escape(&case.reason)).unwrap();
+    if case.status == AppealStatus::Pending {
+        if let Some(post) = state
+            .posts
+            .iter()
+            .find(|post| post.id == case.post_id && post.community == item.slug)
+        {
+            match case.kind {
+                ContentKind::Post => {
+                    write!(html, "<details class='moderation-reply'><summary>Removed post</summary><p class='mod-record-detail'><strong>{}</strong></p><p class='mod-record-detail'>{}</p></details>", escape(&post.title), escape(&post.body)).unwrap();
+                }
+                ContentKind::Comment => {
+                    if let Some(comment) = state.comments.iter().find(|comment| {
+                        comment.id == case.content_id && comment.post == post.id && !comment.deleted
+                    }) {
+                        write!(html, "<details class='moderation-reply'><summary>Removed comment</summary><p class='mod-record-detail'>{}</p></details>", escape(&comment.body)).unwrap();
+                    }
+                    if state.is_post_removed(post.id) {
+                        html.push_str("<p class='muted'>This comment’s post is also removed.</p>");
+                    }
+                }
+            }
+        }
+        decision_form(html, item, back, &id, Some(case.kind), draft);
+    } else {
+        render_decision(
+            html,
+            case.status,
+            case.reviewer.as_deref(),
+            case.decided_at,
+            &case.response,
+        );
+    }
+    html.push_str("</article>");
+}
+
+fn decision_form(
+    html: &mut String,
+    item: &Community,
+    back: &str,
+    id: &str,
+    content: Option<ContentKind>,
+    draft: Draft<'_>,
+) {
+    let (action, approve, label) = match content {
+        Some(ContentKind::Post) => (
+            "decide-content-appeal",
+            "Approve and restore this post",
+            "Decision reason",
+        ),
+        Some(ContentKind::Comment) => (
+            "decide-content-appeal",
+            "Approve and restore this comment",
+            "Decision reason",
+        ),
+        None => (
+            "decide-appeal",
+            "Approve and lift this restriction",
+            "Response to appellant",
+        ),
+    };
+    let fields = action_fields(action, back, &[("community", &item.slug), ("appeal", id)]);
+    let case_draft =
+        draft.filter(|(form, _)| field(form, "appeal") == id && field(form, "action") == action);
+    let (decision, response, opened) = case_draft.map_or(("", "", ""), |(form, _)| {
+        (field(form, "decision"), field(form, "response"), " open")
+    });
+    let options = option("", "Choose a decision", decision)
+        + &option("approve", approve, decision)
+        + &option("deny", "Deny appeal", decision);
+    write!(html, "<details class='mod-appeal-decision'{opened}><summary class='button light'>Review appeal</summary><form class='stack-form' action='/action' method='post'>{fields}<label>Decision<select name='decision' required>{options}</select></label><label>{label}<textarea name='response' rows='4' maxlength='4000' required>{}</textarea></label><button class='button dark' type='submit'>Save decision</button></form></details>", escape(response)).unwrap();
+}
+
+fn render_decision(
+    html: &mut String,
+    status: AppealStatus,
+    reviewer: Option<&str>,
+    decided: Option<u64>,
+    response: &str,
+) {
+    let reviewer = reviewer.map_or_else(String::new, |handle| format!(" by u/{}", escape(handle)));
+    let decided = decided.map_or_else(String::new, |timestamp| format!(" · {}", time(timestamp)));
+    write!(html, "<blockquote class='moderation-reply'><strong>{}{reviewer}</strong><small class='muted'>{decided}</small><p class='mod-record-detail'>{}</p></blockquote>", status.label(), escape(response)).unwrap();
 }
 
 fn alert(draft: Draft<'_>) -> String {

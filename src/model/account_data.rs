@@ -531,6 +531,15 @@ impl State {
         self.notify(recipient, body, NotificationKind::Moderation)
     }
 
+    pub(super) fn push_removal_notification(
+        &mut self,
+        recipient: &str,
+        body: String,
+        episode: u64,
+    ) -> Result<(), String> {
+        self.notify(recipient, body, NotificationKind::Removal(episode))
+    }
+
     fn notify(
         &mut self,
         recipient: &str,
@@ -546,12 +555,17 @@ impl State {
         {
             return Ok(());
         }
-        let (post, appeal, moderation, silent) = match kind {
-            NotificationKind::Reply(post) if prefs.replies => (Some(post), false, false, false),
-            NotificationKind::Message if prefs.messages => (None, false, false, false),
+        let (post, appeal, moderation, removal, silent) = match kind {
+            NotificationKind::Reply(post) if prefs.replies => {
+                (Some(post), false, false, None, false)
+            }
+            NotificationKind::Message if prefs.messages => (None, false, false, None, false),
             NotificationKind::Reply(_) | NotificationKind::Message => return Ok(()),
-            NotificationKind::Appeal => (None, true, false, !prefs.moderation),
-            NotificationKind::Moderation => (None, false, true, !prefs.moderation),
+            NotificationKind::Appeal => (None, true, false, None, !prefs.moderation),
+            NotificationKind::Moderation => (None, false, true, None, !prefs.moderation),
+            NotificationKind::Removal(episode) => {
+                (None, false, true, Some(episode), !prefs.moderation)
+            }
         };
         let id = next_id(&mut self.next_notification)?;
         self.notifications.push(Notification {
@@ -561,6 +575,7 @@ impl State {
             post,
             appeal,
             moderation,
+            removal,
             silent,
             at: unix_seconds(),
             read: silent,
@@ -574,4 +589,5 @@ enum NotificationKind {
     Message,
     Appeal,
     Moderation,
+    Removal(u64),
 }

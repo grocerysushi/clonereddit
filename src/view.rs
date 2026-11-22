@@ -216,15 +216,22 @@ pub fn route(
                 ),
             };
         }
-        if action == "submit-appeal" {
+        if matches!(action, "submit-appeal" | "submit-content-appeal") {
             return match state.apply(action, &request.form, path) {
                 Ok(notice) => Response::redirect(&format!("/appeals?notice={}", encode(notice))),
                 Err(error) => {
-                    let draft = field(&request.form, "restriction")
-                        .parse()
-                        .ok()
-                        .map(|id| (id, field(&request.form, "body")));
-                    let content = appeals::render(state, draft, &error);
+                    let draft = |field_name| {
+                        field(&request.form, field_name)
+                            .parse()
+                            .ok()
+                            .map(|id| (id, field(&request.form, "body")))
+                    };
+                    let (restriction, removal) = if action == "submit-content-appeal" {
+                        (None, draft("removal"))
+                    } else {
+                        (draft("restriction"), None)
+                    };
+                    let content = appeals::render(state, restriction, removal, &error);
                     Response::html(layout(state, "appeals", "Your appeals", &content, "", ""))
                 }
             };
@@ -234,6 +241,7 @@ pub fn route(
             "set-moderator-role"
                 | "remove-moderator-role"
                 | "decide-appeal"
+                | "decide-content-appeal"
                 | "approve-member"
                 | "revoke-approved-member"
         ) {
@@ -543,7 +551,11 @@ pub fn route(
             "notifications",
             account::notifications(state, field(query, "view") == "moderation"),
         ),
-        "/appeals" => ("Your appeals", "appeals", appeals::render(state, None, "")),
+        "/appeals" => (
+            "Your appeals",
+            "appeals",
+            appeals::render(state, None, None, ""),
+        ),
         "/policy" => ("Moderation policy", "policy", policy()),
         "/reports" => {
             let community = field(query, "view") == "community";
@@ -875,7 +887,7 @@ fn community_management_submission(
 ) -> Response {
     let slug = field(form, "community");
     let (section, title) = match action {
-        "decide-appeal" => ("appeals", "Community appeals"),
+        "decide-appeal" | "decide-content-appeal" => ("appeals", "Community appeals"),
         "approve-member" | "revoke-approved-member" => ("approved-members", "Approved members"),
         _ => ("roles", "Moderator roles"),
     };

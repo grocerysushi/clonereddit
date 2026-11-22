@@ -292,10 +292,22 @@ pub(super) fn notifications(state: &State, moderation_only: bool) -> String {
             } else {
                 "<span class='account-unread'>Unread</span>"
             };
-            let link = if item.appeal {
+            let link = if let Some(episode) = item.removal {
+                removal_notification_link(state, episode)
+            } else if item.appeal {
                 "<a class='subtle-link' href='/appeals'>View your appeals</a>".to_owned()
             } else if item.moderation {
-                String::new()
+                if (item.body.starts_with("Moderators removed your ")
+                    || item.body.starts_with("AutoMod removed your "))
+                    && state
+                        .content_removals
+                        .iter()
+                        .any(|removal| state.can_appeal_removal(removal))
+                {
+                    "<a class='subtle-link' href='/appeals#appealable-removals'>View removals you can appeal</a>".to_owned()
+                } else {
+                    String::new()
+                }
             } else if let Some(id) = item.post {
                 format!("<a class='subtle-link' href='/thread?id={id}'>View discussion</a>")
             } else {
@@ -318,6 +330,26 @@ pub(super) fn notifications(state: &State, moderation_only: bool) -> String {
     }
     html.push_str("</section>");
     html
+}
+
+fn removal_notification_link(state: &State, episode: u64) -> String {
+    if let Some(appeal) = state
+        .content_appeals
+        .iter()
+        .find(|appeal| appeal.removal == episode && appeal.appellant == state.username)
+    {
+        format!(
+            "<a class='subtle-link' href='/appeals#removal-appeal-{}'>View your appeal</a>",
+            appeal.id
+        )
+    } else if state
+        .removal_for_author(episode)
+        .is_some_and(|removal| state.can_appeal_removal(removal))
+    {
+        format!("<a class='subtle-link' href='/appeals#removal-{episode}'>Appeal removal</a>")
+    } else {
+        String::new()
+    }
 }
 
 fn time(at: u64) -> String {

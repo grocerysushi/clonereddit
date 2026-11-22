@@ -26,6 +26,9 @@ mod community_rules;
 pub use community_rules::{
     CommunityRule, COMMUNITY_RULE_DESCRIPTION_MAX, COMMUNITY_RULE_TITLE_MAX,
 };
+#[path = "model/content_appeals.rs"]
+mod content_appeals;
+pub use content_appeals::ContentAppeal;
 #[path = "model/content_moderation.rs"]
 mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
@@ -182,6 +185,7 @@ pub struct Notification {
     pub post: Option<u64>,
     pub appeal: bool,
     pub moderation: bool,
+    pub removal: Option<u64>,
     pub silent: bool,
 }
 
@@ -345,6 +349,7 @@ pub struct State {
     pub scheduled: Vec<ScheduledItem>,
     pub restrictions: Vec<CommunityRestriction>,
     pub appeals: Vec<Appeal>,
+    pub content_appeals: Vec<ContentAppeal>,
     pub custom_feeds: Vec<CustomFeed>,
     pub recent: Vec<String>,
     pub history: Vec<u64>,
@@ -380,6 +385,7 @@ pub struct State {
     next_scheduled: u64,
     next_restriction: u64,
     next_appeal: u64,
+    next_removal_episode: u64,
     next_feed: u64,
     next_social_link: u64,
     pending_artwork: VecDeque<SetupArtwork>,
@@ -533,6 +539,7 @@ impl State {
             scheduled: Vec::new(),
             restrictions: Vec::new(),
             appeals: Vec::new(),
+            content_appeals: Vec::new(),
             custom_feeds: Vec::new(),
             recent: Vec::new(),
             history: Vec::new(),
@@ -568,6 +575,7 @@ impl State {
             next_scheduled: 1,
             next_restriction: 1,
             next_appeal: 1,
+            next_removal_episode: 1,
             next_feed: 1,
             next_social_link: 1,
             pending_artwork: VecDeque::new(),
@@ -1007,6 +1015,8 @@ impl State {
             "read-notifications" => self.read_notifications(),
             "submit-appeal" => self.submit_appeal(form),
             "decide-appeal" => self.decide_appeal(form),
+            "submit-content-appeal" => self.submit_content_appeal(form),
+            "decide-content-appeal" => self.decide_content_appeal(form),
             "review-report" => self.review_report(form),
             "send-mod-mail" => self.send_mod_mail(form),
             "reply-mod-mail" => self.reply_mod_mail(form),
@@ -2264,6 +2274,7 @@ impl State {
         {
             report.community = Some(post.community.clone());
         }
+        self.resolve_deleted_content_appeals(id);
         self.content_removals
             .retain(|removal| removal.post_id != id);
         self.automod_flags.retain(|flag| flag.post_id != id);
@@ -2580,12 +2591,16 @@ impl State {
                 };
             }
             ["notification", id, recipient, body, at, read, post, destination @ ..] => {
-                let (appeal, moderation, silent) = match destination {
-                    [] => (false, false, false),
-                    ["appeal"] if post.is_empty() => (true, false, false),
-                    ["moderation"] if post.is_empty() => (false, true, false),
-                    ["appeal", "silent"] if post.is_empty() => (true, false, true),
-                    ["moderation", "silent"] if post.is_empty() => (false, true, true),
+                let (appeal, moderation, removal, silent) = match destination {
+                    [] => (false, false, None, false),
+                    ["appeal"] if post.is_empty() => (true, false, None, false),
+                    ["moderation"] if post.is_empty() => (false, true, None, false),
+                    ["appeal", "silent"] if post.is_empty() => (true, false, None, true),
+                    ["moderation", "silent"] if post.is_empty() => (false, true, None, true),
+                    ["removal", episode] | ["removal", episode, "silent"] if post.is_empty() => {
+                        let episode = canonical_u64(episode).filter(|&id| id > 0)?;
+                        (false, true, Some(episode), destination.len() == 3)
+                    }
                     _ => return None,
                 };
                 self.notifications.push(Notification {
@@ -2597,6 +2612,7 @@ impl State {
                     post: optional_number(post)?,
                     appeal,
                     moderation,
+                    removal,
                     silent,
                 })
             }
@@ -2604,6 +2620,11 @@ impl State {
                 self.read_appeal_record(fields)?
             }
             fields @ ["content-removal", ..] => self.read_content_removal(fields)?,
+            ["removal-episode-sequence", next] => {
+                let next = canonical_u64(next).filter(|&id| id > 0)?;
+                self.next_removal_episode = self.next_removal_episode.max(next);
+            }
+            fields @ ["content-appeal", ..] => self.read_content_appeal_record(fields)?,
             fields @ (["automod-sequence", ..] | ["automod-rule", ..] | ["automod-flag", ..]) => {
                 self.read_automod_record(fields)?
             }
@@ -2921,6 +2942,11 @@ impl State {
             }
         }
         self.write_content_removals(file)?;
+        writeln!(
+            file,
+            "removal-episode-sequence\t{}",
+            self.next_removal_episode
+        )?;
         self.write_automod_records(file)?;
         for report in &self.reports {
             report.write_record(file)?;
@@ -2947,7 +2973,9 @@ impl State {
             let post = notification
                 .post
                 .map_or_else(String::new, |id| id.to_string());
-            let destination = if notification.appeal {
+            let destination = if notification.removal.is_some() {
+                "\tremoval"
+            } else if notification.appeal {
                 "\tappeal"
             } else if notification.moderation {
                 "\tmoderation"
@@ -2955,17 +2983,22 @@ impl State {
                 ""
             };
             let delivery = if notification.silent { "\tsilent" } else { "" };
-            writeln!(
+            write!(
                 file,
-                "notification\t{}\t{}\t{}\t{}\t{}\t{post}{destination}{delivery}",
+                "notification\t{}\t{}\t{}\t{}\t{}\t{post}{destination}",
                 notification.id,
                 encode(&notification.recipient),
                 encode(&notification.body),
                 notification.at,
                 notification.read
             )?;
+            if let Some(episode) = notification.removal {
+                write!(file, "\t{episode}")?;
+            }
+            writeln!(file, "{delivery}")?;
         }
         self.write_appeal_records(file)?;
+        self.write_content_appeal_records(file)?;
         for message in &self.mod_mail {
             writeln!(
                 file,

@@ -17,6 +17,12 @@ impl State {
         self.moderator_roles.retain(|entry| entry.handle != handle);
         self.approved_members.retain(|entry| entry.handle != handle);
         self.delete_account_chat_requests(handle);
+        self.content_appeals.retain(|case| case.appellant != handle);
+        for case in &mut self.content_appeals {
+            if case.reviewer.as_deref() == Some(handle) {
+                case.reviewer = Some(DELETED_ACCOUNT.into());
+            }
+        }
 
         for post in &mut self.posts {
             if post.author == handle {
