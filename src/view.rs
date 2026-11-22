@@ -9,6 +9,7 @@ mod discussion;
 mod moderation;
 mod moderation_workspace;
 mod post_composer;
+mod post_flair;
 mod profile;
 mod profile_panel;
 mod publishing;
@@ -245,6 +246,9 @@ pub fn route(
                 | "decide-content-appeal"
                 | "approve-member"
                 | "revoke-approved-member"
+                | "save-post-flair"
+                | "delete-post-flair"
+                | "set-post-flair-policy"
         ) {
             return community_management_submission(state, auth, path, action, &request.form);
         }
@@ -950,6 +954,9 @@ fn community_management_submission(
     let (section, title) = match action {
         "decide-appeal" | "decide-content-appeal" => ("appeals", "Community appeals"),
         "approve-member" | "revoke-approved-member" => ("approved-members", "Approved members"),
+        "save-post-flair" | "delete-post-flair" | "set-post-flair-policy" => {
+            ("post-flair", "Post flair")
+        }
         _ => ("roles", "Moderator roles"),
     };
     let Some(item) = community(state, slug).filter(|item| match section {
@@ -983,6 +990,7 @@ fn community_management_submission(
             };
             let body = match section {
                 "appeals" => moderation_workspace::decision_error(state, item, form, &error),
+                "post-flair" => moderation_workspace::post_flair_error(state, item, form, &error),
                 "approved-members" => moderation_workspace::approved_member_error(
                     state,
                     item,

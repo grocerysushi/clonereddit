@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use super::{
     action_fields, can_view_post, community, community_url, encode, escape, field, icon,
-    is_sensitive, post_composer::drafts_link,
+    is_sensitive, post_composer::drafts_link, post_flair,
 };
 use crate::model::{Post, State};
 
@@ -90,6 +90,14 @@ pub(super) fn editor(
         )
     };
     let destination = community_selector(state, selected, kind == "repost");
+    let custom_flair = (kind != "repost")
+        .then(|| form.map_or(state.profile_flair.as_str(), |data| field(data, "flair")));
+    let flair = post_flair::composer(
+        state,
+        selected,
+        entered("flair_id").trim().parse().ok(),
+        custom_flair,
+    );
     let title = title_field(entered("title"), kind == "repost");
     let body = format!(
         "<label>Body text <small>Optional</small><textarea name='body' rows='5' maxlength='8000' placeholder='Add context'>{}</textarea></label>",
@@ -105,8 +113,8 @@ pub(super) fn editor(
                 " enctype='multipart/form-data'",
                 String::new(),
                 format!(
-                    "{destination}{title}{media}{body}{}",
-                    post_details(state, form)
+                    "{destination}{title}{media}{body}{flair}{}",
+                    post_details(form)
                 ),
             )
         }
@@ -117,9 +125,9 @@ pub(super) fn editor(
             "",
             action_fields("create-poll", &back, &[]),
             format!(
-                "{destination}{title}{body}{}{}",
+                "{destination}{title}{body}{}{flair}{}",
                 poll_fields(form),
-                post_details(state, form)
+                post_details(form)
             ),
         ),
         "repost" => {
@@ -131,7 +139,7 @@ pub(super) fn editor(
                 "/action",
                 "",
                 action_fields("create-repost", &back, &[]),
-                format!("{sources}{destination}{title}{body}"),
+                format!("{sources}{destination}{title}{body}{flair}"),
             )
         }
         _ => return None,
@@ -190,8 +198,7 @@ fn title_field(title: &str, optional: bool) -> String {
     )
 }
 
-fn post_details(state: &State, form: Option<&BTreeMap<String, String>>) -> String {
-    let flair = form.map_or(state.profile_flair.as_str(), |data| field(data, "flair"));
+fn post_details(form: Option<&BTreeMap<String, String>>) -> String {
     let tags = [
         ("sensitive", "NSFW (18+)"),
         ("spoiler", "Spoiler"),
@@ -219,8 +226,7 @@ fn post_details(state: &State, form: Option<&BTreeMap<String, String>>) -> Strin
         })
         .collect();
     format!(
-        "<label>Post flair <small>Optional</small><input name='flair' maxlength='32' value='{}'></label><details class='composer-tags'{open}><summary>{} Add tags</summary><div class='composer-tag-options'>{inputs}</div></details>",
-        escape(flair),
+        "<details class='composer-tags'{open}><summary>{} Add tags</summary><div class='composer-tag-options'>{inputs}</div></details>",
         icon("tag")
     )
 }

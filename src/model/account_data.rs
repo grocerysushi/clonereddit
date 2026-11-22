@@ -207,7 +207,7 @@ impl ProfileData {
             writeln!(file, "draft-sequence\t{}", self.next_draft)?;
         }
         for draft in &self.drafts {
-            writeln!(
+            write!(
                 file,
                 "draft\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 draft.id,
@@ -220,6 +220,10 @@ impl ProfileData {
                 draft.spoiler,
                 draft.brand_affiliate
             )?;
+            if let Some(flair_id) = draft.flair_id {
+                write!(file, "\tflair\t{flair_id}")?;
+            }
+            writeln!(file)?;
         }
         for feed in &self.custom_feeds {
             write!(

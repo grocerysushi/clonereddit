@@ -2,7 +2,9 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{action_fields, action_form, content_tool_url, encode, escape, field, icon};
+use super::{
+    action_fields, action_form, content_tool_url, encode, escape, field, icon, post_flair,
+};
 use crate::model::{Community, ContentKind, ModPermission, ScheduledItem, State};
 use crate::schedule_time::{display, to_local};
 
@@ -155,6 +157,7 @@ fn schedule_row(
         .post_id
         .filter(|id| entry.status == "published" && state.posts.iter().any(|post| post.id == *id));
     let removal = published.and_then(|id| state.content_removal(ContentKind::Post, id));
+    let needs_flair = upcoming && state.scheduled_flair_blocked(entry);
     let status = match (entry.status.as_str(), removal) {
         ("published", Some(removal)) if removal.automated => {
             "<span class='flair scheduled-status'>Removed by AutoMod</span>"
@@ -162,12 +165,18 @@ fn schedule_row(
         ("published", Some(_)) => "<span class='flair scheduled-status'>Removed</span>",
         ("published", None) => "<span class='flair scheduled-status'>Published</span>",
         ("canceled", _) => "<span class='flair scheduled-status'>Canceled</span>",
+        _ if needs_flair => "<span class='flair scheduled-status'>Needs post flair</span>",
         _ => "",
     };
-    let publish_label = if upcoming {
+    let publish_label = if upcoming && !needs_flair {
         "Publishes"
     } else {
         "Scheduled for"
+    };
+    let flair_notice = if needs_flair {
+        "<p class='muted scheduled-flair-notice'>Edit this schedule and choose a current post flair to publish it.</p>"
+    } else {
+        ""
     };
     let mut times = time_row(publish_label, entry.publish_at);
     if let Some(start) = entry.event_start {
@@ -199,7 +208,7 @@ fn schedule_row(
         String::new()
     };
     format!(
-        "<li class='scheduled-row'><header class='scheduled-row-heading'><h3>{}</h3><div class='scheduled-labels'><span class='flair scheduled-kind'>{kind}</span>{status}</div></header><dl class='scheduled-meta'>{times}</dl>{actions}</li>",
+        "<li class='scheduled-row'><header class='scheduled-row-heading'><h3>{}</h3><div class='scheduled-labels'><span class='flair scheduled-kind'>{kind}</span>{status}</div></header><dl class='scheduled-meta'>{times}</dl>{flair_notice}{actions}</li>",
         escape(&entry.title)
     )
 }
@@ -219,6 +228,7 @@ struct Editor<'a> {
     body: &'a str,
     url: &'a str,
     flair: &'a str,
+    flair_id: Option<u64>,
     zone: &'a str,
     publish_at: String,
     event_start: String,
@@ -237,6 +247,7 @@ impl<'a> Editor<'a> {
             body: "",
             url: "",
             flair: "",
+            flair_id: None,
             zone: CHICAGO,
             publish_at: String::new(),
             event_start: String::new(),
@@ -257,6 +268,7 @@ impl<'a> Editor<'a> {
             body: &entry.body,
             url: &entry.url,
             flair: &entry.flair,
+            flair_id: entry.flair_id,
             zone,
             publish_at: convert(entry.publish_at),
             event_start: entry.event_start.map_or_else(String::new, convert),
@@ -275,6 +287,7 @@ impl<'a> Editor<'a> {
             body: field(form, "body"),
             url: field(form, "url"),
             flair: field(form, "flair"),
+            flair_id: field(form, "flair_id").trim().parse().ok(),
             zone: known_zone(field(form, "zone")),
             publish_at: field(form, "publish_at").to_owned(),
             event_start: field(form, "event_start").to_owned(),
@@ -332,7 +345,7 @@ impl<'a> Editor<'a> {
 <label>Title<input name="title" required maxlength="160" value="{title}"></label>
 <label>Body text <small>Optional</small><textarea name="body" rows="4" maxlength="8000">{body}</textarea></label>
 <label>Link <small>Optional</small><input type="url" name="url" maxlength="600" value="{url}"></label>
-<label>Post flair <small>Optional</small><input name="flair" maxlength="32" value="{flair}"></label>
+{flair}
 <fieldset class="scheduled-dates"><legend>Date and time</legend>
 <label>Time zone<select name="zone" aria-describedby="schedule-zone-help">{zone_options}</select></label><p id="schedule-zone-help" class="muted">All dates use the selected time zone. Choose an explicit Central offset if a clock change repeats the hour.</p>
 <label>Publish at<input type="datetime-local" name="publish_at" value="{publish_at}" required></label>
@@ -351,7 +364,7 @@ impl<'a> Editor<'a> {
             title = escape(self.title),
             body = escape(self.body),
             url = escape(self.url),
-            flair = escape(self.flair),
+            flair = post_flair::scheduled(item, self.flair_id, self.flair),
             publish_at = escape(&self.publish_at),
             event_start = escape(&self.event_start),
             event_end = escape(&self.event_end),

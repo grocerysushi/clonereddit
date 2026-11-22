@@ -45,6 +45,9 @@ pub use moderation_roles::{ModPermission, ModeratorAssignment, ModeratorRole};
 #[path = "model/notification_preferences.rs"]
 mod notification_preferences;
 pub use notification_preferences::NotificationPreferences;
+#[path = "model/post_flair.rs"]
+mod post_flair;
+pub use post_flair::{CommunityPostFlair, COMMUNITY_POST_FLAIR_LABEL_MAX};
 #[path = "model/reporting.rs"]
 mod reporting;
 pub use reporting::{ReportReason, ReportedRule};
@@ -78,6 +81,8 @@ pub struct Community {
     pub owner: Option<String>,
     highlighted_posts: Vec<u64>,
     rules: Vec<CommunityRule>,
+    post_flairs: Vec<CommunityPostFlair>,
+    require_post_flair: bool,
     pub topic: String,
     pub visibility: String,
     pub mature: bool,
@@ -279,6 +284,7 @@ pub struct PostDraft {
     pub body: String,
     pub url: String,
     pub flair: String,
+    pub flair_id: Option<u64>,
     pub sensitive: bool,
     pub spoiler: bool,
     pub brand_affiliate: bool,
@@ -294,6 +300,7 @@ pub struct ScheduledItem {
     pub body: String,
     pub url: String,
     pub flair: String,
+    pub flair_id: Option<u64>,
     pub sensitive: bool,
     pub spoiler: bool,
     pub brand_affiliate: bool,
@@ -381,6 +388,7 @@ pub struct State {
     next_mod_mail: u64,
     next_mod_event: u64,
     next_community_rule: u64,
+    next_post_flair: u64,
     next_automod_rule: u64,
     next_automod_flag: u64,
     next_saved_response: u64,
@@ -469,6 +477,8 @@ impl State {
                 owner: None,
                 highlighted_posts: Vec::new(),
                 rules: Vec::new(),
+                post_flairs: Vec::new(),
+                require_post_flair: false,
                 topic: String::new(),
                 visibility: "public".into(),
                 mature: false,
@@ -572,6 +582,7 @@ impl State {
             next_mod_mail: 1,
             next_mod_event: 1,
             next_community_rule: 1,
+            next_post_flair: 1,
             next_automod_rule: 1,
             next_automod_flag: 1,
             next_saved_response: 1,
@@ -687,7 +698,11 @@ impl State {
             .scheduled
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.status == "pending" && item.publish_at <= now)
+            .filter(|(_, item)| {
+                item.status == "pending"
+                    && item.publish_at <= now
+                    && !self.scheduled_flair_blocked(item)
+            })
             .map(|(index, item)| (item.publish_at, item.id, index))
             .collect();
         if due.is_empty() {
@@ -705,11 +720,11 @@ impl State {
 
     fn publish_scheduled_item(&mut self, index: usize, now: u64) -> io::Result<()> {
         let item = &mut self.scheduled[index];
-        let owner = self
+        let (community, owner) = self
             .communities
             .iter()
             .find(|community| community.slug == item.community)
-            .and_then(|community| community.owner.as_ref())
+            .and_then(|community| community.owner.as_ref().map(|owner| (community, owner)))
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -717,10 +732,17 @@ impl State {
                 )
             })?;
         let id = next_id(&mut self.next_post).map_err(io::Error::other)?;
-        let flair = match item.flair.as_str() {
-            "" if item.kind == "event" => "Event",
-            "" => "Discussion",
-            flair => flair,
+        let fallback = if item.kind == "event" {
+            "Event"
+        } else {
+            "Discussion"
+        };
+        let flair = match item.flair_id {
+            Some(id) => community
+                .flair_for_id(id)
+                .map_or(fallback, |flair| &flair.label),
+            None if item.flair.is_empty() => fallback,
+            None => &item.flair,
         };
         self.posts.push(Post {
             id,
@@ -1032,6 +1054,9 @@ impl State {
             "save-community-rule" => self.save_community_rule(form),
             "move-community-rule" => self.move_community_rule(form),
             "delete-community-rule" => self.delete_community_rule(form),
+            "save-post-flair" => self.save_post_flair(form),
+            "delete-post-flair" => self.delete_post_flair(form),
+            "set-post-flair-policy" => self.set_post_flair_policy(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
             "lock-discussion" => self.set_reply_lock(form, ContentKind::Post, true),
@@ -1226,6 +1251,8 @@ impl State {
             owner: Some(self.username.clone()),
             highlighted_posts: Vec::new(),
             rules: Vec::new(),
+            post_flairs: Vec::new(),
+            require_post_flair: false,
             topic,
             visibility,
             mature,
@@ -1294,10 +1321,16 @@ impl State {
 
     fn schedule_item(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let index = self.moderated_community_index(form, ModPermission::Schedule)?;
-        let community = self.communities[index].slug.clone();
         let id = next_id(&mut self.next_scheduled)?;
-        let mut item = scheduled_item(form, id, &community, "America/Chicago", unix_seconds())?;
+        let mut item = scheduled_item(
+            form,
+            id,
+            &self.communities[index],
+            "America/Chicago",
+            unix_seconds(),
+        )?;
         item.author = Some(self.username.clone());
+        let community = item.community.clone();
         let message = if item.kind == "event" {
             "Event scheduled."
         } else {
@@ -1312,20 +1345,21 @@ impl State {
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
         let now = unix_seconds();
-        let index = self.pending_scheduled_index(form, now)?;
+        let (index, community_index) = self.pending_scheduled_index(form, now)?;
         let previous = &self.scheduled[index];
-        let community = previous.community.clone();
-        let mut updated = scheduled_item(form, previous.id, &community, &previous.zone, now)?;
+        let community = &self.communities[community_index];
+        let mut updated = scheduled_item(form, previous.id, community, &previous.zone, now)?;
         updated.author = Some(self.username.clone());
+        let slug = updated.community.clone();
         self.scheduled[index] = updated;
-        self.record_moderation(&community, "Schedule updated.")
+        self.record_moderation(&slug, "Schedule updated.")
     }
 
     fn cancel_scheduled_item(
         &mut self,
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
-        let index = self.pending_scheduled_index(form, unix_seconds())?;
+        let (index, _) = self.pending_scheduled_index(form, unix_seconds())?;
         let item = &mut self.scheduled[index];
         item.status = "canceled".into();
         let community = item.community.clone();
@@ -1336,7 +1370,7 @@ impl State {
         &self,
         form: &BTreeMap<String, String>,
         now: u64,
-    ) -> Result<usize, String> {
+    ) -> Result<(usize, usize), String> {
         let community_index = self.moderated_community_index(form, ModPermission::Schedule)?;
         let community = &self.communities[community_index].slug;
         let id = canonical_u64(value(form, "id")).ok_or("Choose a valid scheduled item.")?;
@@ -1349,10 +1383,10 @@ impl State {
         if item.status != "pending" {
             return Err("Only pending items can be changed.".into());
         }
-        if item.publish_at <= now {
+        if item.publish_at <= now && !self.scheduled_flair_blocked(item) {
             return Err("This scheduled item is already due.".into());
         }
-        Ok(index)
+        Ok((index, community_index))
     }
 
     fn create_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1395,12 +1429,12 @@ impl State {
         }
         let community = item.slug.clone();
         let (title, body, url) = post_content(form)?;
-        let flair = bounded(form, "flair", "Flair", 32)?;
-        let flair = match flair {
-            "" if self.profile_flair.is_empty() => fallback_flair,
-            "" => &self.profile_flair,
-            _ => flair,
+        let legacy_fallback = if self.profile_flair.is_empty() {
+            fallback_flair
+        } else {
+            &self.profile_flair
         };
+        let (flair, _) = item.publication_flair(form, fallback_flair, legacy_fallback)?;
         let id = next_id(&mut self.next_post)?;
         Ok(Post {
             id,
@@ -1559,14 +1593,30 @@ impl State {
     fn save_draft(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let position = self.draft_position(form)?;
         let community = if value(form, "community").is_empty() {
-            String::new()
+            None
         } else {
-            self.community_slug(form)?
+            let community = &self.communities[self.community_index(form)?];
+            if !self.can_view_community(community) {
+                return Err("Choose a community.".into());
+            }
+            Some(community)
         };
         let title = bounded(form, "title", "Title", 160)?;
         let body = bounded(form, "body", "Post text", TEXT_LIMIT)?;
         let url = bounded(form, "url", "Link", 2_000)?;
-        let flair = bounded(form, "flair", "Flair", 32)?;
+        let (flair, flair_id) = match community {
+            Some(community) => match community.selected_post_flair(form)? {
+                Some(flair) => (flair.label.as_str(), Some(flair.id)),
+                None if !community.post_flairs().is_empty() => ("", None),
+                None => (post_flair::legacy_post_flair(form)?, None),
+            },
+            None => {
+                if post_flair::requested_flair_id(form)?.is_some() {
+                    return Err("Choose a community before selecting its post flair.".into());
+                }
+                (post_flair::legacy_post_flair(form)?, None)
+            }
+        };
         if title.is_empty() && body.is_empty() && url.is_empty() {
             return Err("Add a title, some post text, or a link before saving a draft.".into());
         }
@@ -1576,11 +1626,12 @@ impl State {
         };
         let draft = PostDraft {
             id,
-            community,
+            community: community.map_or_else(String::new, |community| community.slug.clone()),
             title: title.into(),
             body: body.into(),
             url: url.into(),
             flair: flair.into(),
+            flair_id,
             sensitive: value(form, "sensitive") == "on",
             spoiler: value(form, "spoiler") == "on",
             brand_affiliate: value(form, "brand_affiliate") == "on",
@@ -2260,6 +2311,24 @@ impl State {
                     .is_some_and(|community| community.mature)
         });
         let inherited_spoiler = source.is_some_and(|source| source.spoiler);
+        let community = self
+            .community_for_post(id)
+            .ok_or("This post's community is unavailable.")?;
+        let flair = match community.selected_post_flair(form)? {
+            Some(flair) => Some(flair.label.clone()),
+            None if community.post_flairs().is_empty() && form.contains_key("flair") => {
+                let flair = post_flair::legacy_post_flair(form)?;
+                Some(
+                    if flair.is_empty() {
+                        "Discussion"
+                    } else {
+                        flair
+                    }
+                    .into(),
+                )
+            }
+            None => None,
+        };
         let post = &mut self.posts[index];
         let (title, body, url) = post_content(form)?;
         let text_changed = post.title != title || post.body != body || post.url != url;
@@ -2274,14 +2343,8 @@ impl State {
             post.spoiler = inherited_spoiler || value(form, "spoiler") == "on";
             post.brand_affiliate = value(form, "brand_affiliate") == "on";
         }
-        if form.contains_key("flair") {
-            let flair = bounded(form, "flair", "Flair", 32)?;
-            post.flair = if flair.is_empty() {
-                "Discussion"
-            } else {
-                flair
-            }
-            .into();
+        if let Some(flair) = flair {
+            post.flair = flair;
         }
         let removed = text_changed && self.screen_post(id)?;
         Ok(if removed {
@@ -2421,6 +2484,8 @@ impl State {
                     owner: Some(decode(owner)?),
                     highlighted_posts: highlights::read_order(highlights)?,
                     rules: Vec::new(),
+                    post_flairs: Vec::new(),
+                    require_post_flair: false,
                     topic,
                     visibility,
                     mature,
@@ -2432,6 +2497,16 @@ impl State {
             ["community-rule-sequence", next] => {
                 let next = canonical_u64(next).filter(|&value| value > 0)?;
                 self.next_community_rule = self.next_community_rule.max(next);
+            }
+            ["community-post-flair", slug, id, label] => {
+                self.read_post_flair(slug, id, label)?;
+            }
+            ["community-post-flair-policy", slug] => {
+                self.read_post_flair_policy(slug)?;
+            }
+            ["post-flair-sequence", next] => {
+                let next = post_flair::parse_flair_id(next)?;
+                self.next_post_flair = self.next_post_flair.max(next);
             }
             ["community-image", slug, kind, content_type, payload] => {
                 let slug = decode(slug)?;
@@ -2561,13 +2636,18 @@ impl State {
             }
             ["draft", fields @ ..] => {
                 let (id, values) = match fields {
-                    [id, values @ ..] if values.len() == 8 => (canonical_u64(id)?, values),
+                    [id, values @ ..] if values.len() >= 8 => (canonical_u64(id)?, values),
                     _ => (1, fields),
                 };
-                let [community, title, body, url, flair, sensitive, spoiler, brand_affiliate] =
+                let [community, title, body, url, flair, sensitive, spoiler, brand_affiliate, selection @ ..] =
                     values
                 else {
                     return None;
+                };
+                let flair_id = match selection {
+                    [] => None,
+                    ["flair", id] => Some(post_flair::parse_flair_id(id)?),
+                    _ => return None,
                 };
                 if id == 0 || self.draft(id).is_some() {
                     return None;
@@ -2580,6 +2660,7 @@ impl State {
                     body: decode(body)?,
                     url: decode(url)?,
                     flair: decode(flair)?,
+                    flair_id,
                     sensitive: number(sensitive)?,
                     spoiler: number(spoiler)?,
                     brand_affiliate: number(brand_affiliate)?,
@@ -2722,19 +2803,23 @@ impl State {
                     expires_at,
                 });
             }
-            ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id, authors @ ..] =>
+            ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id, details @ ..] =>
             {
-                let author = match authors {
-                    [] | [""] => None,
-                    [handle] => {
-                        let handle = decode(handle)?;
-                        if handle == DELETED_ACCOUNT {
-                            Some(handle)
-                        } else {
-                            Some(checked_handle(&handle).ok()?)
-                        }
-                    }
+                let (author, flair_id) = match details {
+                    [] => ("", None),
+                    [author] => (*author, None),
+                    [author, "flair", id] => (*author, Some(post_flair::parse_flair_id(id)?)),
                     _ => return None,
+                };
+                let author = if author.is_empty() {
+                    None
+                } else {
+                    let handle = decode(author)?;
+                    if handle == DELETED_ACCOUNT {
+                        Some(handle)
+                    } else {
+                        Some(checked_handle(&handle).ok()?)
+                    }
                 };
                 self.scheduled.push(ScheduledItem {
                     id: number(id)?,
@@ -2745,6 +2830,7 @@ impl State {
                     body: decode(body)?,
                     url: decode(url)?,
                     flair: decode(flair)?,
+                    flair_id,
                     sensitive: number(sensitive)?,
                     spoiler: number(spoiler)?,
                     brand_affiliate: number(brand_affiliate)?,
@@ -2876,6 +2962,9 @@ impl State {
             "community-rule-sequence\t{}",
             self.next_community_rule
         )?;
+        if self.next_post_flair > 1 {
+            writeln!(file, "post-flair-sequence\t{}", self.next_post_flair)?;
+        }
         for community in &self.communities {
             let Some(owner) = &community.owner else {
                 continue;
@@ -2897,6 +2986,7 @@ impl State {
                 community.mature,
             )?;
             community.write_rules(file)?;
+            community.write_post_flairs(file)?;
             for (kind, image) in [
                 ("icon", &community.icon_image),
                 ("banner", &community.banner_image),
@@ -3097,10 +3187,14 @@ impl State {
                 .event_end
                 .map_or_else(String::new, |time| time.to_string());
             let post_id = item.post_id.map_or_else(String::new, |id| id.to_string());
-            writeln!(file, "scheduled-item\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{event_start}\t{event_end}\t{}\t{post_id}\t{}",
+            write!(file, "scheduled-item\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{event_start}\t{event_end}\t{}\t{post_id}\t{}",
                 item.id, encode(&item.community), encode(&item.kind), encode(&item.title), encode(&item.body),
                 encode(&item.url), encode(&item.flair), item.sensitive, item.spoiler, item.brand_affiliate,
                 item.publish_at, encode(&item.zone), encode(&item.status), encode(item.author.as_deref().unwrap_or_default()))?;
+            if let Some(flair_id) = item.flair_id {
+                write!(file, "\tflair\t{flair_id}")?;
+            }
+            writeln!(file)?;
         }
         writeln!(file, "restriction-sequence\t{}", self.next_restriction)?;
         for item in &self.restrictions {
@@ -3380,7 +3474,7 @@ fn post_content(form: &BTreeMap<String, String>) -> Result<(String, String, Stri
 fn scheduled_item(
     form: &BTreeMap<String, String>,
     id: u64,
-    community: &str,
+    community: &Community,
     default_zone: &str,
     now: u64,
 ) -> Result<ScheduledItem, String> {
@@ -3389,7 +3483,7 @@ fn scheduled_item(
         return Err("Choose a scheduled post or event.".into());
     }
     let (title, body, url) = post_content(form)?;
-    let flair = bounded(form, "flair", "Flair", 32)?;
+    let (flair, flair_id) = community.publication_flair(form, "", "")?;
     let zone = match value(form, "zone") {
         "" => default_zone,
         zone => zone,
@@ -3424,13 +3518,14 @@ fn scheduled_item(
     };
     Ok(ScheduledItem {
         id,
-        community: community.into(),
+        community: community.slug.clone(),
         author: None,
         kind: kind.into(),
         title,
         body,
         url,
         flair: flair.into(),
+        flair_id,
         sensitive: value(form, "sensitive") == "on",
         spoiler: value(form, "spoiler") == "on",
         brand_affiliate: value(form, "brand_affiliate") == "on",

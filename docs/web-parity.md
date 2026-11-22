@@ -273,10 +273,16 @@ Workflow **033** is implemented for text and link posts. The composer can save m
 
 Desktop and mobile Chromium checks covered saving, resuming, editing, discarding, and publishing individual drafts across separate accounts and after restart. Server checks covered migration of the previous single draft, simultaneous saves, failed saves and publications, and keeping other drafts after publishing.
 
+## Community post flair update
+
+Workflow **037** is implemented. Moderators manage labels in **Mod Tools → Post flair** and can require a selection before publishing. The rules cover text and link posts, media posts, polls, reposts, and scheduled posts and events. Drafts keep the selected label, and published posts retain the label they had at publication. This brings the implementation count to **79 implemented, 8 partial, and 13 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered label management, a delegated moderator and an approved author, missing and valid flair in the composer, and persistence after restart. HTTP checks covered all post types, foreign and retired flair rejection, draft migration, and editing or canceling a blocked schedule while unrelated items publish.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Improve discovery and publishing. Add structured search filters and community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
+2. Improve discovery and publishing. Add structured search filters and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 3. Expand community operations. Add granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 

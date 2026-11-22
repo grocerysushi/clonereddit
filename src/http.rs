@@ -52,6 +52,7 @@ const POST_MEDIA_FIELDS: &[&str] = &[
     "title",
     "body",
     "flair",
+    "flair_id",
     "sensitive",
     "spoiler",
     "brand_affiliate",

@@ -20,6 +20,8 @@ mod community_manage;
 mod community_rules;
 #[path = "moderate_content.rs"]
 mod moderate_content;
+#[path = "post_flair_tools.rs"]
+mod post_flair_tools;
 
 const SCHEDULED_TITLE: &str = "Scheduled posts and events";
 const RESTRICTED_TITLE: &str = "Restricted Users";
@@ -27,6 +29,7 @@ const CONTENT_TITLE: &str = "Posts & comments";
 const HIGHLIGHTS_TITLE: &str = "Community Highlights";
 const AUTOMOD_TITLE: &str = "AutoMod";
 const RULES_TITLE: &str = "Rules";
+const POST_FLAIR_TITLE: &str = "Post flair";
 
 const TOOLS: &[(&str, &str, &str, &str)] = &[
     (
@@ -90,6 +93,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Manage reporting rules and view topic guidelines.",
     ),
     (
+        "post-flair",
+        POST_FLAIR_TITLE,
+        "tag",
+        "Manage post flair and choose whether it is required.",
+    ),
+    (
         "members",
         "Members",
         "grid",
@@ -136,7 +145,7 @@ pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
         "appeals" => ModPermission::Appeals,
-        "content" | "automod" | "highlights" | "rules" => ModPermission::Content,
+        "content" | "automod" | "highlights" | "rules" | "post-flair" => ModPermission::Content,
         _ => return false,
     };
     state.can_moderate(item, permission)
@@ -173,6 +182,9 @@ pub(super) fn render(
             "discussions" => workspace.discussions(state),
             "highlights" => workspace.highlights(state),
             "rules" => workspace.rules(state, field(query, "edit"), field(query, "delete"), None),
+            "post-flair" => {
+                post_flair_tools::render(item, field(query, "edit"), field(query, "delete"), None)
+            }
             "members" => workspace.members(state),
             "approved-members" => community_manage::approved_members(state, item, registered, None),
             "roles" => community_manage::roles(state, item, registered, None),
@@ -253,6 +265,21 @@ pub(super) fn rules_error(
     };
     let body = workspace.rules(state, edit, "", Some((form, error)));
     workspace.frame(state, "rules", RULES_TITLE, "", &body)
+}
+
+pub(super) fn post_flair_error(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let (edit, delete) = match field(form, "action") {
+        "save-post-flair" => (field(form, "id"), ""),
+        "delete-post-flair" => ("", field(form, "id")),
+        _ => ("", ""),
+    };
+    let body = post_flair_tools::render(item, edit, delete, Some((form, error)));
+    Workspace::new(state, item).frame(state, "post-flair", POST_FLAIR_TITLE, "", &body)
 }
 
 pub(super) fn role_error(

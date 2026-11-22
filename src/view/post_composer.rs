@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{action_fields, community, escape, field, hidden, icon, publishing};
+use super::{action_fields, community, escape, field, hidden, icon, post_flair, publishing};
 use crate::model::{Post, PostDraft, State};
 
 const DRAFTS_URL: &str = "/new?drafts=1";
@@ -99,7 +99,11 @@ pub(super) fn editor(
             item.title.as_str(),
             item.body.as_str(),
             item.url.as_str(),
-            item.flair.as_str(),
+            if item.flair_id.is_none() {
+                item.flair.as_str()
+            } else {
+                ""
+            },
             [item.sensitive, item.spoiler, item.brand_affiliate],
         ),
         _ => ("", "", "", state.profile_flair.as_str(), [false; 3]),
@@ -150,6 +154,11 @@ pub(super) fn editor(
         )
     });
     let (new_fields, save) = if post.is_none() {
+        let selected_flair = if let Some((form, _)) = rejected {
+            field(form, "flair_id").trim().parse().ok()
+        } else {
+            draft.and_then(|item| item.flair_id)
+        };
         let mut options = String::new();
         let mut has_selected = selected.is_empty();
         for item in state
@@ -176,8 +185,20 @@ pub(super) fn editor(
         } else {
             "<small>Choose another community to publish this post.</small>"
         };
+        let flair = post_flair::composer(state, selected, selected_flair, Some(flair));
+        let stale_flair = if rejected.is_none()
+            && selected_flair.is_some_and(|id| {
+                community(state, selected).is_some_and(|item| {
+                    state.can_contribute(item)
+                        && !item.post_flairs().iter().any(|flair| flair.id == id)
+                })
+            }) {
+            "<p class='notice' role='status'>Your saved post flair is no longer available.</p>"
+        } else {
+            ""
+        };
         (
-            format!("<label>Community<select name='community' required><option value=''>Choose a community</option>{options}</select>{help}</label><label>Post flair <small>Optional</small><input name='flair' maxlength='32' value='{}' placeholder='Discussion, question, or link'></label>", escape(flair)),
+            format!("<label>Community<select name='community' required><option value=''>Choose a community</option>{options}</select>{help}</label>{stale_flair}{flair}"),
             "<button class='button light' type='submit' name='save_draft' value='1' formnovalidate>Save draft</button>",
         )
     } else {
