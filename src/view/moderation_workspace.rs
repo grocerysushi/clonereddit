@@ -12,6 +12,8 @@ use super::{
 };
 use super::{restricted, scheduled};
 
+#[path = "automod.rs"]
+mod automod;
 #[path = "community_manage.rs"]
 mod community_manage;
 #[path = "moderate_content.rs"]
@@ -20,6 +22,7 @@ mod moderate_content;
 const SCHEDULED_TITLE: &str = "Scheduled posts and events";
 const RESTRICTED_TITLE: &str = "Restricted Users";
 const CONTENT_TITLE: &str = "Posts & comments";
+const AUTOMOD_TITLE: &str = "AutoMod";
 
 const TOOLS: &[(&str, &str, &str, &str)] = &[
     (
@@ -57,6 +60,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         CONTENT_TITLE,
         "chat",
         "Review, remove, and restore community posts and comments.",
+    ),
+    (
+        "automod",
+        AUTOMOD_TITLE,
+        "sliders",
+        "Configure rules that flag or remove posts and comments.",
     ),
     (
         "discussions",
@@ -117,7 +126,7 @@ pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
         "appeals" => ModPermission::Appeals,
-        "content" => ModPermission::Content,
+        "content" | "automod" => ModPermission::Content,
         _ => return false,
     };
     state.can_moderate(item, permission)
@@ -150,6 +159,7 @@ pub(super) fn render(
             "restricted-users" => restricted::render(state, item),
             "appeals" => community_manage::appeals(state, item, query, None),
             "content" => moderate_content::render(state, item, &workspace.posts, query, None),
+            "automod" => automod::rules(state, item, field(query, "edit"), None),
             "discussions" => workspace.discussions(state),
             "rules" => workspace.rules(state),
             "members" => workspace.members(state),
@@ -174,6 +184,23 @@ pub(super) fn render(
         "Search tools"
     };
     workspace.frame(state, section, heading, search, &body)
+}
+
+pub(super) fn automod_error(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let workspace = Workspace::new(state, item);
+    if field(form, "action") == "dismiss-automod-flag" {
+        let query = BTreeMap::from([("status".to_owned(), "automod".to_owned())]);
+        let body = automod::error_notice(error) + &workspace.queue(state, &query);
+        workspace.frame(state, "queue", "Queue", "", &body)
+    } else {
+        let body = automod::rules(state, item, field(form, "id"), Some((form, error)));
+        workspace.frame(state, "automod", AUTOMOD_TITLE, "", &body)
+    }
 }
 
 pub(super) fn content_error(
@@ -430,9 +457,11 @@ impl<'a> Workspace<'a> {
     }
 
     fn queue(&self, state: &State, query: &BTreeMap<String, String>) -> String {
+        let automatic = state.can_moderate(self.item, ModPermission::Content);
         let status = match field(query, "status") {
             "reported" => "reported",
             "reviewed" => "reviewed",
+            "automod" if automatic => "automod",
             _ => "needs-review",
         };
         let sort = if field(query, "sort") == "oldest" {
@@ -443,13 +472,26 @@ impl<'a> Workspace<'a> {
         let base = tools_url(self.item, "queue");
         let back = format!("{base}&status={status}&sort={sort}");
         let pending = self.pending();
+        let flag_count = if automatic {
+            state
+                .automod_flags
+                .iter()
+                .filter(|flag| flag.community == self.item.slug)
+                .count()
+        } else {
+            0
+        };
         let statuses = [
             ("needs-review", "Needs review", pending),
             ("reported", "Reported", self.reports.len()),
             ("reviewed", "Reviewed", self.reports.len() - pending),
+            ("automod", "AutoMod flags", flag_count),
         ];
         let mut tabs = String::new();
         for (key, label, count) in statuses {
+            if key == "automod" && !automatic {
+                continue;
+            }
             let active = if key == status {
                 " aria-current='page'"
             } else {
@@ -462,14 +504,23 @@ impl<'a> Workspace<'a> {
             )
             .unwrap();
         }
+        let sort_label = if status == "automod" {
+            "Sort flags"
+        } else {
+            "Sort reports"
+        };
         let mut html = format!(
-            "<div class='mod-queue-controls'><nav class='mod-queue-tabs' aria-label='Queue status'>{tabs}</nav><form class='mod-queue-sort' action='/moderation/tools' method='get'>{}{}{}<label>Sort reports<select name='sort'><option value='newest'{}>Newest first</option><option value='oldest'{}>Oldest first</option></select></label><button type='submit' class='button light'>Apply</button></form></div>",
+            "<div class='mod-queue-controls'><nav class='mod-queue-tabs' aria-label='Queue status'>{tabs}</nav><form class='mod-queue-sort' action='/moderation/tools' method='get'>{}{}{}<label>{sort_label}<select name='sort'><option value='newest'{}>Newest first</option><option value='oldest'{}>Oldest first</option></select></label><button type='submit' class='button light'>Apply</button></form></div>",
             hidden("community", &self.item.slug),
             hidden("section", "queue"),
             hidden("status", status),
             if sort == "newest" { " selected" } else { "" },
             if sort == "oldest" { " selected" } else { "" },
         );
+        if status == "automod" {
+            html.push_str(&automod::flags(state, self.item, sort == "oldest", &back));
+            return html;
+        }
         let mut entries: Vec<_> = self
             .reports
             .iter()
@@ -493,6 +544,10 @@ impl<'a> Workspace<'a> {
                 "reviewed" => (
                     "No reviewed reports",
                     "Reports you mark reviewed will appear here.",
+                ),
+                _ if flag_count > 0 => (
+                    "Legal reports are up to date",
+                    "Open AutoMod flags to review automatic matches.",
                 ),
                 _ => (
                     "You’re caught up",

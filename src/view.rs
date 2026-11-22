@@ -223,6 +223,12 @@ pub fn route(
         if matches!(action, "remove-content" | "restore-content") {
             return content_submission(state, path, action, &request.form);
         }
+        if matches!(
+            action,
+            "save-automod-rule" | "delete-automod-rule" | "dismiss-automod-flag"
+        ) {
+            return automod_submission(state, path, action, &request.form);
+        }
         if matches!(action, "edit-comment" | "delete-comment") {
             return comment_submission(state, path, action, &request.form);
         }
@@ -240,7 +246,12 @@ pub fn route(
                     "create" | "create-poll" | "create-repost" => state
                         .posts
                         .last()
-                        .map(|post| format!("/thread?id={}", post.id)),
+                        .map(|post| post_submission_target(state, post.id)),
+                    "edit" => field(&request.form, "id")
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|id| state.is_post_removed(*id))
+                        .map(|id| post_submission_target(state, id)),
                     "create-community" => state
                         .communities
                         .last()
@@ -594,7 +605,7 @@ fn comment_submission(
     let can_edit = can_write_here(state, &post.community);
     match state.apply(action, form, path) {
         Ok(notice) => {
-            let anchor = if editing {
+            let anchor = if editing && !state.is_comment_removed(id) {
                 format!("comment-{id}")
             } else {
                 "comments".into()
@@ -647,12 +658,22 @@ fn media_submission(request: Request, state: &mut State, path: &Path) -> Respons
             let Some(post) = state.posts.last() else {
                 return Response::redirect("/");
             };
-            Response::redirect(&format!("/thread?id={}&notice={}", post.id, encode(notice)))
+            let target = post_submission_target(state, post.id);
+            let delimiter = if target.contains('?') { '&' } else { '?' };
+            Response::redirect(&format!("{target}{delimiter}notice={}", encode(notice)))
         }
         Err(error) => {
             media::remove(path, &attachments);
             publishing_error(state, form, "media", &error)
         }
+    }
+}
+
+fn post_submission_target(state: &State, id: u64) -> String {
+    if state.is_post_removed(id) {
+        "/notifications".into()
+    } else {
+        format!("/thread?id={id}")
     }
 }
 
@@ -773,6 +794,39 @@ fn content_submission(
                 "",
                 "",
             ))
+        }
+    }
+}
+
+fn automod_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let slug = field(form, "community");
+    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Content)) {
+        return missing(state);
+    }
+    let dismissing = action == "dismiss-automod-flag";
+    let section = if dismissing {
+        "queue&status=automod"
+    } else {
+        "automod"
+    };
+    let back = format!(
+        "/moderation/tools?community={}&section={section}",
+        encode(slug)
+    );
+    match state.apply(action, form, path) {
+        Ok(notice) => Response::redirect(&format!("{back}&notice={}", encode(notice))),
+        Err(error) => {
+            let Some(item) = community(state, slug) else {
+                return missing(state);
+            };
+            let body = moderation_workspace::automod_error(state, item, form, &error);
+            let title = if dismissing { "Queue" } else { "AutoMod" };
+            Response::html(layout(state, "mod-workspace", title, &body, "", ""))
         }
     }
 }

@@ -5,7 +5,7 @@ use std::fmt::Write;
 use crate::model::{Comment, Community, ContentKind, ModPermission, Post, State};
 use crate::schedule_time;
 
-use super::super::{action_fields, action_form, encode, escape, field, hidden};
+use super::super::{action_fields, action_form, display_post_title, encode, escape, field, hidden};
 use super::{empty, tools_url};
 
 const PAGE_SIZE: usize = 25;
@@ -192,9 +192,13 @@ fn list(
         let removal = state.content_removal(kind, entry.id());
         removal.is_some() == removed
             && (needle.is_empty()
-                || [entry.post().title.as_str(), entry.author(), entry.body()]
-                    .iter()
-                    .any(|text| text.to_lowercase().contains(&needle)))
+                || [
+                    display_post_title(state, entry.post()),
+                    entry.author(),
+                    entry.body(),
+                ]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&needle)))
     });
     if entries.is_empty() {
         let message = if search.is_empty() {
@@ -220,7 +224,7 @@ fn list(
         };
         let preview = excerpt(entry.body());
         write!(html, "<article class='panel mod-record mod-content-list-item'><header><span class='flair'>{}</span><span class='muted'>#{} · u/{}</span></header><h2><a href='{}'>{}</a></h2>{context}<p class='mod-record-detail'>{}</p></article>",
-            kind.label(), entry.id(), escape(entry.author()), escape(&detail_url(item, kind, entry.id())), escape(&entry.post().title), escape(&preview)).unwrap();
+            kind.label(), entry.id(), escape(entry.author()), escape(&detail_url(item, kind, entry.id())), escape(display_post_title(state, entry.post())), escape(&preview)).unwrap();
     }
     if last > 1 {
         let page_link = |label, index| {
@@ -258,7 +262,7 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
     } else {
         ""
     };
-    let mut html = format!("<a class='back-link' href='{}'>← Posts &amp; comments</a><article class='panel mod-record mod-content-detail'><header><span class='flair'>{display_status}</span><span class='muted'>{label} #{id} · u/{}</span></header><h2>{}</h2>{context}", escape(&list), escape(entry.author()), escape(&entry.post().title));
+    let mut html = format!("<a class='back-link' href='{}'>← Posts &amp; comments</a><article class='panel mod-record mod-content-detail'><header><span class='flair'>{display_status}</span><span class='muted'>{label} #{id} · u/{}</span></header><h2>{}</h2>{context}", escape(&list), escape(entry.author()), escape(display_post_title(state, entry.post())));
     if !entry.body().is_empty() {
         write!(
             html,
@@ -266,6 +270,16 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
             escape(entry.body())
         )
         .unwrap();
+    }
+    if let Entry::Post(post) = entry {
+        if !post.url.is_empty() {
+            write!(
+                html,
+                "<p class='mod-record-detail'><strong>Link</strong> <code>{}</code></p>",
+                escape(&post.url)
+            )
+            .unwrap();
+        }
     }
     let fields = [
         ("community", item.slug.as_str()),
@@ -275,6 +289,11 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
     if let Some(removal) = removal {
         let when = schedule_time::display(removal.removed_at, "America/Chicago");
         let timestamp = schedule_time::to_local(removal.removed_at, "UTC");
+        let actor = if removal.automated {
+            "AutoMod".to_owned()
+        } else {
+            format!("u/{}", escape(&removal.moderator))
+        };
         let restore = action_form(
             "restore-content",
             &target,
@@ -283,8 +302,8 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
             "",
             "button dark",
         );
-        write!(html, "<blockquote class='moderation-reply'><strong>Removed by u/{}</strong> <time class='muted' datetime='{timestamp}Z'>{}</time><p class='mod-record-detail'>{}</p></blockquote><div class='form-actions'>{restore}</div>",
-            escape(&removal.moderator), escape(&when), escape(&removal.reason)).unwrap();
+        write!(html, "<blockquote class='moderation-reply'><strong>Removed by {actor}</strong> <time class='muted' datetime='{timestamp}Z'>{}</time><p class='mod-record-detail'>{}</p></blockquote><div class='form-actions'>{restore}</div>",
+            escape(&when), escape(&removal.reason)).unwrap();
     } else {
         if !entry.parent_removed(state) {
             let anchor = if matches!(entry, Entry::Comment(..)) {

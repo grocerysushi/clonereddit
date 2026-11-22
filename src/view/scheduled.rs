@@ -2,8 +2,8 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{action_fields, action_form, encode, escape, field, icon};
-use crate::model::{Community, ModPermission, ScheduledItem, State};
+use super::{action_fields, action_form, content_tool_url, encode, escape, field, icon};
+use crate::model::{Community, ContentKind, ModPermission, ScheduledItem, State};
 use crate::schedule_time::{display, to_local};
 
 const CHICAGO: &str = "America/Chicago";
@@ -151,9 +151,17 @@ fn schedule_row(
     } else {
         "Post"
     };
-    let status = match entry.status.as_str() {
-        "published" => "<span class='flair scheduled-status'>Published</span>",
-        "canceled" => "<span class='flair scheduled-status'>Canceled</span>",
+    let published = entry
+        .post_id
+        .filter(|id| entry.status == "published" && state.posts.iter().any(|post| post.id == *id));
+    let removal = published.and_then(|id| state.content_removal(ContentKind::Post, id));
+    let status = match (entry.status.as_str(), removal) {
+        ("published", Some(removal)) if removal.automated => {
+            "<span class='flair scheduled-status'>Removed by AutoMod</span>"
+        }
+        ("published", Some(_)) => "<span class='flair scheduled-status'>Removed</span>",
+        ("published", None) => "<span class='flair scheduled-status'>Published</span>",
+        ("canceled", _) => "<span class='flair scheduled-status'>Canceled</span>",
         _ => "",
     };
     let publish_label = if upcoming {
@@ -182,10 +190,10 @@ fn schedule_row(
             "<div class='scheduled-actions'><a class='button light' href='{}'>Edit</a>{cancel}</div>",
             escape(&edit)
         )
-    } else if let Some(post) = entry
-        .post_id
-        .filter(|id| entry.status == "published" && state.posts.iter().any(|post| post.id == *id))
-    {
+    } else if removal.is_some() {
+        published.and_then(|post| content_tool_url(state, &item.slug, ContentKind::Post, post))
+            .map_or_else(String::new, |url| format!("<div class='scheduled-actions'><a class='subtle-link' href='{}'>Review removal</a></div>", escape(&url)))
+    } else if let Some(post) = published {
         format!("<div class='scheduled-actions'><a class='subtle-link' href='/thread?id={post}'>View published post</a></div>")
     } else {
         String::new()

@@ -1,0 +1,792 @@
+use std::collections::BTreeMap;
+use std::io::{self, Write};
+
+use super::{
+    canonical_u64, decode, encode, next_id, number, required, unix_seconds, value, ContentKind,
+    ModPermission, State,
+};
+
+pub(super) const AUTOMOD_REMOVED_POST: &str =
+    "AutoMod removed your post. Check Notifications for the reason.";
+pub(super) const AUTOMOD_REMOVED_COMMENT: &str =
+    "AutoMod removed your comment. Check Notifications for the reason.";
+const NAME_LIMIT: usize = 80;
+const PHRASE_LIMIT: usize = 240;
+const REASON_LIMIT: usize = 1_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoModScope {
+    Both,
+    Post,
+    Comment,
+}
+
+impl AutoModScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::Post => "post",
+            Self::Comment => "comment",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Both => "Posts and comments",
+            Self::Post => "Posts",
+            Self::Comment => "Comments",
+        }
+    }
+
+    fn parse(scope: &str) -> Option<Self> {
+        match scope {
+            "both" => Some(Self::Both),
+            "post" => Some(Self::Post),
+            "comment" => Some(Self::Comment),
+            _ => None,
+        }
+    }
+
+    fn applies_to(self, kind: ContentKind) -> bool {
+        matches!(
+            (self, kind),
+            (Self::Both, _)
+                | (Self::Post, ContentKind::Post)
+                | (Self::Comment, ContentKind::Comment)
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoModAction {
+    Flag,
+    Remove,
+}
+
+impl AutoModAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Flag => "flag",
+            Self::Remove => "remove",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Flag => "Flag for review",
+            Self::Remove => "Remove",
+        }
+    }
+
+    fn parse(action: &str) -> Option<Self> {
+        match action {
+            "flag" => Some(Self::Flag),
+            "remove" => Some(Self::Remove),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AutoModRule {
+    pub id: u64,
+    pub community: String,
+    pub name: String,
+    pub scope: AutoModScope,
+    pub phrase: String,
+    pub action: AutoModAction,
+    pub reason: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone)]
+pub struct AutoModFlag {
+    pub id: u64,
+    pub community: String,
+    pub kind: ContentKind,
+    pub content_id: u64,
+    pub post_id: u64,
+    pub rule_name: String,
+    pub reason: String,
+    pub created_at: u64,
+}
+
+impl State {
+    pub(super) fn save_automod_rule(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let community_index = self.moderated_community_index(form, ModPermission::Content)?;
+        let community = &self.communities[community_index].slug;
+        let existing = if value(form, "id").is_empty() {
+            None
+        } else {
+            Some(self.automod_rule_index(form, community)?)
+        };
+        let name = required(form, "name", "Rule name", NAME_LIMIT)?;
+        let scope = AutoModScope::parse(value(form, "scope")).ok_or("Choose a content scope.")?;
+        let phrase = required(form, "phrase", "Trigger phrase", PHRASE_LIMIT)?;
+        let action =
+            AutoModAction::parse(value(form, "rule_action")).ok_or("Choose a rule action.")?;
+        let reason = required(form, "reason", "Reason", REASON_LIMIT)?;
+        let enabled = match value(form, "enabled") {
+            "on" => true,
+            "" => false,
+            _ => return Err("Choose whether to enable this rule.".into()),
+        };
+        let id = match existing {
+            Some(index) => self.automod_rules[index].id,
+            None => next_id(&mut self.next_automod_rule)?,
+        };
+        let rule = AutoModRule {
+            id,
+            community: community.clone(),
+            name: name.into(),
+            scope,
+            phrase: phrase.into(),
+            action,
+            reason: reason.into(),
+            enabled,
+        };
+        let log = format!("AutoMod rule #{id} saved by u/{}", self.username);
+        let community = rule.community.clone();
+        if let Some(index) = existing {
+            self.automod_rules[index] = rule;
+        } else {
+            self.automod_rules.push(rule);
+        }
+        self.record_moderation_action(&community, &log)?;
+        Ok("AutoMod rule saved.")
+    }
+
+    fn automod_rule_index(
+        &self,
+        form: &BTreeMap<String, String>,
+        community: &str,
+    ) -> Result<usize, String> {
+        let id = canonical_u64(value(form, "id")).ok_or("Choose a valid AutoMod rule.")?;
+        self.automod_rules
+            .iter()
+            .position(|rule| rule.id == id && rule.community == community)
+            .ok_or_else(|| "This AutoMod rule is unavailable in this community.".into())
+    }
+
+    pub(super) fn delete_automod_rule(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let community_index = self.moderated_community_index(form, ModPermission::Content)?;
+        let index = self.automod_rule_index(form, &self.communities[community_index].slug)?;
+        let rule = self.automod_rules.remove(index);
+        let log = format!("AutoMod rule #{} deleted by u/{}", rule.id, self.username);
+        self.record_moderation_action(&rule.community, &log)?;
+        Ok("AutoMod rule deleted.")
+    }
+
+    pub(super) fn dismiss_automod_flag(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let index = self.moderated_community_index(form, ModPermission::Content)?;
+        let community = &self.communities[index].slug;
+        let id = canonical_u64(value(form, "id")).ok_or("Choose a valid AutoMod flag.")?;
+        let index = self
+            .automod_flags
+            .iter()
+            .position(|flag| flag.id == id && flag.community == *community)
+            .ok_or("This AutoMod flag is unavailable in this community.")?;
+        let flag = self.automod_flags.remove(index);
+        let log = format!(
+            "AutoMod flag for {} #{} dismissed by u/{}",
+            flag.kind.as_str(),
+            flag.content_id,
+            self.username
+        );
+        self.record_moderation_action(&flag.community, &log)?;
+        Ok("AutoMod flag dismissed.")
+    }
+
+    pub(super) fn clear_automod_flag(&mut self, kind: ContentKind, content_id: u64) {
+        self.automod_flags
+            .retain(|flag| flag.kind != kind || flag.content_id != content_id);
+    }
+
+    pub(super) fn screen_post(&mut self, id: u64) -> Result<bool, String> {
+        let post = self
+            .posts
+            .iter()
+            .find(|post| post.id == id)
+            .ok_or("Post unavailable for AutoMod.")?;
+        let title = if post.repost_title_from_source {
+            post.repost_of
+                .and_then(|source| self.repost_source(source))
+                .map_or("", |source| source.title.as_str())
+        } else {
+            &post.title
+        };
+        let rule = self
+            .matching_automod_rule(
+                &post.community,
+                ContentKind::Post,
+                &[title, &post.body, &post.url],
+            )
+            .cloned();
+        self.apply_automod_match(ContentKind::Post, id, id, rule)
+    }
+
+    pub(super) fn screen_comment(&mut self, id: u64) -> Result<bool, String> {
+        let comment = self
+            .comments
+            .iter()
+            .find(|comment| comment.id == id)
+            .ok_or("Comment unavailable for AutoMod.")?;
+        let post_id = comment.post;
+        let community = self
+            .community_for_post(post_id)
+            .ok_or("Community unavailable for AutoMod.")?;
+        let rule = self
+            .matching_automod_rule(&community.slug, ContentKind::Comment, &[&comment.body])
+            .cloned();
+        self.apply_automod_match(ContentKind::Comment, id, post_id, rule)
+    }
+
+    fn matching_automod_rule(
+        &self,
+        community: &str,
+        kind: ContentKind,
+        fields: &[&str],
+    ) -> Option<&AutoModRule> {
+        let mut rules = self
+            .automod_rules
+            .iter()
+            .filter(|rule| {
+                rule.enabled && rule.community == community && rule.scope.applies_to(kind)
+            })
+            .peekable();
+        rules.peek()?;
+        let lowercase: Vec<_> = fields.iter().map(|field| field.to_lowercase()).collect();
+        rules
+            .filter(|rule| {
+                let phrase = rule.phrase.to_lowercase();
+                lowercase.iter().any(|field| field.contains(&phrase))
+            })
+            .min_by_key(|rule| (rule.action != AutoModAction::Remove, rule.id))
+    }
+
+    fn apply_automod_match(
+        &mut self,
+        kind: ContentKind,
+        content_id: u64,
+        post_id: u64,
+        rule: Option<AutoModRule>,
+    ) -> Result<bool, String> {
+        let Some(rule) = rule else { return Ok(false) };
+        if rule.action == AutoModAction::Remove {
+            self.remove_content_automatically(
+                kind,
+                content_id,
+                &rule.community,
+                &rule.name,
+                &rule.reason,
+            )?;
+            return Ok(true);
+        }
+        if !self
+            .automod_flags
+            .iter()
+            .any(|flag| flag.kind == kind && flag.content_id == content_id)
+        {
+            let id = next_id(&mut self.next_automod_flag)?;
+            self.automod_flags.push(AutoModFlag {
+                id,
+                community: rule.community,
+                kind,
+                content_id,
+                post_id,
+                rule_name: rule.name,
+                reason: rule.reason,
+                created_at: unix_seconds(),
+            });
+        }
+        Ok(false)
+    }
+
+    pub(super) fn read_automod_record(&mut self, fields: &[&str]) -> Option<()> {
+        match fields {
+            ["automod-sequence", next_rule, next_flag] => {
+                self.next_automod_rule = number(next_rule)?;
+                self.next_automod_flag = number(next_flag)?;
+            }
+            ["automod-rule", id, community, name, scope, phrase, action, reason, enabled] => {
+                let id = number(id)?;
+                let community = decode(community)?;
+                let name = decode(name)?;
+                let phrase = decode(phrase)?;
+                let reason = decode(reason)?;
+                if self.automod_rules.iter().any(|rule| rule.id == id)
+                    || !self
+                        .communities
+                        .iter()
+                        .any(|item| item.slug == community && item.owner.is_some())
+                    || !valid_text(&name, NAME_LIMIT)
+                    || !valid_text(&phrase, PHRASE_LIMIT)
+                    || !valid_text(&reason, REASON_LIMIT)
+                {
+                    return None;
+                }
+                self.automod_rules.push(AutoModRule {
+                    id,
+                    community,
+                    name,
+                    scope: AutoModScope::parse(scope)?,
+                    phrase,
+                    action: AutoModAction::parse(action)?,
+                    reason,
+                    enabled: number(enabled)?,
+                });
+            }
+            ["automod-flag", id, community, kind, content_id, name, reason, created_at] => {
+                let id = number(id)?;
+                let community = decode(community)?;
+                let kind = ContentKind::parse(kind)?;
+                let content_id = number(content_id)?;
+                let rule_name = decode(name)?;
+                let reason = decode(reason)?;
+                let (post_id, _) = self.content_moderation_target(kind, content_id, &community)?;
+                if self
+                    .automod_flags
+                    .iter()
+                    .any(|flag| flag.id == id || flag.kind == kind && flag.content_id == content_id)
+                    || self.content_removal(kind, content_id).is_some()
+                    || !valid_text(&rule_name, NAME_LIMIT)
+                    || !valid_text(&reason, REASON_LIMIT)
+                {
+                    return None;
+                }
+                self.automod_flags.push(AutoModFlag {
+                    id,
+                    community,
+                    kind,
+                    content_id,
+                    post_id,
+                    rule_name,
+                    reason,
+                    created_at: number(created_at)?,
+                });
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    pub(super) fn write_automod_records(&self, file: &mut impl Write) -> io::Result<()> {
+        writeln!(
+            file,
+            "automod-sequence\t{}\t{}",
+            self.next_automod_rule, self.next_automod_flag
+        )?;
+        for rule in &self.automod_rules {
+            writeln!(
+                file,
+                "automod-rule\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                rule.id,
+                encode(&rule.community),
+                encode(&rule.name),
+                rule.scope.as_str(),
+                encode(&rule.phrase),
+                rule.action.as_str(),
+                encode(&rule.reason),
+                rule.enabled,
+            )?;
+        }
+        for flag in &self.automod_flags {
+            writeln!(
+                file,
+                "automod-flag\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                flag.id,
+                encode(&flag.community),
+                flag.kind.as_str(),
+                flag.content_id,
+                encode(&flag.rule_name),
+                encode(&flag.reason),
+                flag.created_at,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn valid_text(text: &str, limit: usize) -> bool {
+    !text.trim().is_empty() && text.chars().count() <= limit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::PostMedia;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn form(fields: &[(&str, &str)]) -> BTreeMap<String, String> {
+        fields
+            .iter()
+            .map(|&(key, value)| (key.into(), value.into()))
+            .collect()
+    }
+
+    fn rule(
+        name: &str,
+        scope: &str,
+        phrase: &str,
+        action: &str,
+        reason: &str,
+    ) -> BTreeMap<String, String> {
+        form(&[
+            ("community", "automod-test"),
+            ("name", name),
+            ("scope", scope),
+            ("phrase", phrase),
+            ("rule_action", action),
+            ("reason", reason),
+            ("enabled", "on"),
+        ])
+    }
+
+    fn community_fixture() -> State {
+        let mut state = State::seeded();
+        state.activate_profile(Some("test_owner"));
+        for slug in ["automod-test", "separate-test"] {
+            state
+                .create_community(&form(&[("slug", slug), ("name", slug)]))
+                .unwrap();
+        }
+        for (handle, role) in [
+            ("test_mod", "moderator"),
+            ("test_reviewer", "appeals-reviewer"),
+        ] {
+            state
+                .set_moderator_role(&form(&[
+                    ("community", "automod-test"),
+                    ("handle", handle),
+                    ("role", role),
+                ]))
+                .unwrap();
+        }
+        state
+    }
+
+    struct TempState(PathBuf);
+
+    impl TempState {
+        fn new() -> Self {
+            let filename = format!(
+                "commonline-automod-{}-{}.state",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            );
+            Self(std::env::temp_dir().join(filename))
+        }
+    }
+
+    impl Drop for TempState {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn automation_is_scoped_and_flag_snapshots_survive_rule_changes_and_restart() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        let flag_rule = rule(
+            "Initial flag",
+            "post",
+            "Étiquette +",
+            "flag",
+            "Original report to mods",
+        );
+        state
+            .create_post(&form(&[
+                ("community", "automod-test"),
+                ("title", "Old étiquette +"),
+            ]))
+            .unwrap();
+        let grandfathered = state.posts.last().unwrap().id.to_string();
+        state.activate_profile(Some("test_reviewer"));
+        assert!(state
+            .apply("save-automod-rule", &flag_rule, &fixture.0)
+            .is_err());
+        state.activate_profile(Some("test_mod"));
+        state
+            .apply("save-automod-rule", &flag_rule, &fixture.0)
+            .unwrap();
+        let rule_id = state.automod_rules[0].id.to_string();
+        let mut disabled = rule(
+            "Disabled remove",
+            "both",
+            "étiquette +",
+            "remove",
+            "Never applied",
+        );
+        disabled.remove("enabled");
+        state
+            .apply("save-automod-rule", &disabled, &fixture.0)
+            .unwrap();
+        state.activate_profile(Some("test_owner"));
+        assert!(state
+            .edit_post(&form(&[
+                ("id", &grandfathered),
+                ("title", "Old étiquette +")
+            ]))
+            .is_ok());
+        state
+            .create_post(&form(&[
+                ("community", "separate-test"),
+                ("title", "Old étiquette +"),
+            ]))
+            .unwrap();
+        state
+            .create_post(&form(&[
+                ("community", "automod-test"),
+                ("title", "EtIQUETTE without literal plus"),
+            ]))
+            .unwrap();
+        assert!(state.automod_flags.is_empty());
+        state
+            .apply(
+                "create",
+                &form(&[("community", "automod-test"), ("title", "New éTIQUETTE +")]),
+                &fixture.0,
+            )
+            .unwrap();
+        let flagged_post = state.posts.last().unwrap().id;
+        let flag_id = state.automod_flags[0].id.to_string();
+        assert!(!state.is_post_removed(flagged_post));
+        let mut updated = flag_rule;
+        updated.insert("id".into(), rule_id.clone());
+        updated.insert("reason".into(), "Changed rule reason".into());
+        state
+            .apply("save-automod-rule", &updated, &fixture.0)
+            .unwrap();
+        let wrong_scope = form(&[("community", "separate-test"), ("id", &rule_id)]);
+        assert!(state
+            .apply("delete-automod-rule", &wrong_scope, &fixture.0)
+            .is_err());
+        state
+            .apply(
+                "delete-automod-rule",
+                &form(&[("community", "automod-test"), ("id", &rule_id)]),
+                &fixture.0,
+            )
+            .unwrap();
+
+        let mut state = State::load(&fixture.0).unwrap();
+        assert_eq!(state.automod_rules.len(), 1);
+        assert!(!state.automod_rules[0].enabled);
+        assert_eq!(state.automod_flags[0].reason, "Original report to mods");
+        assert_eq!(state.automod_flags[0].rule_name, "Initial flag");
+        let dismiss = form(&[("community", "automod-test"), ("id", &flag_id)]);
+        state.activate_profile(Some("test_reviewer"));
+        assert!(state
+            .apply("dismiss-automod-flag", &dismiss, &fixture.0)
+            .is_err());
+        state.activate_profile(Some("test_mod"));
+        state
+            .apply("dismiss-automod-flag", &dismiss, &fixture.0)
+            .unwrap();
+        assert!(state.automod_flags.is_empty());
+        assert!(!state.is_post_removed(flagged_post));
+        assert!(state.mod_log.last().unwrap().action.contains("dismissed"));
+    }
+
+    #[test]
+    fn removal_precedes_flags_and_author_notices_use_a_system_actor() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        state
+            .create_post(&form(&[
+                ("community", "automod-test"),
+                ("title", "Comment on this"),
+            ]))
+            .unwrap();
+        let parent_id = state.posts.last().unwrap().id.to_string();
+        state
+            .save_automod_rule(&rule("First flag", "both", "match me", "flag", "Escalate"))
+            .unwrap();
+        state
+            .save_automod_rule(&rule(
+                "First removal",
+                "both",
+                "match me",
+                "remove",
+                "First reason\nfor removal",
+            ))
+            .unwrap();
+        state
+            .save_automod_rule(&rule(
+                "Second removal",
+                "both",
+                "match me",
+                "remove",
+                "Later reason",
+            ))
+            .unwrap();
+        state.activate_profile(Some("comment_author"));
+        let comment = form(&[("post", &parent_id), ("body", "MATCH ME")]);
+        assert_eq!(
+            state.apply("comment", &comment, &fixture.0).unwrap(),
+            AUTOMOD_REMOVED_COMMENT
+        );
+        let comment_id = state.comments.last().unwrap().id;
+        assert!(state.is_comment_removed(comment_id));
+        assert!(state.automod_flags.is_empty());
+        let notices = &state.notifications;
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].recipient, "comment_author");
+        assert!(notices[0].body.ends_with("First reason\nfor removal"));
+        let mut state = State::load(&fixture.0).unwrap();
+        let removal = state
+            .content_removal(ContentKind::Comment, comment_id)
+            .unwrap();
+        assert!(removal.automated);
+        assert!(removal.moderator.is_empty());
+        assert!(state
+            .mod_log
+            .last()
+            .unwrap()
+            .action
+            .contains("AutoMod (First removal)"));
+        let target = form(&[
+            ("community", "automod-test"),
+            ("kind", "comment"),
+            ("id", &comment_id.to_string()),
+        ]);
+        state.activate_profile(Some("test_mod"));
+        state.apply("restore-content", &target, &fixture.0).unwrap();
+        assert!(!state.is_comment_removed(comment_id));
+        state.activate_profile(Some("comment_author"));
+        let edit = form(&[
+            ("id", &comment_id.to_string()),
+            ("body", "Changed text that will match me again"),
+        ]);
+        assert_eq!(
+            state.apply("edit-comment", &edit, &fixture.0).unwrap(),
+            AUTOMOD_REMOVED_COMMENT
+        );
+        assert!(state.is_comment_removed(comment_id));
+    }
+
+    #[test]
+    fn post_variants_evaluate_before_becoming_visible_and_scheduled_posts_wait_until_publication() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        state
+            .create_post(&form(&[
+                ("community", "separate-test"),
+                ("title", "Unwanted title"),
+            ]))
+            .unwrap();
+        let source = state.posts.last().unwrap().id.to_string();
+        let publish_at = (unix_seconds() + 3_600).to_string();
+        state
+            .schedule_item(&form(&[
+                ("community", "automod-test"),
+                ("kind", "post"),
+                ("title", "Unwanted scheduled"),
+                ("publish_at", &publish_at),
+            ]))
+            .unwrap();
+        state
+            .save_automod_rule(&rule(
+                "Screen posts",
+                "post",
+                "unwanted",
+                "remove",
+                "Rule reason",
+            ))
+            .unwrap();
+        assert!(state.content_removals.is_empty());
+        state.activate_profile(Some("post_author"));
+        let media = vec![PostMedia {
+            key: "a".repeat(48),
+            content_type: "image/png".into(),
+        }];
+        assert_eq!(
+            state
+                .create_media_post(
+                    &form(&[
+                        ("community", "automod-test"),
+                        ("title", "Media"),
+                        ("body", "unwanted body")
+                    ]),
+                    media,
+                    &fixture.0
+                )
+                .unwrap(),
+            AUTOMOD_REMOVED_POST
+        );
+        assert_eq!(state.posts.last().unwrap().media.len(), 1);
+        assert_eq!(
+            state
+                .create_poll(&form(&[
+                    ("community", "automod-test"),
+                    ("title", "Unwanted poll"),
+                    ("option_1", "A"),
+                    ("option_2", "B"),
+                    ("duration", "1")
+                ]))
+                .unwrap(),
+            AUTOMOD_REMOVED_POST
+        );
+        assert_eq!(
+            state
+                .create_repost(&form(&[("community", "automod-test"), ("source", &source)]))
+                .unwrap(),
+            AUTOMOD_REMOVED_POST
+        );
+        state
+            .create_post(&form(&[
+                ("community", "automod-test"),
+                ("title", "Initially clean"),
+            ]))
+            .unwrap();
+        let id = state.posts.last().unwrap().id.to_string();
+        assert_eq!(
+            state
+                .edit_post(&form(&[
+                    ("id", &id),
+                    ("title", "Initially clean"),
+                    ("url", "https://example.invalid/unwanted")
+                ]))
+                .unwrap(),
+            AUTOMOD_REMOVED_POST
+        );
+        state.activate_profile(None);
+        assert_eq!(
+            state
+                .publish_due(&fixture.0, publish_at.parse().unwrap())
+                .unwrap(),
+            1
+        );
+        let published = state.scheduled[0].post_id.unwrap();
+        assert!(state.is_post_removed(published));
+        assert!(state
+            .notifications
+            .iter()
+            .any(|item| item.recipient == "test_owner"
+                && item.moderation
+                && item.body.contains(&format!("post #{published}"))));
+        assert_eq!(
+            state
+                .content_removals
+                .iter()
+                .filter(|item| item.automated)
+                .count(),
+            5
+        );
+    }
+}

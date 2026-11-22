@@ -29,7 +29,7 @@ impl ContentKind {
         }
     }
 
-    fn parse(kind: &str) -> Option<Self> {
+    pub(super) fn parse(kind: &str) -> Option<Self> {
         match kind {
             "post" => Some(Self::Post),
             "comment" => Some(Self::Comment),
@@ -47,6 +47,7 @@ pub struct ContentRemoval {
     pub reason: String,
     pub moderator: String,
     pub removed_at: u64,
+    pub automated: bool,
 }
 
 impl State {
@@ -74,7 +75,7 @@ impl State {
             .saturating_sub(u32::try_from(removed).unwrap_or(u32::MAX))
     }
 
-    fn content_moderation_target(
+    pub(super) fn content_moderation_target(
         &self,
         kind: ContentKind,
         id: u64,
@@ -120,7 +121,7 @@ impl State {
             .iter()
             .position(|item| item.kind == kind && item.id == id && item.community == community);
         let label = kind.as_str();
-        let (action, notice, result) = if restore {
+        if restore {
             let index = existing.ok_or("This post or comment is already visible.")?;
             self.content_removals.remove(index);
             let context = if kind == ContentKind::Comment && self.is_post_removed(post_id) {
@@ -128,37 +129,103 @@ impl State {
             } else {
                 ""
             };
-            (
-                "restored",
-                format!("Moderators restored your {label} #{id} in c/{community}.{context}"),
-                "Content restored.",
-            )
-        } else {
-            if existing.is_some() {
-                return Err("This post or comment is already removed.".into());
-            }
-            let reason = required(form, "reason", "Removal reason", REASON_LIMIT)?;
             let notice =
-                format!("Moderators removed your {label} #{id} in c/{community}.\n\n{reason}");
-            self.content_removals.push(ContentRemoval {
+                format!("Moderators restored your {label} #{id} in c/{community}.{context}");
+            self.push_moderation_notification(&author, notice)?;
+            let log = format!("{} #{id} restored by u/{}", kind.label(), self.username);
+            self.record_moderation_action(&community, &log)?;
+            return Ok("Content restored.");
+        }
+        if existing.is_some() {
+            return Err("This post or comment is already removed.".into());
+        }
+        let reason = required(form, "reason", "Removal reason", REASON_LIMIT)?;
+        self.record_content_removal(
+            ContentRemoval {
                 kind,
                 id,
                 post_id,
-                community: community.clone(),
+                community,
                 reason: reason.into(),
                 moderator: self.username.clone(),
                 removed_at: unix_seconds(),
-            });
-            ("removed", notice, "Content removed.")
+                automated: false,
+            },
+            &author,
+            None,
+        )?;
+        Ok("Content removed.")
+    }
+
+    pub(super) fn remove_content_automatically(
+        &mut self,
+        kind: ContentKind,
+        id: u64,
+        community: &str,
+        rule_name: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        if self.content_removal(kind, id).is_some() {
+            return Err("This post or comment is already removed.".into());
+        }
+        let (post_id, author) = self
+            .content_moderation_target(kind, id, community)
+            .ok_or("This post or comment is unavailable in this community.")?;
+        let author = author.to_owned();
+        self.record_content_removal(
+            ContentRemoval {
+                kind,
+                id,
+                post_id,
+                community: community.into(),
+                reason: reason.into(),
+                moderator: String::new(),
+                removed_at: unix_seconds(),
+                automated: true,
+            },
+            &author,
+            Some(rule_name),
+        )
+    }
+
+    fn record_content_removal(
+        &mut self,
+        removal: ContentRemoval,
+        author: &str,
+        rule_name: Option<&str>,
+    ) -> Result<(), String> {
+        let source = if removal.automated {
+            "AutoMod"
+        } else {
+            "Moderators"
         };
-        self.push_moderation_notification(&author, notice)?;
-        let log = format!("{} #{id} {action} by u/{}", kind.label(), self.username);
-        self.record_moderation_action(&community, &log)?;
-        Ok(result)
+        let notice = format!(
+            "{source} removed your {} #{} in c/{}.\n\n{}",
+            removal.kind.as_str(),
+            removal.id,
+            removal.community,
+            removal.reason,
+        );
+        let actor = match rule_name {
+            Some(rule_name) => format!("AutoMod ({rule_name})"),
+            None => format!("u/{}", removal.moderator),
+        };
+        let log = format!(
+            "{} #{} removed by {actor}",
+            removal.kind.label(),
+            removal.id
+        );
+        self.clear_automod_flag(removal.kind, removal.id);
+        self.push_moderation_notification(author, notice)?;
+        self.record_moderation_action(&removal.community, &log)?;
+        self.content_removals.push(removal);
+        Ok(())
     }
 
     pub(super) fn read_content_removal(&mut self, fields: &[&str]) -> Option<()> {
-        let ["content-removal", kind, id, community, reason, moderator, removed_at] = fields else {
+        let ["content-removal", kind, id, community, reason, moderator, removed_at, source @ ..] =
+            fields
+        else {
             return None;
         };
         let kind = ContentKind::parse(kind)?;
@@ -167,10 +234,14 @@ impl State {
         let (post_id, _) = self.content_moderation_target(kind, id, &community)?;
         let reason = decode(reason)?;
         let moderator = decode(moderator)?;
+        let automated = match source {
+            [] if checked_handle(&moderator).ok()? == moderator => false,
+            ["automod"] if moderator.is_empty() => true,
+            _ => return None,
+        };
         if self.content_removal(kind, id).is_some()
             || reason.trim().is_empty()
             || reason.chars().count() > REASON_LIMIT
-            || checked_handle(&moderator).ok()? != moderator
         {
             return None;
         }
@@ -182,15 +253,17 @@ impl State {
             reason,
             moderator,
             removed_at: number(removed_at)?,
+            automated,
         });
         Some(())
     }
 
     pub(super) fn write_content_removals(&self, file: &mut impl Write) -> io::Result<()> {
         for item in &self.content_removals {
+            let source = if item.automated { "\tautomod" } else { "" };
             writeln!(
                 file,
-                "content-removal\t{}\t{}\t{}\t{}\t{}\t{}",
+                "content-removal\t{}\t{}\t{}\t{}\t{}\t{}{source}",
                 item.kind.as_str(),
                 item.id,
                 encode(&item.community),

@@ -11,6 +11,10 @@ use account_data::ProfileData;
 #[path = "model/approved_members.rs"]
 mod approved_members;
 pub use approved_members::ApprovedMember;
+#[path = "model/automod.rs"]
+mod automod;
+pub use automod::{AutoModAction, AutoModFlag, AutoModRule, AutoModScope};
+use automod::{AUTOMOD_REMOVED_COMMENT, AUTOMOD_REMOVED_POST};
 #[path = "model/content_moderation.rs"]
 mod content_moderation;
 pub use content_moderation::{ContentKind, ContentRemoval};
@@ -279,6 +283,8 @@ pub struct State {
     pub moderator_roles: Vec<ModeratorAssignment>,
     pub approved_members: Vec<ApprovedMember>,
     pub content_removals: Vec<ContentRemoval>,
+    pub automod_rules: Vec<AutoModRule>,
+    pub automod_flags: Vec<AutoModFlag>,
     pub scheduled: Vec<ScheduledItem>,
     pub restrictions: Vec<CommunityRestriction>,
     pub appeals: Vec<Appeal>,
@@ -309,6 +315,8 @@ pub struct State {
     next_notification: u64,
     next_mod_mail: u64,
     next_mod_event: u64,
+    next_automod_rule: u64,
+    next_automod_flag: u64,
     next_saved_response: u64,
     next_scheduled: u64,
     next_restriction: u64,
@@ -452,6 +460,8 @@ impl State {
             moderator_roles: Vec::new(),
             approved_members: Vec::new(),
             content_removals: Vec::new(),
+            automod_rules: Vec::new(),
+            automod_flags: Vec::new(),
             scheduled: Vec::new(),
             restrictions: Vec::new(),
             appeals: Vec::new(),
@@ -482,6 +492,8 @@ impl State {
             next_notification: 1,
             next_mod_mail: 1,
             next_mod_event: 1,
+            next_automod_rule: 1,
+            next_automod_flag: 1,
             next_saved_response: 1,
             next_scheduled: 1,
             next_restriction: 1,
@@ -645,6 +657,7 @@ impl State {
         let community = item.community.clone();
         self.record_moderation(&community, message)
             .map_err(io::Error::other)?;
+        self.screen_post(id).map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -915,6 +928,9 @@ impl State {
             "revoke-approved-member" => self.revoke_approved_member(form),
             "remove-content" => self.moderate_content(form, false),
             "restore-content" => self.moderate_content(form, true),
+            "save-automod-rule" => self.save_automod_rule(form),
+            "delete-automod-rule" => self.delete_automod_rule(form),
+            "dismiss-automod-flag" => self.dismiss_automod_flag(form),
             "schedule-item" => self.schedule_item(form),
             "edit-scheduled-item" => self.edit_scheduled_item(form),
             "cancel-scheduled-item" => self.cancel_scheduled_item(form),
@@ -1244,8 +1260,7 @@ impl State {
 
     fn create_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let post = self.new_post(form, "Discussion")?;
-        self.add_post(post, form);
-        Ok("Post published.")
+        self.add_post(post, form, "Post published.")
     }
 
     pub fn create_media_post(
@@ -1261,9 +1276,9 @@ impl State {
         let mut updated = self.clone();
         let mut post = updated.new_post(form, "Discussion")?;
         post.media = media;
-        updated.add_post(post, form);
+        let notice = updated.add_post(post, form, "Post published.")?;
         self.commit(updated, path)?;
-        Ok("Post published.")
+        Ok(notice)
     }
 
     fn new_post(
@@ -1307,11 +1322,23 @@ impl State {
         })
     }
 
-    fn add_post(&mut self, post: Post, form: &BTreeMap<String, String>) {
+    fn add_post(
+        &mut self,
+        post: Post,
+        form: &BTreeMap<String, String>,
+        published: &'static str,
+    ) -> Result<&'static str, String> {
+        let id = post.id;
         self.posts.push(post);
         if value(form, "from_draft") == "1" {
             self.draft = None;
         }
+        let removed = self.screen_post(id)?;
+        Ok(if removed {
+            AUTOMOD_REMOVED_POST
+        } else {
+            published
+        })
     }
 
     fn create_poll(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1342,8 +1369,7 @@ impl State {
             votes: BTreeMap::new(),
             closes_at: unix_seconds() + duration * 86_400,
         });
-        self.add_post(post, form);
-        Ok("Poll published.")
+        self.add_post(post, form, "Poll published.")
     }
 
     fn vote_poll(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1414,8 +1440,7 @@ impl State {
         post.repost_title_from_source = default_title;
         post.sensitive |= sensitive;
         post.spoiler |= spoiler;
-        self.add_post(post, form);
-        Ok("Repost published.")
+        self.add_post(post, form, "Repost published.")
     }
 
     fn save_draft(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1483,6 +1508,9 @@ impl State {
         if let Some(post) = self.posts.iter_mut().find(|post| post.id == post_id) {
             post.reply_count = post.reply_count.saturating_add(1);
         }
+        if self.screen_comment(id)? {
+            return Ok(AUTOMOD_REMOVED_COMMENT);
+        }
         self.notify_comment(post_id, parent)?;
         Ok("Comment posted.")
     }
@@ -1521,7 +1549,13 @@ impl State {
         }
         comment.body = body.into();
         comment.edited_at = Some(unix_seconds());
-        Ok("Comment updated.")
+        let id = comment.id;
+        let removed = self.screen_comment(id)?;
+        Ok(if removed {
+            AUTOMOD_REMOVED_COMMENT
+        } else {
+            "Comment updated."
+        })
     }
 
     fn delete_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -1541,6 +1575,8 @@ impl State {
         if let Some(post) = self.posts.iter_mut().find(|post| post.id == comment.post) {
             post.reply_count = post.reply_count.saturating_sub(1);
         }
+        let id = comment.id;
+        self.clear_automod_flag(ContentKind::Comment, id);
         Ok("Comment deleted.")
     }
 
@@ -2062,6 +2098,7 @@ impl State {
         let inherited_spoiler = source.is_some_and(|source| source.spoiler);
         let post = &mut self.posts[index];
         let (title, body, url) = post_content(form)?;
+        let text_changed = post.title != title || post.body != body || post.url != url;
         if post.title != title {
             post.repost_title_from_source = false;
         }
@@ -2082,7 +2119,12 @@ impl State {
             }
             .into();
         }
-        Ok("Post updated.")
+        let removed = text_changed && self.screen_post(id)?;
+        Ok(if removed {
+            AUTOMOD_REMOVED_POST
+        } else {
+            "Post updated."
+        })
     }
 
     fn delete_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
@@ -2095,6 +2137,7 @@ impl State {
         self.posts.remove(index);
         self.content_removals
             .retain(|removal| removal.post_id != id);
+        self.automod_flags.retain(|flag| flag.post_id != id);
         self.votes.remove(&id);
         self.saved.remove(&id);
         self.hidden.remove(&id);
@@ -2397,6 +2440,9 @@ impl State {
                 self.read_appeal_record(fields)?
             }
             fields @ ["content-removal", ..] => self.read_content_removal(fields)?,
+            fields @ (["automod-sequence", ..] | ["automod-rule", ..] | ["automod-flag", ..]) => {
+                self.read_automod_record(fields)?
+            }
             ["mod-mail", id, community, sender, subject, body, reply] => {
                 self.mod_mail.push(ModMail {
                     id: number(id)?,
@@ -2682,6 +2728,7 @@ impl State {
             )?;
         }
         self.write_content_removals(file)?;
+        self.write_automod_records(file)?;
         for report in &self.reports {
             writeln!(
                 file,
