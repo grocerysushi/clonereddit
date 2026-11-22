@@ -1,0 +1,2886 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const FORMAT: &str = "commonline-v2";
+const LEGACY_FORMAT: &str = "commonline-v1";
+const TEXT_LIMIT: usize = 8_000;
+const RECENT_LIMIT: usize = 6;
+const HISTORY_LIMIT: usize = 50;
+const IMAGE_LIMIT: usize = 512 * 1024;
+const SOCIAL_LINK_LIMIT: usize = 6;
+const ARTWORK_PREVIEW_LIMIT: usize = 4;
+const ARTWORK_PREVIEW_EXPIRED: &str = "This artwork preview expired. Preview the images again.";
+const MODERATION_LOG_LIMIT: usize = 300;
+const SAVED_RESPONSE_LIMIT: usize = 12;
+
+#[derive(Clone)]
+pub struct Community {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub guidelines: String,
+    pub color: String,
+    pub icon: String,
+    pub icon_image: Option<ProfileAvatar>,
+    pub banner_image: Option<ProfileAvatar>,
+    pub members: u32,
+    pub owner: Option<String>,
+    pub pinned_post: Option<u64>,
+    pub topic: String,
+    pub visibility: String,
+    pub mature: bool,
+}
+
+#[derive(Clone)]
+pub struct Post {
+    pub id: u64,
+    pub community: String,
+    pub author: String,
+    pub title: String,
+    pub body: String,
+    pub flair: String,
+    pub age: String,
+    pub url: String,
+    pub score: i32,
+    pub reply_count: u32,
+    pub sensitive: bool,
+    pub spoiler: bool,
+    pub brand_affiliate: bool,
+    pub image: bool,
+    pub poll: Option<Poll>,
+    pub repost_of: Option<u64>,
+    pub repost_title_from_source: bool,
+    pub media: Vec<PostMedia>,
+}
+
+#[derive(Clone)]
+pub struct Poll {
+    pub options: Vec<String>,
+    pub votes: BTreeMap<String, usize>,
+    pub closes_at: u64,
+}
+
+#[derive(Clone)]
+pub struct PostMedia {
+    pub key: String,
+    pub content_type: String,
+}
+
+#[derive(Clone)]
+pub struct Comment {
+    pub id: u64,
+    pub post: u64,
+    pub parent: Option<u64>,
+    pub author: String,
+    pub body: String,
+    pub age: String,
+    pub score: i32,
+}
+
+#[derive(Clone)]
+pub struct Report {
+    pub id: u64,
+    pub post: u64,
+    pub region: String,
+    pub details: String,
+    pub reviewed: bool,
+}
+
+#[derive(Clone)]
+pub struct ModMail {
+    pub id: u64,
+    pub community: String,
+    pub sender: String,
+    pub subject: String,
+    pub body: String,
+    pub reply: String,
+}
+
+#[derive(Clone)]
+pub struct ModerationEvent {
+    pub id: u64,
+    pub community: String,
+    pub action: String,
+    pub at: u64,
+}
+
+#[derive(Clone)]
+pub struct SavedResponse {
+    pub id: u64,
+    pub community: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Clone)]
+pub struct CustomFeed {
+    pub id: u64,
+    pub name: String,
+    pub communities: BTreeSet<String>,
+    pub description: String,
+    pub private: bool,
+    pub show_on_profile: bool,
+}
+
+#[derive(Clone)]
+pub struct ProfileAvatar {
+    pub content_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone)]
+pub struct SetupArtwork {
+    pub id: u64,
+    pub icon: Option<ProfileAvatar>,
+    pub banner: Option<ProfileAvatar>,
+    community: Option<String>,
+}
+
+impl SetupArtwork {
+    fn update(
+        &mut self,
+        icon: Option<(&str, Vec<u8>)>,
+        banner: Option<(&str, Vec<u8>)>,
+        remove_icon: bool,
+        remove_banner: bool,
+    ) -> Result<(), String> {
+        if remove_icon {
+            self.icon = None;
+        }
+        if remove_banner {
+            self.banner = None;
+        }
+        if let Some((content_type, bytes)) = icon {
+            self.icon = Some(checked_image(content_type, bytes)?);
+        }
+        if let Some((content_type, bytes)) = banner {
+            self.banner = Some(checked_image(content_type, bytes)?);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct SocialLink {
+    pub id: u64,
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Clone)]
+pub struct PostDraft {
+    pub community: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub flair: String,
+    pub sensitive: bool,
+    pub spoiler: bool,
+    pub brand_affiliate: bool,
+}
+
+#[derive(Clone)]
+pub struct ScheduledItem {
+    pub id: u64,
+    pub community: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub flair: String,
+    pub sensitive: bool,
+    pub spoiler: bool,
+    pub brand_affiliate: bool,
+    pub publish_at: u64,
+    pub zone: String,
+    pub event_start: Option<u64>,
+    pub event_end: Option<u64>,
+    pub status: String,
+    pub post_id: Option<u64>,
+}
+
+#[derive(Clone)]
+pub struct CommunityRestriction {
+    pub id: u64,
+    pub community: String,
+    pub username: String,
+    pub kind: String,
+    pub reason: String,
+    pub created_at: u64,
+}
+
+#[derive(Clone)]
+pub struct State {
+    pub communities: Vec<Community>,
+    pub posts: Vec<Post>,
+    pub comments: Vec<Comment>,
+    pub votes: BTreeMap<u64, i8>,
+    pub comment_votes: BTreeMap<u64, i8>,
+    pub saved: BTreeSet<u64>,
+    pub hidden: BTreeSet<u64>,
+    pub joined: BTreeSet<String>,
+    pub muted: BTreeSet<String>,
+    pub blocked: BTreeSet<String>,
+    pub keywords: Vec<String>,
+    pub sensitive: String,
+    pub reports: Vec<Report>,
+    pub mod_mail: Vec<ModMail>,
+    pub mod_log: Vec<ModerationEvent>,
+    pub saved_responses: Vec<SavedResponse>,
+    pub scheduled: Vec<ScheduledItem>,
+    pub restrictions: Vec<CommunityRestriction>,
+    pub custom_feeds: Vec<CustomFeed>,
+    pub recent: Vec<String>,
+    pub history: Vec<u64>,
+    pub username: String,
+    pub display_name: String,
+    pub bio: String,
+    pub avatar: Option<ProfileAvatar>,
+    pub cover: Option<ProfileAvatar>,
+    pub public_posts: bool,
+    pub public_comments: bool,
+    pub profile_nsfw: bool,
+    pub profile_hidden_posts: BTreeSet<u64>,
+    pub profile_hidden_comments: BTreeSet<u64>,
+    pub profile_flair: String,
+    pub social_links: Vec<SocialLink>,
+    pub profile_created: u64,
+    pub draft: Option<PostDraft>,
+    next_post: u64,
+    next_comment: u64,
+    next_report: u64,
+    next_mod_mail: u64,
+    next_mod_event: u64,
+    next_saved_response: u64,
+    next_scheduled: u64,
+    next_restriction: u64,
+    next_feed: u64,
+    next_social_link: u64,
+    pending_artwork: VecDeque<SetupArtwork>,
+    next_artwork_preview: u64,
+}
+
+impl State {
+    fn seeded() -> Self {
+        let communities = [
+            (
+                "open-debate",
+                "Open Debate",
+                "Make the strongest case you can, then see what others think.",
+                "lilac",
+                "◌",
+                24_800,
+            ),
+            (
+                "public-square",
+                "Public Square",
+                "Talk about the streets, parks, and public spaces we share.",
+                "grass",
+                "▦",
+                18_400,
+            ),
+            (
+                "technology",
+                "Technology",
+                "How technology works and how it changes life around us.",
+                "sky",
+                "⌘",
+                31_200,
+            ),
+            (
+                "media-lab",
+                "Media Lab",
+                "Follow how stories are reported, framed, and shared.",
+                "apricot",
+                "▷",
+                9_700,
+            ),
+            (
+                "culture",
+                "Culture",
+                "Books, art, language, and the things we make together.",
+                "rose",
+                "✦",
+                13_600,
+            ),
+            (
+                "after-hours",
+                "After Hours",
+                "Personal conversations and stories from everyday life.",
+                "lilac",
+                "☾",
+                6_200,
+            ),
+            (
+                "commons-lab",
+                "Commons Lab",
+                "Help shape the site, from feed controls to the public archive.",
+                "sand",
+                "◇",
+                4_800,
+            ),
+        ]
+        .into_iter()
+        .map(
+            |(slug, name, description, color, icon, members)| Community {
+                slug: slug.into(),
+                name: name.into(),
+                description: description.into(),
+                guidelines: String::new(),
+                color: color.into(),
+                icon: icon.into(),
+                icon_image: None,
+                banner_image: None,
+                members,
+                owner: None,
+                pinned_post: None,
+                topic: String::new(),
+                visibility: "public".into(),
+                mature: false,
+            },
+        )
+        .collect();
+
+        let mut posts: Vec<_> = [
+            (1, "after-hours", "saturnreturns", "What is something you were wrong about for years?", "I used to think changing my mind meant I had lost an argument. What did it take for you to change yours?", "Discussion", "1d", 92, 17, true, false),
+            (2, "culture", "irisarchive", "What should a public archive keep?", "A community radio station near me is digitizing its call-in tapes. Should it keep every call, or only the ones people still remember?", "Question", "12h", 174, 31, false, false),
+            (3, "commons-lab", "jules", "What should a good report status tell you?", "I would like to see when a report was received, which region it applies to, and how to request another review. What would you add?", "Feedback", "8h", 64, 12, false, false),
+            (4, "media-lab", "papertrail", "How do you verify a video when everyone shares the same clip?", "The first link I could find was a repost without a date or location. I’m collecting ways people trace clips back to their source.", "Question", "6h", 118, 28, false, false),
+            (5, "technology", "signalpath", "What would you put in a genuinely useful feed filter?", "Keyword mutes seem easy until a word has more than one meaning. How do you handle filters you want to apply most of the time?", "Discussion", "4h", 208, 46, false, false),
+            (6, "public-square", "daylightmaps", "What makes a public square worth spending time in?", "I took this on a quiet afternoon. A place to sit, a little shade, and people coming and going made me stay longer than I planned. What gets a square right where you live?", "Photo", "3h", 318, 63, false, true),
+            (7, "open-debate", "marginnotes", "Should online communities be able to ban political topics?", "Some people want a place to talk about a hobby in peace. Others think broad topic bans can erase conversations that matter to that hobby. Where would you draw the line?", "Discussion", "2h", 486, 124, false, false),
+        ].into_iter().map(|(id, community, author, title, body, flair, age, score, reply_count, sensitive, image)| Post {
+            id, community: community.into(), author: author.into(), title: title.into(),
+            body: body.into(), flair: flair.into(), age: age.into(), url: String::new(),
+            score, reply_count, sensitive, spoiler: false, brand_affiliate: false, image,
+            poll: None, repost_of: None, repost_title_from_source: false, media: Vec::new(),
+        }).collect();
+        posts.extend(seed_news(8));
+
+        let comments = [
+            (1, 7, None, "westbound", "I want hobby spaces to be easy to browse. A topic filter I can turn off would get me most of the way there.", "1h", 43),
+            (2, 7, Some(1), "marginnotes", "That makes sense to me. The same thread could stay visible to people who want the broader discussion.", "54m", 19),
+            (3, 7, None, "fieldwork", "The harder part is choosing a label. My transit club talks about budgets because they affect how often the trains run.", "46m", 28),
+            (4, 6, None, "streetlevel", "Seats you can move make a bigger difference than I expected. People can sit together or find their own patch of shade.", "2h", 32),
+            (5, 5, None, "clearcache", "I want an on/off state for each term and a preview before applying a new filter.", "2h", 17),
+            (6, 3, None, "openledger", "A public summary with no personal information would help me understand how often the process is used.", "5h", 11),
+        ].into_iter().map(|(id, post, parent, author, body, age, score)| Comment {
+            id, post, parent, author: author.into(), body: body.into(), age: age.into(), score,
+        }).collect();
+
+        Self {
+            communities,
+            posts,
+            comments,
+            votes: BTreeMap::new(),
+            comment_votes: BTreeMap::new(),
+            saved: BTreeSet::new(),
+            hidden: BTreeSet::new(),
+            joined: ["open-debate", "public-square", "technology"]
+                .map(String::from)
+                .into(),
+            muted: BTreeSet::new(),
+            blocked: BTreeSet::new(),
+            keywords: Vec::new(),
+            sensitive: "blur".into(),
+            reports: Vec::new(),
+            mod_mail: Vec::new(),
+            mod_log: Vec::new(),
+            saved_responses: Vec::new(),
+            scheduled: Vec::new(),
+            restrictions: Vec::new(),
+            custom_feeds: Vec::new(),
+            recent: Vec::new(),
+            history: Vec::new(),
+            username: "jules".into(),
+            display_name: String::new(),
+            bio: String::new(),
+            avatar: None,
+            cover: None,
+            public_posts: true,
+            public_comments: true,
+            profile_nsfw: false,
+            profile_hidden_posts: BTreeSet::new(),
+            profile_hidden_comments: BTreeSet::new(),
+            profile_flair: String::new(),
+            social_links: Vec::new(),
+            profile_created: unix_seconds(),
+            draft: None,
+            next_post: 10,
+            next_comment: 7,
+            next_report: 1,
+            next_mod_mail: 1,
+            next_mod_event: 1,
+            next_saved_response: 1,
+            next_scheduled: 1,
+            next_restriction: 1,
+            next_feed: 1,
+            next_social_link: 1,
+            pending_artwork: VecDeque::new(),
+            next_artwork_preview: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(1, |time| time.as_nanos() as u64),
+        }
+    }
+
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let mut state = Self::seeded();
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(state),
+            Err(error) => return Err(error),
+        };
+
+        let mut lines = contents.lines();
+        let legacy = match lines.next() {
+            Some(FORMAT) => false,
+            Some(LEGACY_FORMAT) => true,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Unsupported Commonline state format",
+                ))
+            }
+        };
+        state.posts.clear();
+        state.comments.clear();
+        state.joined.clear();
+        for (index, line) in lines.enumerate() {
+            state.read_record(line).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid Commonline state record at line {}", index + 2),
+                )
+            })?;
+        }
+        if legacy {
+            let first_id = state.next_post;
+            state.next_post = first_id.checked_add(2).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Too many posts to add the demo news samples",
+                )
+            })?;
+            state.posts.extend(seed_news(first_id));
+        }
+        Ok(state)
+    }
+
+    pub fn record_visit(&mut self, slug: &str, path: &Path) {
+        if self.recent.first().is_some_and(|recent| recent == slug)
+            || !self
+                .communities
+                .iter()
+                .any(|community| community.slug == slug && self.can_view_community(community))
+        {
+            return;
+        }
+        let previous = self.recent.clone();
+        self.recent.retain(|recent| recent != slug);
+        self.recent.insert(0, slug.to_owned());
+        self.recent.truncate(RECENT_LIMIT);
+        if self.save(path).is_err() {
+            self.recent = previous;
+        }
+    }
+
+    pub fn apply(
+        &mut self,
+        action: &str,
+        form: &BTreeMap<String, String>,
+        path: &Path,
+    ) -> Result<&'static str, String> {
+        let mut updated = self.clone();
+        let message = updated.change(action, form)?;
+        self.commit(updated, path)?;
+        Ok(message)
+    }
+
+    pub fn publish_due(&mut self, path: &Path, now: u64) -> io::Result<usize> {
+        let mut due: Vec<_> = self
+            .scheduled
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.status == "pending" && item.publish_at <= now)
+            .map(|(index, item)| (item.publish_at, item.id, index))
+            .collect();
+        if due.is_empty() {
+            return Ok(0);
+        }
+        due.sort_unstable();
+        let mut updated = self.clone();
+        for &(_, _, index) in &due {
+            updated.publish_scheduled_item(index)?;
+        }
+        updated.save(path)?;
+        *self = updated;
+        Ok(due.len())
+    }
+
+    fn publish_scheduled_item(&mut self, index: usize) -> io::Result<()> {
+        let item = &mut self.scheduled[index];
+        let owner = self
+            .communities
+            .iter()
+            .find(|community| community.slug == item.community)
+            .and_then(|community| community.owner.as_ref())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Scheduled item has no community owner",
+                )
+            })?;
+        let id = next_id(&mut self.next_post).map_err(io::Error::other)?;
+        let flair = match item.flair.as_str() {
+            "" if item.kind == "event" => "Event",
+            "" => "Discussion",
+            flair => flair,
+        };
+        self.posts.push(Post {
+            id,
+            community: item.community.clone(),
+            author: owner.clone(),
+            title: item.title.clone(),
+            body: item.body.clone(),
+            url: item.url.clone(),
+            flair: flair.into(),
+            age: "just now".into(),
+            score: 1,
+            reply_count: 0,
+            sensitive: item.sensitive,
+            spoiler: item.spoiler,
+            brand_affiliate: item.brand_affiliate,
+            image: false,
+            poll: None,
+            repost_of: None,
+            repost_title_from_source: false,
+            media: Vec::new(),
+        });
+        item.status = "published".into();
+        item.post_id = Some(id);
+        let message = if item.kind == "event" {
+            "Scheduled event published."
+        } else {
+            "Scheduled post published."
+        };
+        let community = item.community.clone();
+        self.record_moderation(&community, message)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    pub fn record_post_visit(&mut self, id: u64, path: &Path) {
+        if self.history.first() == Some(&id)
+            || !self
+                .community_for_post(id)
+                .is_some_and(|community| self.can_view_community(community))
+        {
+            return;
+        }
+        let previous = self.history.clone();
+        self.history.retain(|visited| *visited != id);
+        self.history.insert(0, id);
+        self.history.truncate(HISTORY_LIMIT);
+        if self.save(path).is_err() {
+            self.history = previous;
+        }
+    }
+
+    pub fn set_profile_image(
+        &mut self,
+        kind: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+        path: &Path,
+    ) -> Result<&'static str, String> {
+        let avatar = checked_image(content_type, bytes)?;
+        let mut updated = self.clone();
+        let message = match kind {
+            "avatar" => {
+                updated.avatar = Some(avatar);
+                "Profile picture updated."
+            }
+            "cover" => {
+                updated.cover = Some(avatar);
+                "Cover photo updated."
+            }
+            _ => return Err("Choose a profile picture or cover photo.".into()),
+        };
+        self.commit(updated, path)?;
+        Ok(message)
+    }
+
+    pub fn setup_artwork(&self, id: u64) -> Option<&SetupArtwork> {
+        self.pending_artwork.iter().find(|artwork| {
+            artwork.id == id
+                && artwork
+                    .community
+                    .as_deref()
+                    .is_none_or(|slug| self.owns_community(slug))
+        })
+    }
+
+    pub fn community_artwork(&self, slug: &str, id: u64) -> Option<&SetupArtwork> {
+        self.setup_artwork(id)
+            .filter(|artwork| artwork.community.as_deref() == Some(slug))
+    }
+
+    pub fn preview_artwork(
+        &mut self,
+        original: Option<u64>,
+        icon: Option<(&str, Vec<u8>)>,
+        banner: Option<(&str, Vec<u8>)>,
+        remove_icon: bool,
+        remove_banner: bool,
+    ) -> Result<Option<u64>, String> {
+        let previous = original
+            .map(|id| {
+                self.setup_artwork(id)
+                    .filter(|artwork| artwork.community.is_none())
+                    .ok_or(ARTWORK_PREVIEW_EXPIRED)
+            })
+            .transpose()?;
+        if icon.is_none() && banner.is_none() && !remove_icon && !remove_banner {
+            return Ok(original);
+        }
+        let mut artwork = previous.cloned().unwrap_or(SetupArtwork {
+            id: 0,
+            icon: None,
+            banner: None,
+            community: None,
+        });
+        artwork.update(icon, banner, remove_icon, remove_banner)?;
+        if artwork.icon.is_none() && artwork.banner.is_none() {
+            if let Some(id) = original {
+                self.pending_artwork.retain(|previous| previous.id != id);
+            }
+            return Ok(None);
+        }
+        self.store_artwork(artwork, original).map(Some)
+    }
+
+    pub fn preview_community_artwork(
+        &mut self,
+        slug: &str,
+        original: Option<u64>,
+        icon: Option<(&str, Vec<u8>)>,
+        banner: Option<(&str, Vec<u8>)>,
+        remove_icon: bool,
+        remove_banner: bool,
+    ) -> Result<u64, String> {
+        let community = self
+            .communities
+            .iter()
+            .find(|community| {
+                community.slug == slug && community.owner.as_deref() == Some(self.username.as_str())
+            })
+            .ok_or("Only this community’s owner can edit its artwork.")?;
+        let mut artwork = match original {
+            Some(id) => {
+                let previous = self
+                    .community_artwork(slug, id)
+                    .ok_or(ARTWORK_PREVIEW_EXPIRED)?;
+                if icon.is_none() && banner.is_none() && !remove_icon && !remove_banner {
+                    return Ok(id);
+                }
+                previous.clone()
+            }
+            None => SetupArtwork {
+                id: 0,
+                icon: community.icon_image.clone(),
+                banner: community.banner_image.clone(),
+                community: Some(slug.to_owned()),
+            },
+        };
+        artwork.update(icon, banner, remove_icon, remove_banner)?;
+        // Keep other open tabs tied to the images they previewed.
+        self.store_artwork(artwork, None)
+    }
+
+    fn store_artwork(
+        &mut self,
+        mut artwork: SetupArtwork,
+        original: Option<u64>,
+    ) -> Result<u64, String> {
+        let id = match original {
+            Some(id) => {
+                self.pending_artwork.retain(|previous| previous.id != id);
+                id
+            }
+            None => next_id(&mut self.next_artwork_preview)?,
+        };
+        artwork.id = id;
+        if self.pending_artwork.len() == ARTWORK_PREVIEW_LIMIT {
+            self.pending_artwork.pop_front();
+        }
+        self.pending_artwork.push_back(artwork);
+        Ok(id)
+    }
+
+    fn take_artwork(&mut self, id: u64, slug: Option<&str>) -> Result<SetupArtwork, String> {
+        self.pending_artwork
+            .iter()
+            .position(|artwork| artwork.id == id && artwork.community.as_deref() == slug)
+            .and_then(|index| self.pending_artwork.remove(index))
+            .ok_or_else(|| ARTWORK_PREVIEW_EXPIRED.into())
+    }
+
+    fn commit(&mut self, updated: Self, path: &Path) -> Result<(), String> {
+        updated
+            .save(path)
+            .map_err(|error| format!("Could not save changes: {error}"))?;
+        *self = updated;
+        Ok(())
+    }
+
+    fn change(
+        &mut self,
+        action: &str,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        match action {
+            "vote" => {
+                let id = self.post_id(form, "id")?;
+                vote(&mut self.votes, id, direction(form)?);
+                Ok("Vote updated.")
+            }
+            "comment-vote" => {
+                let id = id_field(form, "id")?;
+                if !self.comments.iter().any(|comment| {
+                    comment.id == id
+                        && self
+                            .community_for_post(comment.post)
+                            .is_some_and(|community| self.can_view_community(community))
+                }) {
+                    return Err("This comment could not be found.".into());
+                }
+                vote(&mut self.comment_votes, id, direction(form)?);
+                Ok("Vote updated.")
+            }
+            "save" => {
+                let id = self.post_id(form, "id")?;
+                if toggle(&mut self.saved, id) {
+                    Ok("Saved to your list.")
+                } else {
+                    Ok("Removed from your saved list.")
+                }
+            }
+            "hide" => {
+                let id = self.post_id(form, "id")?;
+                if toggle(&mut self.hidden, id) {
+                    Ok("Hidden from your feed.")
+                } else {
+                    Ok("Visible in your feed.")
+                }
+            }
+            "join" => self.join_community(form),
+            "mute" => {
+                let community = self.community_slug(form)?;
+                if toggle(&mut self.muted, community) {
+                    Ok("Community muted in your feed.")
+                } else {
+                    Ok("Community unmuted.")
+                }
+            }
+            "block" => {
+                let author = checked_handle(value(form, "author"))?;
+                if author == self.username {
+                    return Err("Choose another account to block.".into());
+                }
+                if toggle(&mut self.blocked, author) {
+                    Ok("Account blocked in your feed.")
+                } else {
+                    Ok("Account unblocked.")
+                }
+            }
+            "preferences" => self.update_preferences(form),
+            "create" => self.create_post(form),
+            "create-poll" => self.create_poll(form),
+            "create-repost" => self.create_repost(form),
+            "vote-poll" => self.vote_poll(form),
+            "save-draft" => self.save_draft(form),
+            "delete-draft" => {
+                self.draft = None;
+                Ok("Draft discarded.")
+            }
+            "comment" => self.create_comment(form),
+            "report" => self.create_report(form),
+            "review-report" => self.review_report(form),
+            "send-mod-mail" => self.send_mod_mail(form),
+            "reply-mod-mail" => self.reply_mod_mail(form),
+            "add-saved-response" => self.add_saved_response(form),
+            "delete-saved-response" => self.delete_saved_response(form),
+            "schedule-item" => self.schedule_item(form),
+            "edit-scheduled-item" => self.edit_scheduled_item(form),
+            "cancel-scheduled-item" => self.cancel_scheduled_item(form),
+            "restrict-user" => self.restrict_user(form),
+            "lift-restriction" => self.lift_restriction(form),
+            "create-feed" => self.create_feed(form),
+            "edit-feed" => self.edit_feed(form),
+            "delete-feed" => self.delete_feed(form),
+            "profile" => self.update_profile(form),
+            "clear-avatar" => {
+                self.avatar = None;
+                Ok("Profile picture removed.")
+            }
+            "clear-cover" => {
+                self.cover = None;
+                Ok("Cover photo removed.")
+            }
+            "profile-visibility" => {
+                self.public_posts = value(form, "posts") == "on";
+                self.public_comments = value(form, "comments") == "on";
+                self.profile_nsfw = value(form, "nsfw") == "on";
+                Ok("Profile visibility updated.")
+            }
+            "profile-flair" => {
+                self.profile_flair = bounded(form, "flair", "Profile flair", 32)?.into();
+                Ok("Profile flair updated.")
+            }
+            "profile-hide-post" => self.hide_profile_post(form),
+            "profile-hide-comment" => self.hide_profile_comment(form),
+            "add-social-link" => self.add_social_link(form),
+            "delete-social-link" => self.delete_social_link(form),
+            "edit" => self.edit_post(form),
+            "delete" => self.delete_post(form),
+            "create-community" => self.create_community(form),
+            "edit-community" => self.edit_community(form),
+            "save-community-artwork" => self.save_community_artwork(form),
+            "pin-community" => self.pin_community(form),
+            _ => Err("This action is unavailable.".into()),
+        }
+    }
+
+    fn post_id(&self, form: &BTreeMap<String, String>, key: &str) -> Result<u64, String> {
+        let id = id_field(form, key)?;
+        if self
+            .community_for_post(id)
+            .is_some_and(|community| self.can_view_community(community))
+        {
+            return Ok(id);
+        }
+        Err("This post could not be found.".into())
+    }
+
+    pub fn can_view_community(&self, item: &Community) -> bool {
+        item.visibility != "private" || item.owner.as_deref() == Some(self.username.as_str())
+    }
+
+    pub fn can_contribute(&self, item: &Community) -> bool {
+        (item.visibility == "public" || item.owner.as_deref() == Some(self.username.as_str()))
+            && !self.is_banned(&item.slug, &self.username)
+    }
+
+    pub fn is_banned(&self, slug: &str, handle: &str) -> bool {
+        self.has_restriction(slug, handle, "ban")
+    }
+
+    pub fn is_mod_mail_muted(&self, slug: &str, handle: &str) -> bool {
+        self.has_restriction(slug, handle, "mute")
+    }
+
+    fn has_restriction(&self, slug: &str, handle: &str, kind: &str) -> bool {
+        restriction_handle(handle).is_ok_and(|handle| {
+            self.restrictions
+                .iter()
+                .any(|item| item.community == slug && item.username == handle && item.kind == kind)
+        })
+    }
+
+    fn community_for_post(&self, id: u64) -> Option<&Community> {
+        let post = self.posts.iter().find(|post| post.id == id)?;
+        self.communities
+            .iter()
+            .find(|community| community.slug == post.community)
+    }
+
+    fn community_slug(&self, form: &BTreeMap<String, String>) -> Result<String, String> {
+        let index = self.community_index(form)?;
+        Ok(self.communities[index].slug.clone())
+    }
+
+    fn community_index(&self, form: &BTreeMap<String, String>) -> Result<usize, String> {
+        let slug = value(form, "community");
+        self.communities
+            .iter()
+            .position(|community| community.slug == slug)
+            .ok_or_else(|| "Choose a community.".into())
+    }
+
+    fn owned_community_index(&self, form: &BTreeMap<String, String>) -> Result<usize, String> {
+        let index = self.community_index(form)?;
+        if self.communities[index].owner.as_deref() == Some(self.username.as_str()) {
+            return Ok(index);
+        }
+        Err("Only this community’s owner can change its settings.".into())
+    }
+
+    fn join_community(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.community_index(form)?;
+        if !self.can_view_community(&self.communities[index]) {
+            return Err("This community isn’t available.".into());
+        }
+        let community = &mut self.communities[index];
+        let joined = toggle(&mut self.joined, community.slug.clone());
+        if community.owner.is_some() {
+            community.members = u32::from(joined);
+        }
+        if joined {
+            Ok("Community joined.")
+        } else {
+            Ok("Community left.")
+        }
+    }
+
+    fn create_community(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let slug = checked_slug(value(form, "slug"))?;
+        if self
+            .communities
+            .iter()
+            .any(|community| community.slug == slug)
+        {
+            return Err("That community address is already in use.".into());
+        }
+        let (name, description, guidelines) = community_details(form)?;
+        let topic = checked_topic(value(form, "topic"))?;
+        let (visibility, mature) =
+            community_visibility(form)?.unwrap_or_else(|| ("public".into(), false));
+        let (icon_image, banner_image) = if value(form, "artwork_preview").is_empty() {
+            (None, None)
+        } else {
+            let id = artwork_preview_id(form)?;
+            let artwork = self.take_artwork(id, None)?;
+            (artwork.icon, artwork.banner)
+        };
+        let colors = ["lilac", "grass", "sky", "apricot", "rose", "sand"];
+        let color = colors[self.communities.len() % colors.len()];
+        self.joined.insert(slug.clone());
+        self.communities.push(Community {
+            slug: slug.clone(),
+            name,
+            description,
+            guidelines,
+            color: color.into(),
+            icon: "◇".into(),
+            icon_image,
+            banner_image,
+            members: 1,
+            owner: Some(self.username.clone()),
+            pinned_post: None,
+            topic,
+            visibility,
+            mature,
+        });
+        self.record_moderation(&slug, "Community created.")
+    }
+
+    fn edit_community(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.owned_community_index(form)?;
+        let (name, description, guidelines) = community_details(form)?;
+        let community = &mut self.communities[index];
+        community.name = name;
+        community.description = description;
+        community.guidelines = guidelines;
+        if form.contains_key("topic") {
+            community.topic = checked_topic(value(form, "topic"))?;
+        }
+        if let Some((visibility, mature)) = community_visibility(form)? {
+            community.visibility = visibility;
+            community.mature = mature;
+        }
+        let slug = community.slug.clone();
+        self.record_moderation(&slug, "Community settings updated.")
+    }
+
+    fn save_community_artwork(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let index = self.owned_community_index(form)?;
+        let slug = self.communities[index].slug.clone();
+        let id = artwork_preview_id(form)?;
+        let artwork = self.take_artwork(id, Some(&slug))?;
+        let community = &mut self.communities[index];
+        community.icon_image = artwork.icon;
+        community.banner_image = artwork.banner;
+        self.pending_artwork
+            .retain(|preview| preview.community.as_deref() != Some(slug.as_str()));
+        self.record_moderation(&slug, "Community artwork updated.")
+    }
+
+    fn pin_community(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.owned_community_index(form)?;
+        let community = &mut self.communities[index];
+        let slug = community.slug.clone();
+        if value(form, "post").is_empty() {
+            community.pinned_post = None;
+            return self.record_moderation(&slug, "Discussion unpinned.");
+        }
+        let id = id_field(form, "post")?;
+        if !self
+            .posts
+            .iter()
+            .any(|post| post.id == id && post.community == community.slug)
+        {
+            return Err("Choose a discussion from this community to pin.".into());
+        }
+        community.pinned_post = Some(id);
+        self.record_moderation(&slug, "Discussion pinned.")
+    }
+
+    fn update_preferences(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let sensitive = value(form, "sensitive");
+        if !matches!(sensitive, "show" | "blur" | "hide") {
+            return Err("Choose how to display sensitive posts.".into());
+        }
+        let mut seen = BTreeSet::new();
+        let keywords = bounded(form, "keywords", "Muted keywords", 2_000)?;
+        let keywords: Vec<String> = keywords
+            .lines()
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+            .filter(|word| seen.insert(word.to_lowercase()))
+            .map(str::to_owned)
+            .collect();
+        if keywords.len() > 40 || keywords.iter().any(|word| word.chars().count() > 80) {
+            return Err("Use up to 40 muted keywords or phrases with 80 characters each.".into());
+        }
+        self.sensitive = sensitive.into();
+        self.keywords = keywords;
+        Ok("Feed controls updated.")
+    }
+
+    fn schedule_item(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.owned_community_index(form)?;
+        let community = self.communities[index].slug.clone();
+        let id = next_id(&mut self.next_scheduled)?;
+        let item = scheduled_item(form, id, &community, "America/Chicago", unix_seconds())?;
+        let message = if item.kind == "event" {
+            "Event scheduled."
+        } else {
+            "Post scheduled."
+        };
+        self.scheduled.push(item);
+        self.record_moderation(&community, message)
+    }
+
+    fn edit_scheduled_item(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let now = unix_seconds();
+        let index = self.pending_scheduled_index(form, now)?;
+        let previous = &self.scheduled[index];
+        let community = previous.community.clone();
+        self.scheduled[index] = scheduled_item(form, previous.id, &community, &previous.zone, now)?;
+        self.record_moderation(&community, "Schedule updated.")
+    }
+
+    fn cancel_scheduled_item(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let index = self.pending_scheduled_index(form, unix_seconds())?;
+        let item = &mut self.scheduled[index];
+        item.status = "canceled".into();
+        let community = item.community.clone();
+        self.record_moderation(&community, "Scheduled item canceled.")
+    }
+
+    fn pending_scheduled_index(
+        &self,
+        form: &BTreeMap<String, String>,
+        now: u64,
+    ) -> Result<usize, String> {
+        let community_index = self.owned_community_index(form)?;
+        let community = &self.communities[community_index].slug;
+        let id = canonical_u64(value(form, "id")).ok_or("Choose a valid scheduled item.")?;
+        let index = self
+            .scheduled
+            .iter()
+            .position(|item| item.id == id && &item.community == community)
+            .ok_or("This scheduled item is unavailable in this community.")?;
+        let item = &self.scheduled[index];
+        if item.status != "pending" {
+            return Err("Only pending items can be changed.".into());
+        }
+        if item.publish_at <= now {
+            return Err("This scheduled item is already due.".into());
+        }
+        Ok(index)
+    }
+
+    fn create_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let post = self.new_post(form, "Discussion")?;
+        self.add_post(post, form);
+        Ok("Post published.")
+    }
+
+    pub fn create_media_post(
+        &mut self,
+        form: &BTreeMap<String, String>,
+        media: Vec<PostMedia>,
+        path: &Path,
+    ) -> Result<&'static str, String> {
+        validate_post_media(&media)?;
+        let mut updated = self.clone();
+        let mut post = updated.new_post(form, "Discussion")?;
+        post.media = media;
+        updated.add_post(post, form);
+        self.commit(updated, path)?;
+        Ok("Post published.")
+    }
+
+    fn new_post(
+        &mut self,
+        form: &BTreeMap<String, String>,
+        fallback_flair: &str,
+    ) -> Result<Post, String> {
+        let index = self.community_index(form)?;
+        let item = &self.communities[index];
+        if !self.can_contribute(item) {
+            return Err("This community limits who can publish a post.".into());
+        }
+        let community = item.slug.clone();
+        let (title, body, url) = post_content(form)?;
+        let flair = bounded(form, "flair", "Flair", 32)?;
+        let flair = match flair {
+            "" if self.profile_flair.is_empty() => fallback_flair,
+            "" => &self.profile_flair,
+            _ => flair,
+        };
+        let id = next_id(&mut self.next_post)?;
+        Ok(Post {
+            id,
+            community,
+            author: self.username.clone(),
+            title,
+            body,
+            flair: flair.into(),
+            age: "just now".into(),
+            url,
+            score: 1,
+            reply_count: 0,
+            sensitive: value(form, "sensitive") == "on",
+            spoiler: value(form, "spoiler") == "on",
+            brand_affiliate: value(form, "brand_affiliate") == "on",
+            image: false,
+            poll: None,
+            repost_of: None,
+            repost_title_from_source: false,
+            media: Vec::new(),
+        })
+    }
+
+    fn add_post(&mut self, post: Post, form: &BTreeMap<String, String>) {
+        self.posts.push(post);
+        if value(form, "from_draft") == "1" {
+            self.draft = None;
+        }
+    }
+
+    fn create_poll(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let mut options = Vec::new();
+        let mut seen = BTreeSet::new();
+        for index in 1..=6 {
+            let option = bounded(form, &format!("option_{index}"), "Poll choice", 80)?;
+            if option.is_empty() {
+                continue;
+            }
+            if !seen.insert(option.to_lowercase()) {
+                return Err("Choose distinct answers for the poll.".into());
+            }
+            options.push(option.into());
+        }
+        if options.len() < 2 {
+            return Err("Add at least two choices to the poll.".into());
+        }
+        let duration = match value(form, "duration") {
+            "1" => 1,
+            "3" => 3,
+            "7" => 7,
+            _ => return Err("Choose a poll duration of 1, 3, or 7 days.".into()),
+        };
+        let mut post = self.new_post(form, "Poll")?;
+        post.poll = Some(Poll {
+            options,
+            votes: BTreeMap::new(),
+            closes_at: unix_seconds() + duration * 86_400,
+        });
+        self.add_post(post, form);
+        Ok("Poll published.")
+    }
+
+    fn vote_poll(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = self.post_id(form, "id")?;
+        let option = canonical_u64(value(form, "option"))
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or("Choose a poll option.")?;
+        let username = checked_handle(&self.username)?;
+        let poll = self
+            .posts
+            .iter_mut()
+            .find(|post| post.id == id)
+            .and_then(|post| post.poll.as_mut())
+            .ok_or("This poll is unavailable.")?;
+        if unix_seconds() >= poll.closes_at {
+            return Err("This poll has closed.".into());
+        }
+        if option >= poll.options.len() {
+            return Err("Choose a poll option.".into());
+        }
+        if poll.votes.contains_key(&username) {
+            return Err("You have already voted in this poll.".into());
+        }
+        poll.votes.insert(username, option);
+        Ok("Poll vote recorded.")
+    }
+
+    pub fn repost_source(&self, id: u64) -> Option<&Post> {
+        let post = self.posts.iter().find(|post| post.id == id)?;
+        let community = self
+            .communities
+            .iter()
+            .find(|community| community.slug == post.community)?;
+        if community.visibility == "private" || !self.can_view_community(community) {
+            return None;
+        }
+        Some(post)
+    }
+
+    fn create_repost(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let source_id =
+            canonical_u64(value(form, "source")).ok_or("Choose a discussion to repost.")?;
+        let source = self
+            .repost_source(source_id)
+            .ok_or("This discussion is unavailable for reposting.")?;
+        if source.repost_of.is_some() {
+            return Err("Open the original discussion to repost it.".into());
+        }
+        if source.community == value(form, "community") {
+            return Err("Choose a different community for the repost.".into());
+        }
+        let sensitive = source.sensitive
+            || self
+                .community_for_post(source_id)
+                .is_some_and(|item| item.mature);
+        let spoiler = source.spoiler;
+        let mut repost_form = form.clone();
+        repost_form.remove("url");
+        let default_title = value(form, "title").is_empty();
+        if default_title {
+            repost_form.insert("title".into(), "Reposted discussion".into());
+        }
+        let mut post = self.new_post(&repost_form, "Repost")?;
+        post.repost_of = Some(source_id);
+        post.repost_title_from_source = default_title;
+        post.sensitive |= sensitive;
+        post.spoiler |= spoiler;
+        self.add_post(post, form);
+        Ok("Repost published.")
+    }
+
+    fn save_draft(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let community = if value(form, "community").is_empty() {
+            String::new()
+        } else {
+            self.community_slug(form)?
+        };
+        let title = bounded(form, "title", "Title", 160)?;
+        let body = bounded(form, "body", "Post text", TEXT_LIMIT)?;
+        let url = bounded(form, "url", "Link", 2_000)?;
+        let flair = bounded(form, "flair", "Flair", 32)?;
+        if title.is_empty() && body.is_empty() && url.is_empty() {
+            return Err("Add a title, some post text, or a link before saving a draft.".into());
+        }
+        self.draft = Some(PostDraft {
+            community,
+            title: title.into(),
+            body: body.into(),
+            url: url.into(),
+            flair: flair.into(),
+            sensitive: value(form, "sensitive") == "on",
+            spoiler: value(form, "spoiler") == "on",
+            brand_affiliate: value(form, "brand_affiliate") == "on",
+        });
+        Ok("Draft saved.")
+    }
+
+    fn create_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let post_id = self.post_id(form, "post")?;
+        if !self
+            .community_for_post(post_id)
+            .is_some_and(|community| self.can_contribute(community))
+        {
+            return Err("This community limits who can add a comment.".into());
+        }
+        let body = required(form, "body", "Comment", 4_000)?;
+        let parent = match value(form, "parent") {
+            "" => None,
+            _ => {
+                let id = id_field(form, "parent")?;
+                if !self
+                    .comments
+                    .iter()
+                    .any(|comment| comment.id == id && comment.post == post_id)
+                {
+                    return Err("This reply must belong to the same discussion.".into());
+                }
+                Some(id)
+            }
+        };
+        let id = next_id(&mut self.next_comment)?;
+        self.comments.push(Comment {
+            id,
+            post: post_id,
+            parent,
+            author: self.username.clone(),
+            body: body.into(),
+            age: "just now".into(),
+            score: 1,
+        });
+        if let Some(post) = self.posts.iter_mut().find(|post| post.id == post_id) {
+            post.reply_count = post.reply_count.saturating_add(1);
+        }
+        Ok("Comment posted.")
+    }
+
+    fn create_report(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let post = self.post_id(form, "post")?;
+        let region = required(form, "region", "Country or region", 120)?;
+        let details = required(form, "details", "Report details", 4_000)?;
+        let id = next_id(&mut self.next_report)?;
+        self.reports.push(Report {
+            id,
+            post,
+            region: region.into(),
+            details: details.into(),
+            reviewed: false,
+        });
+        Ok("Report saved to the legal review log.")
+    }
+
+    fn review_report(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .reports
+            .iter()
+            .position(|report| report.id == id)
+            .ok_or("This report could not be found.")?;
+        let report = &self.reports[index];
+        let community = self
+            .posts
+            .iter()
+            .find(|post| post.id == report.post && self.owns_community(&post.community))
+            .map(|post| post.community.clone())
+            .ok_or("Only the owner of the reported post’s community can review this report.")?;
+        let reviewed = match value(form, "reviewed") {
+            "yes" => true,
+            "no" => false,
+            _ => return Err("Choose whether to mark this report reviewed.".into()),
+        };
+        self.reports[index].reviewed = reviewed;
+        if reviewed {
+            self.record_moderation(&community, "Report marked reviewed.")
+        } else {
+            self.record_moderation(&community, "Report returned to the queue.")
+        }
+    }
+
+    fn owns_community(&self, slug: &str) -> bool {
+        self.communities.iter().any(|community| {
+            community.slug == slug && community.owner.as_deref() == Some(self.username.as_str())
+        })
+    }
+
+    fn restrict_user(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let community_index = self.owned_community_index(form)?;
+        let community = self.communities[community_index].slug.clone();
+        let username = restriction_handle(value(form, "username"))?;
+        if username == self.username {
+            return Err("Choose another account to restrict.".into());
+        }
+        let kind = value(form, "kind");
+        if !matches!(kind, "ban" | "mute") {
+            return Err("Choose a ban or a mod-mail mute.".into());
+        }
+        let reason = bounded(form, "reason", "Reason", 280)?;
+        if let Some(existing) = self.restrictions.iter_mut().find(|item| {
+            item.community == community && item.username == username && item.kind == kind
+        }) {
+            existing.reason = reason.into();
+            let message = if kind == "ban" {
+                "Community ban updated."
+            } else {
+                "Mod-mail mute updated."
+            };
+            return self.record_moderation(&community, message);
+        }
+        let id = next_id(&mut self.next_restriction)?;
+        self.restrictions.push(CommunityRestriction {
+            id,
+            community: community.clone(),
+            username,
+            kind: kind.into(),
+            reason: reason.into(),
+            created_at: unix_seconds(),
+        });
+        let message = if kind == "ban" {
+            "Community ban added."
+        } else {
+            "Mod-mail mute added."
+        };
+        self.record_moderation(&community, message)
+    }
+
+    fn lift_restriction(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let community_index = self.owned_community_index(form)?;
+        let community = &self.communities[community_index].slug;
+        let id = canonical_u64(value(form, "id")).ok_or("Choose a valid restriction.")?;
+        let index = self
+            .restrictions
+            .iter()
+            .position(|item| item.id == id && &item.community == community)
+            .ok_or("This restriction is unavailable in this community.")?;
+        let item = self.restrictions.remove(index);
+        let message = if item.kind == "ban" {
+            "Community ban lifted."
+        } else {
+            "Mod-mail mute lifted."
+        };
+        self.record_moderation(&item.community, message)
+    }
+
+    fn send_mod_mail(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let index = self.community_index(form)?;
+        let community = &self.communities[index];
+        if community.owner.is_none() {
+            return Err("This community does not have a moderation inbox.".into());
+        }
+        if self.is_mod_mail_muted(&community.slug, &self.username) {
+            return Err("You are muted in this community’s moderation inbox.".into());
+        }
+        let subject = required(form, "subject", "Subject", 120)?;
+        let body = required(form, "body", "Message", 4_000)?;
+        let id = next_id(&mut self.next_mod_mail)?;
+        self.mod_mail.push(ModMail {
+            id,
+            community: community.slug.clone(),
+            sender: self.username.clone(),
+            subject: subject.into(),
+            body: body.into(),
+            reply: String::new(),
+        });
+        Ok("Message sent to the local moderation inbox.")
+    }
+
+    fn reply_mod_mail(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .mod_mail
+            .iter()
+            .position(|message| message.id == id)
+            .ok_or("This message could not be found.")?;
+        let community = self.mod_mail[index].community.clone();
+        if !self.owns_community(&community) {
+            return Err("Only this community’s owner can reply to its inbox.".into());
+        }
+        let reply = bounded(form, "reply", "Reply", 4_000)?;
+        let reply = if reply.is_empty() {
+            let response_id = value(form, "response_id")
+                .parse::<u64>()
+                .map_err(|_| "Write a reply or choose a saved response.")?;
+            self.saved_responses
+                .iter()
+                .find(|item| item.id == response_id && item.community == community)
+                .map(|item| item.body.clone())
+                .ok_or("This saved response is unavailable for this community.")?
+        } else {
+            reply.into()
+        };
+        self.mod_mail[index].reply = reply;
+        self.record_moderation(&community, "Moderation reply saved.")
+    }
+
+    fn record_moderation(
+        &mut self,
+        community: &str,
+        message: &'static str,
+    ) -> Result<&'static str, String> {
+        let id = next_id(&mut self.next_mod_event)?;
+        self.mod_log.push(ModerationEvent {
+            id,
+            community: community.into(),
+            action: message.trim_end_matches('.').into(),
+            at: unix_seconds(),
+        });
+        if self.mod_log.len() > MODERATION_LOG_LIMIT {
+            self.mod_log.remove(0);
+        }
+        Ok(message)
+    }
+
+    fn add_saved_response(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let index = self.owned_community_index(form)?;
+        let community = &self.communities[index].slug;
+        if self
+            .saved_responses
+            .iter()
+            .filter(|item| &item.community == community)
+            .count()
+            >= SAVED_RESPONSE_LIMIT
+        {
+            return Err("This community can have up to 12 saved responses.".into());
+        }
+        let title = required(form, "title", "Response title", 80)?;
+        let body = required(form, "body", "Response text", 4_000)?;
+        let id = next_id(&mut self.next_saved_response)?;
+        self.saved_responses.push(SavedResponse {
+            id,
+            community: community.clone(),
+            title: title.into(),
+            body: body.into(),
+        });
+        Ok("Saved response added.")
+    }
+
+    fn delete_saved_response(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .saved_responses
+            .iter()
+            .position(|item| item.id == id && self.owns_community(&item.community))
+            .ok_or("This saved response is unavailable.")?;
+        self.saved_responses.remove(index);
+        Ok("Saved response deleted.")
+    }
+
+    fn feed_details(
+        &self,
+        form: &BTreeMap<String, String>,
+        name_limit: usize,
+    ) -> Result<(String, BTreeSet<String>), String> {
+        let name = required(form, "name", "Feed name", name_limit)?;
+        let communities: BTreeSet<_> = self
+            .communities
+            .iter()
+            .filter(|community| value(form, &format!("community-{}", community.slug)) == "on")
+            .map(|community| community.slug.clone())
+            .collect();
+        Ok((name.into(), communities))
+    }
+
+    fn create_feed(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let (name, communities) = self.feed_details(form, 50)?;
+        let description = bounded(form, "description", "Feed description", 500)?;
+        let (private, show_on_profile) = feed_visibility(form).unwrap_or((false, true));
+        let id = next_id(&mut self.next_feed)?;
+        self.custom_feeds.push(CustomFeed {
+            id,
+            name,
+            communities,
+            description: description.into(),
+            private,
+            show_on_profile,
+        });
+        Ok("Custom feed created.")
+    }
+
+    fn edit_feed(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let (name, communities) = self.feed_details(form, 60)?;
+        let feed = self
+            .custom_feeds
+            .iter_mut()
+            .find(|feed| feed.id == id)
+            .ok_or("This custom feed could not be found.")?;
+        feed.name = name;
+        feed.communities = communities;
+        if form.contains_key("description") {
+            feed.description = bounded(form, "description", "Feed description", 500)?.into();
+        }
+        if let Some((private, show_on_profile)) = feed_visibility(form) {
+            feed.private = private;
+            feed.show_on_profile = show_on_profile;
+        }
+        Ok("Custom feed updated.")
+    }
+
+    fn delete_feed(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .custom_feeds
+            .iter()
+            .position(|feed| feed.id == id)
+            .ok_or("This custom feed could not be found.")?;
+        self.custom_feeds.remove(index);
+        Ok("Custom feed deleted.")
+    }
+
+    fn update_profile(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let username = checked_handle(value(form, "username"))?;
+        if form.contains_key("display_name") {
+            self.display_name = bounded(form, "display_name", "Display name", 60)?.into();
+        }
+        if form.contains_key("bio") {
+            self.bio = bounded(form, "bio", "Bio", 280)?.into();
+        }
+        if username != self.username
+            && (self.posts.iter().any(|post| post.author == username)
+                || self
+                    .comments
+                    .iter()
+                    .any(|comment| comment.author == username)
+                || self
+                    .communities
+                    .iter()
+                    .any(|community| community.owner.as_ref() == Some(&username)))
+        {
+            return Err("That username is already in use.".into());
+        }
+        for post in self
+            .posts
+            .iter_mut()
+            .filter(|post| post.author == self.username)
+        {
+            post.author.clone_from(&username);
+        }
+        for comment in self
+            .comments
+            .iter_mut()
+            .filter(|comment| comment.author == self.username)
+        {
+            comment.author.clone_from(&username);
+        }
+        for owner in self
+            .communities
+            .iter_mut()
+            .filter_map(|community| community.owner.as_mut())
+            .filter(|owner| **owner == self.username)
+        {
+            owner.clone_from(&username);
+        }
+        for message in self
+            .mod_mail
+            .iter_mut()
+            .filter(|message| message.sender == self.username)
+        {
+            message.sender.clone_from(&username);
+        }
+        if username != self.username {
+            for poll in self.posts.iter_mut().filter_map(|post| post.poll.as_mut()) {
+                if let Some(option) = poll.votes.remove(&self.username) {
+                    poll.votes.entry(username.clone()).or_insert(option);
+                }
+            }
+            for item in self
+                .restrictions
+                .iter_mut()
+                .filter(|item| item.username == self.username)
+            {
+                item.username.clone_from(&username);
+            }
+            let mut retained = BTreeSet::new();
+            self.restrictions.retain(|item| {
+                item.username != username
+                    || retained.insert((item.community.clone(), item.kind.clone()))
+            });
+        }
+        self.blocked.remove(&username);
+        self.username = username;
+        Ok("Profile updated.")
+    }
+
+    fn hide_profile_post(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        if !self
+            .posts
+            .iter()
+            .any(|post| post.id == id && post.author == self.username)
+        {
+            return Err("Choose one of your own posts to edit its profile visibility.".into());
+        }
+        if toggle(&mut self.profile_hidden_posts, id) {
+            Ok("Post hidden on your profile.")
+        } else {
+            Ok("Post shown on your profile.")
+        }
+    }
+
+    fn hide_profile_comment(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        if !self
+            .comments
+            .iter()
+            .any(|comment| comment.id == id && comment.author == self.username)
+        {
+            return Err("Choose one of your own comments to edit its profile visibility.".into());
+        }
+        if toggle(&mut self.profile_hidden_comments, id) {
+            Ok("Comment hidden on your profile.")
+        } else {
+            Ok("Comment shown on your profile.")
+        }
+    }
+
+    fn add_social_link(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        if self.social_links.len() >= SOCIAL_LINK_LIMIT {
+            return Err("Your profile can have up to six social links.".into());
+        }
+        let label = required(form, "label", "Link label", 40)?;
+        let url = required(form, "url", "Link URL", 600)?;
+        let authority = url
+            .split_once("://")
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+            .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+            .unwrap_or_default();
+        if authority.is_empty()
+            || authority.starts_with(':')
+            || authority.contains('@')
+            || url.contains('\\')
+            || url
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err("Enter a full https:// link.".into());
+        }
+        let id = next_id(&mut self.next_social_link)?;
+        self.social_links.push(SocialLink {
+            id,
+            label: label.into(),
+            url: url.into(),
+        });
+        Ok("Social link added.")
+    }
+
+    fn delete_social_link(
+        &mut self,
+        form: &BTreeMap<String, String>,
+    ) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .social_links
+            .iter()
+            .position(|link| link.id == id)
+            .ok_or("This social link could not be found.")?;
+        self.social_links.remove(index);
+        Ok("Social link removed.")
+    }
+
+    fn edit_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .posts
+            .iter()
+            .position(|post| post.id == id && post.author == self.username)
+            .ok_or("You can edit posts from your own profile.")?;
+        if self.is_banned(&self.posts[index].community, &self.username) {
+            return Err("This community has restricted your posting access.".into());
+        }
+        let source = self.posts[index]
+            .repost_of
+            .and_then(|id| self.repost_source(id));
+        let inherited_sensitive = source.is_some_and(|source| {
+            source.sensitive
+                || self
+                    .community_for_post(source.id)
+                    .is_some_and(|community| community.mature)
+        });
+        let inherited_spoiler = source.is_some_and(|source| source.spoiler);
+        let post = &mut self.posts[index];
+        let (title, body, url) = post_content(form)?;
+        if post.title != title {
+            post.repost_title_from_source = false;
+        }
+        post.title = title;
+        post.body = body;
+        post.url = url;
+        if value(form, "tags_present") == "1" {
+            post.sensitive = inherited_sensitive || value(form, "sensitive") == "on";
+            post.spoiler = inherited_spoiler || value(form, "spoiler") == "on";
+            post.brand_affiliate = value(form, "brand_affiliate") == "on";
+        }
+        if form.contains_key("flair") {
+            let flair = bounded(form, "flair", "Flair", 32)?;
+            post.flair = if flair.is_empty() {
+                "Discussion"
+            } else {
+                flair
+            }
+            .into();
+        }
+        Ok("Post updated.")
+    }
+
+    fn delete_post(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        let id = id_field(form, "id")?;
+        let index = self
+            .posts
+            .iter()
+            .position(|post| post.id == id && post.author == self.username)
+            .ok_or("You can delete posts from your own profile.")?;
+        self.posts.remove(index);
+        self.votes.remove(&id);
+        self.saved.remove(&id);
+        self.hidden.remove(&id);
+        self.history.retain(|visited| *visited != id);
+        self.profile_hidden_posts.remove(&id);
+        if let Some(community) = self
+            .communities
+            .iter_mut()
+            .find(|community| community.pinned_post == Some(id))
+        {
+            community.pinned_post = None;
+        }
+        self.comments.retain(|comment| {
+            if comment.post != id {
+                return true;
+            }
+            self.comment_votes.remove(&comment.id);
+            self.profile_hidden_comments.remove(&comment.id);
+            false
+        });
+        Ok("Post deleted.")
+    }
+
+    fn read_record(&mut self, line: &str) -> Option<()> {
+        let fields: Vec<&str> = line.split('\t').collect();
+        match fields.as_slice() {
+            ["settings", username, sensitive, next_post, next_comment, next_report, counters @ ..] =>
+            {
+                self.username = decode(username)?;
+                self.sensitive = decode(sensitive)?;
+                self.next_post = number(next_post)?;
+                self.next_comment = number(next_comment)?;
+                self.next_report = number(next_report)?;
+                match counters {
+                    [] => {}
+                    [next_mod_mail, next_feed] => {
+                        self.next_mod_mail = number(next_mod_mail)?;
+                        self.next_feed = number(next_feed)?;
+                    }
+                    _ => return None,
+                }
+            }
+            ["community", slug, name, description, guidelines, color, icon, members, owner, pinned_post, settings @ ..] =>
+            {
+                let slug = decode(slug)?;
+                if self
+                    .communities
+                    .iter()
+                    .any(|community| community.slug == slug)
+                {
+                    return None;
+                }
+                let (topic, visibility, mature) = match settings {
+                    [] => (String::new(), "public".into(), false),
+                    [topic] => (decode(topic)?, "public".into(), false),
+                    [topic, visibility, mature] => {
+                        (decode(topic)?, decode(visibility)?, number(mature)?)
+                    }
+                    _ => return None,
+                };
+                self.communities.push(Community {
+                    slug,
+                    name: decode(name)?,
+                    description: decode(description)?,
+                    guidelines: decode(guidelines)?,
+                    color: decode(color)?,
+                    icon: decode(icon)?,
+                    icon_image: None,
+                    banner_image: None,
+                    members: number(members)?,
+                    owner: Some(decode(owner)?),
+                    pinned_post: if pinned_post.is_empty() {
+                        None
+                    } else {
+                        Some(number(pinned_post)?)
+                    },
+                    topic,
+                    visibility,
+                    mature,
+                });
+            }
+            ["community-image", slug, kind, content_type, payload] => {
+                let slug = decode(slug)?;
+                let community = self
+                    .communities
+                    .iter_mut()
+                    .find(|community| community.slug == slug)?;
+                let image = checked_image(content_type, decode_image(payload)?).ok()?;
+                match *kind {
+                    "icon" => community.icon_image = Some(image),
+                    "banner" => community.banner_image = Some(image),
+                    _ => return None,
+                }
+            }
+            ["post", id, community, author, title, body, flair, age, url, score, reply_count, sensitive, image, tags @ ..] =>
+            {
+                let (spoiler, brand_affiliate) = match tags {
+                    [] => (false, false),
+                    [spoiler, brand_affiliate] => (number(spoiler)?, number(brand_affiliate)?),
+                    _ => return None,
+                };
+                self.posts.push(Post {
+                    id: number(id)?,
+                    community: decode(community)?,
+                    author: decode(author)?,
+                    title: decode(title)?,
+                    body: decode(body)?,
+                    flair: decode(flair)?,
+                    age: decode(age)?,
+                    url: decode(url)?,
+                    score: number(score)?,
+                    reply_count: number(reply_count)?,
+                    sensitive: number(sensitive)?,
+                    spoiler,
+                    brand_affiliate,
+                    image: number(image)?,
+                    poll: None,
+                    repost_of: None,
+                    repost_title_from_source: false,
+                    media: Vec::new(),
+                });
+            }
+            ["post-poll", id, closes_at, options @ ..] if (2..=6).contains(&options.len()) => {
+                let id = number(id)?;
+                let post = self.posts.iter_mut().find(|post| post.id == id)?;
+                post.poll = Some(Poll {
+                    options: options
+                        .iter()
+                        .map(|option| decode(option))
+                        .collect::<Option<_>>()?,
+                    votes: BTreeMap::new(),
+                    closes_at: number(closes_at)?,
+                });
+            }
+            ["post-poll-vote", id, username, option] => {
+                let id = number(id)?;
+                let poll = self
+                    .posts
+                    .iter_mut()
+                    .find(|post| post.id == id)?
+                    .poll
+                    .as_mut()?;
+                let option = number(option)?;
+                if option >= poll.options.len() {
+                    return None;
+                }
+                poll.votes.insert(decode(username)?, option);
+            }
+            ["post-repost", id, source, derived_title] => {
+                let id = number(id)?;
+                let post = self.posts.iter_mut().find(|post| post.id == id)?;
+                post.repost_of = Some(number(source)?);
+                post.repost_title_from_source = number(derived_title)?;
+            }
+            ["post-media", id, key, content_type] => {
+                let id = number(id)?;
+                let post = self.posts.iter_mut().find(|post| post.id == id)?;
+                post.media.push(PostMedia {
+                    key: decode(key)?,
+                    content_type: decode(content_type)?,
+                });
+                validate_post_media(&post.media).ok()?;
+            }
+            ["profile", display_name, bio, public_posts, public_comments, nsfw, flair, created, next_social_link] =>
+            {
+                self.display_name = decode(display_name)?;
+                self.bio = decode(bio)?;
+                self.public_posts = number(public_posts)?;
+                self.public_comments = number(public_comments)?;
+                self.profile_nsfw = number(nsfw)?;
+                self.profile_flair = decode(flair)?;
+                self.profile_created = number(created)?;
+                self.next_social_link = number(next_social_link)?;
+            }
+            ["profile-image", kind, content_type, payload] => {
+                let image = checked_image(content_type, decode_image(payload)?).ok()?;
+                match *kind {
+                    "avatar" => self.avatar = Some(image),
+                    "cover" => self.cover = Some(image),
+                    _ => return None,
+                }
+            }
+            ["social-link", id, label, url] => self.social_links.push(SocialLink {
+                id: number(id)?,
+                label: decode(label)?,
+                url: decode(url)?,
+            }),
+            ["draft", community, title, body, url, flair, sensitive, spoiler, brand_affiliate] => {
+                self.draft = Some(PostDraft {
+                    community: decode(community)?,
+                    title: decode(title)?,
+                    body: decode(body)?,
+                    url: decode(url)?,
+                    flair: decode(flair)?,
+                    sensitive: number(sensitive)?,
+                    spoiler: number(spoiler)?,
+                    brand_affiliate: number(brand_affiliate)?,
+                });
+            }
+            ["comment", id, post, parent, author, body, age, score] => {
+                self.comments.push(Comment {
+                    id: number(id)?,
+                    post: number(post)?,
+                    parent: if parent.is_empty() {
+                        None
+                    } else {
+                        Some(number(parent)?)
+                    },
+                    author: decode(author)?,
+                    body: decode(body)?,
+                    age: decode(age)?,
+                    score: number(score)?,
+                });
+            }
+            ["report", id, post, region, details, status @ ..] => {
+                let reviewed = match status {
+                    [] => false,
+                    [reviewed] => number(reviewed)?,
+                    _ => return None,
+                };
+                self.reports.push(Report {
+                    id: number(id)?,
+                    post: number(post)?,
+                    region: decode(region)?,
+                    details: decode(details)?,
+                    reviewed,
+                });
+            }
+            ["mod-mail", id, community, sender, subject, body, reply] => {
+                self.mod_mail.push(ModMail {
+                    id: number(id)?,
+                    community: decode(community)?,
+                    sender: decode(sender)?,
+                    subject: decode(subject)?,
+                    body: decode(body)?,
+                    reply: decode(reply)?,
+                });
+            }
+            ["moderation-sequence", next_event, next_response] => {
+                self.next_mod_event = number(next_event)?;
+                self.next_saved_response = number(next_response)?;
+            }
+            ["schedule-sequence", next_scheduled] => self.next_scheduled = number(next_scheduled)?,
+            ["restriction-sequence", next_restriction] => {
+                self.next_restriction = number(next_restriction)?
+            }
+            ["community-restriction", id, community, username, kind, reason, created_at] => {
+                self.restrictions.push(CommunityRestriction {
+                    id: number(id)?,
+                    community: decode(community)?,
+                    username: decode(username)?,
+                    kind: decode(kind)?,
+                    reason: decode(reason)?,
+                    created_at: number(created_at)?,
+                });
+            }
+            ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id] =>
+            {
+                self.scheduled.push(ScheduledItem {
+                    id: number(id)?,
+                    community: decode(community)?,
+                    kind: decode(kind)?,
+                    title: decode(title)?,
+                    body: decode(body)?,
+                    url: decode(url)?,
+                    flair: decode(flair)?,
+                    sensitive: number(sensitive)?,
+                    spoiler: number(spoiler)?,
+                    brand_affiliate: number(brand_affiliate)?,
+                    publish_at: number(publish_at)?,
+                    zone: decode(zone)?,
+                    event_start: optional_number(event_start)?,
+                    event_end: optional_number(event_end)?,
+                    status: decode(status)?,
+                    post_id: optional_number(post_id)?,
+                });
+            }
+            ["moderation-event", id, community, action, at] => self.mod_log.push(ModerationEvent {
+                id: number(id)?,
+                community: decode(community)?,
+                action: decode(action)?,
+                at: number(at)?,
+            }),
+            ["saved-response", id, community, title, body] => {
+                self.saved_responses.push(SavedResponse {
+                    id: number(id)?,
+                    community: decode(community)?,
+                    title: decode(title)?,
+                    body: decode(body)?,
+                })
+            }
+            ["F", id, name, "@", description, private, show_on_profile, communities @ ..] => {
+                let private: bool = number(private)?;
+                let show_on_profile: bool = number(show_on_profile)?;
+                self.custom_feeds.push(CustomFeed {
+                    id: number(id)?,
+                    name: decode(name)?,
+                    communities: communities
+                        .iter()
+                        .map(|slug| decode(slug))
+                        .collect::<Option<_>>()?,
+                    description: decode(description)?,
+                    private,
+                    show_on_profile: !private && show_on_profile,
+                });
+            }
+            ["F", id, name, communities @ ..] => {
+                self.custom_feeds.push(CustomFeed {
+                    id: number(id)?,
+                    name: decode(name)?,
+                    communities: communities
+                        .iter()
+                        .map(|slug| decode(slug))
+                        .collect::<Option<_>>()?,
+                    description: String::new(),
+                    private: false,
+                    show_on_profile: true,
+                });
+            }
+            ["V", slug] => self.recent.push(decode(slug)?),
+            ["H", id] => self.history.push(number(id)?),
+            ["profile-hidden-post", id] => {
+                self.profile_hidden_posts.insert(number(id)?);
+            }
+            ["profile-hidden-comment", id] => {
+                self.profile_hidden_comments.insert(number(id)?);
+            }
+            ["vote", id, value] => {
+                self.votes.insert(number(id)?, number(value)?);
+            }
+            ["comment-vote", id, value] => {
+                self.comment_votes.insert(number(id)?, number(value)?);
+            }
+            ["saved", id] => {
+                self.saved.insert(number(id)?);
+            }
+            ["hidden", id] => {
+                self.hidden.insert(number(id)?);
+            }
+            ["joined", slug] => {
+                self.joined.insert(decode(slug)?);
+            }
+            ["muted", slug] => {
+                self.muted.insert(decode(slug)?);
+            }
+            ["blocked", author] => {
+                self.blocked.insert(decode(author)?);
+            }
+            ["keyword", keyword] => self.keywords.push(decode(keyword)?),
+            _ => return None,
+        }
+        Some(())
+    }
+
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        static TEMP_ID: AtomicU64 = AtomicU64::new(0);
+        let temporary = path.with_extension(format!(
+            "{}.{}.tmp",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = self.write_records(&mut file).and_then(|()| file.sync_all());
+        drop(file);
+        let result = result.and_then(|()| fs::rename(&temporary, path));
+        if result.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        result
+    }
+
+    fn write_records(&self, file: &mut impl Write) -> io::Result<()> {
+        writeln!(file, "{FORMAT}")?;
+        writeln!(
+            file,
+            "settings\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            encode(&self.username),
+            encode(&self.sensitive),
+            self.next_post,
+            self.next_comment,
+            self.next_report,
+            self.next_mod_mail,
+            self.next_feed,
+        )?;
+        writeln!(
+            file,
+            "profile\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            encode(&self.display_name),
+            encode(&self.bio),
+            self.public_posts,
+            self.public_comments,
+            self.profile_nsfw,
+            encode(&self.profile_flair),
+            self.profile_created,
+            self.next_social_link
+        )?;
+        for (kind, image) in [("avatar", &self.avatar), ("cover", &self.cover)] {
+            if let Some(image) = image {
+                writeln!(
+                    file,
+                    "profile-image\t{kind}\t{}\t{}",
+                    image.content_type,
+                    encode_image(&image.bytes)
+                )?;
+            }
+        }
+        for link in &self.social_links {
+            writeln!(
+                file,
+                "social-link\t{}\t{}\t{}",
+                link.id,
+                encode(&link.label),
+                encode(&link.url)
+            )?;
+        }
+        if let Some(draft) = &self.draft {
+            writeln!(
+                file,
+                "draft\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                encode(&draft.community),
+                encode(&draft.title),
+                encode(&draft.body),
+                encode(&draft.url),
+                encode(&draft.flair),
+                draft.sensitive,
+                draft.spoiler,
+                draft.brand_affiliate
+            )?;
+        }
+        for community in &self.communities {
+            let Some(owner) = &community.owner else {
+                continue;
+            };
+            let pinned_post = community
+                .pinned_post
+                .map_or_else(String::new, |id| id.to_string());
+            writeln!(
+                file,
+                "community\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                encode(&community.slug),
+                encode(&community.name),
+                encode(&community.description),
+                encode(&community.guidelines),
+                encode(&community.color),
+                encode(&community.icon),
+                community.members,
+                encode(owner),
+                pinned_post,
+                encode(&community.topic),
+                encode(&community.visibility),
+                community.mature,
+            )?;
+            for (kind, image) in [
+                ("icon", &community.icon_image),
+                ("banner", &community.banner_image),
+            ] {
+                if let Some(image) = image {
+                    writeln!(
+                        file,
+                        "community-image\t{}\t{kind}\t{}\t{}",
+                        encode(&community.slug),
+                        image.content_type,
+                        encode_image(&image.bytes)
+                    )?;
+                }
+            }
+        }
+        for post in &self.posts {
+            writeln!(
+                file,
+                "post\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                post.id,
+                encode(&post.community),
+                encode(&post.author),
+                encode(&post.title),
+                encode(&post.body),
+                encode(&post.flair),
+                encode(&post.age),
+                encode(&post.url),
+                post.score,
+                post.reply_count,
+                post.sensitive,
+                post.image,
+                post.spoiler,
+                post.brand_affiliate,
+            )?;
+            if let Some(poll) = &post.poll {
+                write!(file, "post-poll\t{}\t{}", post.id, poll.closes_at)?;
+                for option in &poll.options {
+                    write!(file, "\t{}", encode(option))?;
+                }
+                writeln!(file)?;
+                for (username, option) in &poll.votes {
+                    writeln!(
+                        file,
+                        "post-poll-vote\t{}\t{}\t{}",
+                        post.id,
+                        encode(username),
+                        option
+                    )?;
+                }
+            }
+            if let Some(source) = post.repost_of {
+                writeln!(
+                    file,
+                    "post-repost\t{}\t{}\t{}",
+                    post.id, source, post.repost_title_from_source
+                )?;
+            }
+            for media in &post.media {
+                writeln!(
+                    file,
+                    "post-media\t{}\t{}\t{}",
+                    post.id,
+                    encode(&media.key),
+                    encode(&media.content_type)
+                )?;
+            }
+        }
+        for comment in &self.comments {
+            let parent = comment.parent.map_or_else(String::new, |id| id.to_string());
+            writeln!(
+                file,
+                "comment\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                comment.id,
+                comment.post,
+                parent,
+                encode(&comment.author),
+                encode(&comment.body),
+                encode(&comment.age),
+                comment.score
+            )?;
+        }
+        for report in &self.reports {
+            writeln!(
+                file,
+                "report\t{}\t{}\t{}\t{}\t{}",
+                report.id,
+                report.post,
+                encode(&report.region),
+                encode(&report.details),
+                report.reviewed,
+            )?;
+        }
+        for message in &self.mod_mail {
+            writeln!(
+                file,
+                "mod-mail\t{}\t{}\t{}\t{}\t{}\t{}",
+                message.id,
+                encode(&message.community),
+                encode(&message.sender),
+                encode(&message.subject),
+                encode(&message.body),
+                encode(&message.reply)
+            )?;
+        }
+        writeln!(
+            file,
+            "moderation-sequence\t{}\t{}",
+            self.next_mod_event, self.next_saved_response
+        )?;
+        for event in &self.mod_log {
+            writeln!(
+                file,
+                "moderation-event\t{}\t{}\t{}\t{}",
+                event.id,
+                encode(&event.community),
+                encode(&event.action),
+                event.at
+            )?;
+        }
+        for response in &self.saved_responses {
+            writeln!(
+                file,
+                "saved-response\t{}\t{}\t{}\t{}",
+                response.id,
+                encode(&response.community),
+                encode(&response.title),
+                encode(&response.body)
+            )?;
+        }
+        writeln!(file, "schedule-sequence\t{}", self.next_scheduled)?;
+        for item in &self.scheduled {
+            let event_start = item
+                .event_start
+                .map_or_else(String::new, |time| time.to_string());
+            let event_end = item
+                .event_end
+                .map_or_else(String::new, |time| time.to_string());
+            let post_id = item.post_id.map_or_else(String::new, |id| id.to_string());
+            writeln!(file, "scheduled-item\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{event_start}\t{event_end}\t{}\t{post_id}",
+                item.id, encode(&item.community), encode(&item.kind), encode(&item.title), encode(&item.body),
+                encode(&item.url), encode(&item.flair), item.sensitive, item.spoiler, item.brand_affiliate,
+                item.publish_at, encode(&item.zone), encode(&item.status))?;
+        }
+        writeln!(file, "restriction-sequence\t{}", self.next_restriction)?;
+        for item in &self.restrictions {
+            writeln!(
+                file,
+                "community-restriction\t{}\t{}\t{}\t{}\t{}\t{}",
+                item.id,
+                encode(&item.community),
+                encode(&item.username),
+                encode(&item.kind),
+                encode(&item.reason),
+                item.created_at
+            )?;
+        }
+        for feed in &self.custom_feeds {
+            write!(
+                file,
+                "F\t{}\t{}\t@\t{}\t{}\t{}",
+                feed.id,
+                encode(&feed.name),
+                encode(&feed.description),
+                feed.private,
+                feed.show_on_profile
+            )?;
+            for slug in &feed.communities {
+                write!(file, "\t{}", encode(slug))?;
+            }
+            writeln!(file)?;
+        }
+        for slug in &self.recent {
+            writeln!(file, "V\t{}", encode(slug))?;
+        }
+        for id in &self.history {
+            writeln!(file, "H\t{id}")?;
+        }
+        for (label, votes) in [("vote", &self.votes), ("comment-vote", &self.comment_votes)] {
+            for (id, vote) in votes {
+                writeln!(file, "{label}\t{id}\t{vote}")?;
+            }
+        }
+        for (label, ids) in [
+            ("saved", &self.saved),
+            ("hidden", &self.hidden),
+            ("profile-hidden-post", &self.profile_hidden_posts),
+            ("profile-hidden-comment", &self.profile_hidden_comments),
+        ] {
+            for id in ids {
+                writeln!(file, "{label}\t{id}")?;
+            }
+        }
+        for (label, values) in [
+            ("joined", &self.joined),
+            ("muted", &self.muted),
+            ("blocked", &self.blocked),
+        ] {
+            for value in values {
+                writeln!(file, "{label}\t{}", encode(value))?;
+            }
+        }
+        for keyword in &self.keywords {
+            writeln!(file, "keyword\t{}", encode(keyword))?;
+        }
+        Ok(())
+    }
+}
+
+fn seed_news(first_id: u64) -> [Post; 2] {
+    [
+        (first_id, "media-lab", "archivewire", "Copperfen community radio opens its archive to the public", "In this fictional local brief, the Copperfen volunteer station catalogued 400 hours of interviews, live music, and call-in shows. Listeners can browse by year or contribute episode notes.", "1h", 76),
+        (first_id + 1, "public-square", "transitdesk", "Glassfern Ward opens a tool library inside its old tram depot", "In this fictional local brief, volunteers in Glassfern Ward started lending hand tools this week. Members can book a repair table on Saturdays.", "42m", 103),
+    ].map(|(id, community, author, title, body, age, score)| Post {
+        id, community: community.into(), author: author.into(), title: title.into(), body: body.into(),
+        flair: "News".into(), age: age.into(), url: String::new(), score, reply_count: 0,
+        sensitive: false, spoiler: false, brand_affiliate: false, image: false,
+        poll: None, repost_of: None, repost_title_from_source: false, media: Vec::new(),
+    })
+}
+
+fn checked_image(content_type: &str, bytes: Vec<u8>) -> Result<ProfileAvatar, String> {
+    if bytes.len() > IMAGE_LIMIT {
+        return Err("Choose an image of 512 KiB or less.".into());
+    }
+    let content_type = match content_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => "image/png",
+        "image/jpeg" if bytes.starts_with(b"\xff\xd8\xff") => "image/jpeg",
+        "image/webp" if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") => {
+            "image/webp"
+        }
+        _ => return Err("Choose a PNG, JPEG, or WebP image.".into()),
+    };
+    Ok(ProfileAvatar {
+        content_type,
+        bytes,
+    })
+}
+
+fn validate_post_media(media: &[PostMedia]) -> Result<(), String> {
+    if media.is_empty()
+        || media.len() > 6
+        || media.len() > 1
+            && media
+                .iter()
+                .any(|item| item.content_type.starts_with("video/"))
+    {
+        return Err("Choose up to six images or one video.".into());
+    }
+    if media.iter().any(|item| {
+        !matches!(
+            item.content_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "video/mp4" | "video/webm"
+        ) || item.key.len() != 48
+            || !item
+                .key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }) {
+        return Err("This media attachment is unavailable.".into());
+    }
+    Ok(())
+}
+
+fn encode_image(bytes: &[u8]) -> String {
+    let hex = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(char::from(hex[usize::from(byte >> 4)]));
+        encoded.push(char::from(hex[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn decode_image(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > IMAGE_LIMIT * 2 || encoded.len() % 2 != 0 {
+        return None;
+    }
+    encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = char::from(pair[0]).to_digit(16)?;
+            let low = char::from(pair[1]).to_digit(16)?;
+            Some((high * 16 + low) as u8)
+        })
+        .collect()
+}
+
+fn value<'a>(form: &'a BTreeMap<String, String>, key: &str) -> &'a str {
+    form.get(key).map_or("", |value| value.trim())
+}
+
+fn bounded<'a>(
+    form: &'a BTreeMap<String, String>,
+    key: &str,
+    label: &str,
+    limit: usize,
+) -> Result<&'a str, String> {
+    let field = value(form, key);
+    if field.chars().count() > limit {
+        return Err(format!("{label} can be up to {limit} characters."));
+    }
+    Ok(field)
+}
+
+fn required<'a>(
+    form: &'a BTreeMap<String, String>,
+    key: &str,
+    label: &str,
+    limit: usize,
+) -> Result<&'a str, String> {
+    let field = bounded(form, key, label, limit)?;
+    if field.is_empty() {
+        return Err(format!("{label} is required."));
+    }
+    Ok(field)
+}
+
+fn checked_slug(slug: &str) -> Result<String, String> {
+    let slug = slug.to_ascii_lowercase();
+    if !(2..=32).contains(&slug.len())
+        || !slug
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || slug.starts_with('-')
+        || slug.ends_with('-')
+    {
+        return Err("Use 2 to 32 letters, numbers, or hyphens for the community address. Begin and end with a letter or number.".into());
+    }
+    if matches!(
+        slug.as_str(),
+        "home"
+            | "all"
+            | "saved"
+            | "communities"
+            | "settings"
+            | "policy"
+            | "profile"
+            | "following"
+            | "popular"
+            | "news"
+    ) {
+        return Err("That community address is reserved.".into());
+    }
+    Ok(slug)
+}
+
+fn community_details(form: &BTreeMap<String, String>) -> Result<(String, String, String), String> {
+    let name = required(form, "name", "Community name", 60)?;
+    let description = bounded(form, "description", "Description", 500)?;
+    let guidelines = bounded(form, "guidelines", "Guidelines", 2_000)?;
+    Ok((name.into(), description.into(), guidelines.into()))
+}
+
+fn checked_topic(topic: &str) -> Result<String, String> {
+    if topic.len() > 40
+        || topic.starts_with('-')
+        || topic.ends_with('-')
+        || !topic
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("Choose a community topic with up to 40 letters, numbers, or hyphens.".into());
+    }
+    Ok(topic.to_ascii_lowercase())
+}
+
+fn community_visibility(form: &BTreeMap<String, String>) -> Result<Option<(String, bool)>, String> {
+    if !form.contains_key("visibility") {
+        return Ok(None);
+    }
+    let visibility = value(form, "visibility");
+    if !matches!(visibility, "public" | "restricted" | "private") {
+        return Err("Choose a public, restricted, or private community.".into());
+    }
+    Ok(Some((visibility.into(), value(form, "mature") == "on")))
+}
+
+fn feed_visibility(form: &BTreeMap<String, String>) -> Option<(bool, bool)> {
+    if value(form, "visibility_present") != "1" {
+        return None;
+    }
+    let private = value(form, "private") == "on";
+    Some((private, !private && value(form, "show_on_profile") == "on"))
+}
+
+fn post_content(form: &BTreeMap<String, String>) -> Result<(String, String, String), String> {
+    let title = required(form, "title", "Title", 160)?;
+    let body = bounded(form, "body", "Post text", TEXT_LIMIT)?;
+    let url = bounded(form, "url", "Link", 2_000)?;
+    if !url.is_empty() {
+        let host = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .map_or("", |rest| rest.split(['/', '?', '#']).next().unwrap_or(""));
+        if host.is_empty()
+            || host.contains('@')
+            || url.contains('\\')
+            || url.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        {
+            return Err("Enter a full http:// or https:// link.".into());
+        }
+    }
+    Ok((title.into(), body.into(), url.into()))
+}
+
+fn scheduled_item(
+    form: &BTreeMap<String, String>,
+    id: u64,
+    community: &str,
+    default_zone: &str,
+    now: u64,
+) -> Result<ScheduledItem, String> {
+    let kind = value(form, "kind");
+    if !matches!(kind, "post" | "event") {
+        return Err("Choose a scheduled post or event.".into());
+    }
+    let (title, body, url) = post_content(form)?;
+    let flair = bounded(form, "flair", "Flair", 32)?;
+    let zone = match value(form, "zone") {
+        "" => default_zone,
+        zone => zone,
+    };
+    if !matches!(
+        zone,
+        "America/Chicago" | "UTC" | "central-standard" | "central-daylight"
+    ) {
+        return Err("Choose a supported time zone.".into());
+    }
+    let publish_at =
+        canonical_u64(value(form, "publish_at")).ok_or("Choose a valid publishing time.")?;
+    if publish_at <= now {
+        return Err("Choose a publishing time in the future.".into());
+    }
+    let (event_start, event_end) = if kind == "event" {
+        let start =
+            canonical_u64(value(form, "event_start")).ok_or("Choose a valid event start time.")?;
+        if start < publish_at {
+            return Err("Choose an event start at or after the publishing time.".into());
+        }
+        let end = match value(form, "event_end") {
+            "" => None,
+            value => Some(canonical_u64(value).ok_or("Choose a valid event end time.")?),
+        };
+        if end.is_some_and(|end| end <= start) {
+            return Err("Choose an event end after its start.".into());
+        }
+        (Some(start), end)
+    } else {
+        (None, None)
+    };
+    Ok(ScheduledItem {
+        id,
+        community: community.into(),
+        kind: kind.into(),
+        title,
+        body,
+        url,
+        flair: flair.into(),
+        sensitive: value(form, "sensitive") == "on",
+        spoiler: value(form, "spoiler") == "on",
+        brand_affiliate: value(form, "brand_affiliate") == "on",
+        publish_at,
+        zone: zone.into(),
+        event_start,
+        event_end,
+        status: "pending".into(),
+        post_id: None,
+    })
+}
+
+fn canonical_u64(value: &str) -> Option<u64> {
+    let number: u64 = value.parse().ok()?;
+    (number.to_string() == value).then_some(number)
+}
+
+fn checked_handle(handle: &str) -> Result<String, String> {
+    if !(2..=24).contains(&handle.len())
+        || !handle
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("Use a username with 2 to 24 letters, numbers, or underscores.".into());
+    }
+    Ok(handle.to_ascii_lowercase())
+}
+
+fn restriction_handle(handle: &str) -> Result<String, String> {
+    let handle = handle.trim().to_ascii_lowercase();
+    checked_handle(handle.strip_prefix("u/").unwrap_or(&handle))
+}
+
+fn id_field(form: &BTreeMap<String, String>, key: &str) -> Result<u64, String> {
+    value(form, key)
+        .parse()
+        .map_err(|_| "Choose an existing post or comment.".into())
+}
+
+fn artwork_preview_id(form: &BTreeMap<String, String>) -> Result<u64, String> {
+    value(form, "artwork_preview")
+        .parse()
+        .map_err(|_| "Choose a valid artwork preview.".into())
+}
+
+fn next_id(sequence: &mut u64) -> Result<u64, String> {
+    let id = *sequence;
+    *sequence = id
+        .checked_add(1)
+        .ok_or("The local prototype has reached its storage limit.")?;
+    Ok(id)
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs())
+}
+
+fn direction(form: &BTreeMap<String, String>) -> Result<i8, String> {
+    match value(form, "direction") {
+        "1" => Ok(1),
+        "-1" => Ok(-1),
+        _ => Err("Choose an upvote or downvote.".into()),
+    }
+}
+
+fn vote(votes: &mut BTreeMap<u64, i8>, id: u64, direction: i8) {
+    if votes.get(&id) == Some(&direction) {
+        votes.remove(&id);
+    } else {
+        votes.insert(id, direction);
+    }
+}
+
+fn toggle<T: Ord>(set: &mut BTreeSet<T>, item: T) -> bool {
+    if set.remove(&item) {
+        return false;
+    }
+    set.insert(item)
+}
+
+fn encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '%' => encoded.push_str("%25"),
+            '\t' => encoded.push_str("%09"),
+            '\r' => encoded.push_str("%0D"),
+            '\n' => encoded.push_str("%0A"),
+            _ => encoded.push(ch),
+        }
+    }
+    encoded
+}
+
+fn decode(value: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(value.len());
+    let mut pieces = value.split('%');
+    decoded.push_str(pieces.next()?);
+    for piece in pieces {
+        let (code, rest) = (piece.get(..2)?, piece.get(2..)?);
+        decoded.push(match code {
+            "25" => '%',
+            "09" => '\t',
+            "0D" => '\r',
+            "0A" => '\n',
+            _ => return None,
+        });
+        decoded.push_str(rest);
+    }
+    Some(decoded)
+}
+
+fn number<T: std::str::FromStr>(value: &str) -> Option<T> {
+    value.parse().ok()
+}
+
+fn optional_number<T: std::str::FromStr>(value: &str) -> Option<Option<T>> {
+    if value.is_empty() {
+        Some(None)
+    } else {
+        Some(Some(number(value)?))
+    }
+}
