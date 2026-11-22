@@ -70,6 +70,9 @@ mod recurring_schedules_tests;
 #[path = "model/timed_restrictions.rs"]
 mod timed_restrictions;
 use timed_restrictions::{representable_expiration, restriction_expiration};
+#[path = "model/wiki.rs"]
+mod wiki;
+pub use wiki::{canonical_wiki_slug, WikiPage, WIKI_BODY_LIMIT, WIKI_SLUG_LIMIT, WIKI_TITLE_LIMIT};
 
 const FORMAT: &str = "commonline-v2";
 const LEGACY_FORMAT: &str = "commonline-v1";
@@ -98,6 +101,7 @@ pub struct Community {
     pub owner: Option<String>,
     highlighted_posts: Vec<u64>,
     rules: Vec<CommunityRule>,
+    wiki_pages: Vec<WikiPage>,
     post_flairs: Vec<CommunityPostFlair>,
     require_post_flair: bool,
     pub topic: String,
@@ -515,6 +519,7 @@ impl State {
                 owner: None,
                 highlighted_posts: Vec::new(),
                 rules: Vec::new(),
+                wiki_pages: Vec::new(),
                 post_flairs: Vec::new(),
                 require_post_flair: false,
                 topic: String::new(),
@@ -1209,6 +1214,11 @@ impl State {
             "save-community-rule" => self.save_community_rule(form),
             "move-community-rule" => self.move_community_rule(form),
             "delete-community-rule" => self.delete_community_rule(form),
+            "create-wiki-page" => self.create_wiki_page(form),
+            "save-wiki-page" => self.save_wiki_page(form),
+            "publish-wiki-page" => self.publish_wiki_page(form),
+            "grant-wiki-editor" => self.set_wiki_editor(form, true),
+            "revoke-wiki-editor" => self.set_wiki_editor(form, false),
             "save-post-flair" => self.save_post_flair(form),
             "delete-post-flair" => self.delete_post_flair(form),
             "set-post-flair-policy" => self.set_post_flair_policy(form),
@@ -1413,6 +1423,7 @@ impl State {
             owner: Some(self.username.clone()),
             highlighted_posts: Vec::new(),
             rules: Vec::new(),
+            wiki_pages: Vec::new(),
             post_flairs: Vec::new(),
             require_post_flair: false,
             topic,
@@ -2694,6 +2705,7 @@ impl State {
                     owner: Some(decode(owner)?),
                     highlighted_posts: highlights::read_order(highlights)?,
                     rules: Vec::new(),
+                    wiki_pages: Vec::new(),
                     post_flairs: Vec::new(),
                     require_post_flair: false,
                     topic,
@@ -2703,6 +2715,12 @@ impl State {
             }
             ["community-rule", slug, id, title, description] => {
                 self.read_community_rule(slug, id, title, description)?;
+            }
+            ["wiki-page", community, slug, revision, title, body, published @ ..] => {
+                self.read_wiki_page(community, slug, revision, title, body, published)?;
+            }
+            ["wiki-editor", community, slug, handle] => {
+                self.read_wiki_editor(community, slug, handle)?;
             }
             ["community-rule-sequence", next] => {
                 let next = canonical_u64(next).filter(|&value| value > 0)?;
@@ -3273,6 +3291,7 @@ impl State {
             )?;
             community.write_rules(file)?;
             community.write_post_flairs(file)?;
+            community.write_wiki(file)?;
             for (kind, image) in [
                 ("icon", &community.icon_image),
                 ("banner", &community.banner_image),

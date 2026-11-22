@@ -27,6 +27,7 @@ mod restricted;
 mod scheduled;
 mod search;
 mod session;
+mod wiki;
 
 pub(crate) use account::live_messages;
 
@@ -39,8 +40,8 @@ use crate::http::{Request, Response};
 use crate::mail::AccountMail;
 use crate::media;
 use crate::model::{
-    Comment, Community, ContentKind, CustomFeed, FeedLayout, ModPermission, Post, ProfileAvatar,
-    State, DELETED_ACCOUNT,
+    canonical_wiki_slug, Comment, Community, ContentKind, CustomFeed, FeedLayout, ModPermission,
+    Post, ProfileAvatar, State, DELETED_ACCOUNT,
 };
 use crate::schedule_time;
 
@@ -314,6 +315,16 @@ pub fn route(
         }
         if matches!(
             action,
+            "create-wiki-page"
+                | "save-wiki-page"
+                | "publish-wiki-page"
+                | "grant-wiki-editor"
+                | "revoke-wiki-editor"
+        ) {
+            return wiki_submission(state, auth, path, action, &request.form);
+        }
+        if matches!(
+            action,
             "remove-content"
                 | "restore-content"
                 | "lock-discussion"
@@ -514,6 +525,45 @@ pub fn route(
             ),
             _ => return missing(state),
         },
+        "/communities/wiki" => {
+            let Some(item) = community(state, field(query, "community"))
+                .filter(|item| item.owner.is_some() && state.can_view_community(item))
+            else {
+                return missing(state);
+            };
+            let slug = field(query, "page");
+            let (page, title) = if slug.is_empty() {
+                (None, wiki::TITLE)
+            } else {
+                let Some(page) = item.wiki_page(slug) else {
+                    return missing(state);
+                };
+                let Some(published) = &page.published else {
+                    return missing(state);
+                };
+                (Some(page), published.title.as_str())
+            };
+            (title, item.slug.as_str(), wiki::public(state, item, page))
+        }
+        "/communities/wiki/edit" => {
+            let Some(item) = community(state, field(query, "community")) else {
+                return missing(state);
+            };
+            let Some(page) = item
+                .wiki_page(field(query, "page"))
+                .filter(|page| state.can_edit_wiki_page(item, page))
+            else {
+                return missing(state);
+            };
+            if state.can_moderate(item, ModPermission::Content) {
+                return Response::redirect(&wiki::tools_url(item, &page.slug));
+            }
+            (
+                "Edit wiki draft",
+                item.slug.as_str(),
+                wiki::edit(state, item, page, None),
+            )
+        }
         "/feeds/new" => ("Create custom feed", "feeds", custom::editor(state, None)),
         "/feeds/settings" => match field(query, "id")
             .parse::<u64>()
@@ -1224,6 +1274,65 @@ fn community_rule_submission(
     }
 }
 
+fn wiki_submission(
+    state: &mut State,
+    auth: &AuthStore,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let slug = field(form, "community");
+    let Some(item) = community(state, slug) else {
+        return missing(state);
+    };
+    let page_slug = field(form, "page");
+    let creating = action == "create-wiki-page";
+    let moderator = state.can_moderate(item, ModPermission::Content);
+    let page = item.wiki_page(page_slug);
+    let member_edit =
+        action == "save-wiki-page" && page.is_some_and(|page| state.can_edit_wiki_page(item, page));
+    if (!creating && page.is_none()) || !(moderator || member_edit) {
+        return missing(state);
+    }
+
+    let created_slug = creating.then(|| canonical_wiki_slug(page_slug).unwrap_or_default());
+    let page_slug = created_slug.as_deref().unwrap_or(page_slug);
+    let return_url = if moderator {
+        wiki::tools_url(item, page_slug)
+    } else {
+        wiki::edit_url(item, page_slug)
+    };
+    let handle = field(form, "handle").trim().to_ascii_lowercase();
+    let handle = handle.strip_prefix("u/").unwrap_or(&handle);
+    let result = if action == "grant-wiki-editor" && !auth.has_account(handle) {
+        Err("Choose a registered ThreadPorch account.".into())
+    } else {
+        state.apply(action, form, path)
+    };
+    match result {
+        Ok(notice) => Response::redirect(&format!("{return_url}&notice={}", encode(notice))),
+        Err(error) => {
+            let Some(item) = community(state, slug) else {
+                return missing(state);
+            };
+            let content = if moderator {
+                moderation_workspace::wiki_error(state, item, form, &error)
+            } else {
+                let Some(page) = item.wiki_page(page_slug) else {
+                    return missing(state);
+                };
+                wiki::edit(state, item, page, Some((form, &error)))
+            };
+            let (active, title) = if moderator {
+                ("mod-workspace", wiki::TITLE)
+            } else {
+                (item.slug.as_str(), "Edit wiki draft")
+            };
+            Response::html(layout(state, active, title, &content, "", ""))
+        }
+    }
+}
+
 fn content_submission(
     state: &mut State,
     path: &Path,
@@ -1622,6 +1731,7 @@ fn icon(name: &str) -> String {
         "shield" => "<path d='M12 3 4 6v5c0 5 3 8 8 10 5-2 8-5 8-10V6zM9 12l2 2 4-4'/>",
         "spark" => "<path d='M12 2v20M2 12h20M5 5l14 14m0-14L5 19'/>",
         "log" => "<rect x='5' y='3' width='14' height='18' rx='2'/><path d='M9 8h6m-6 4h6m-6 4h4'/>",
+        "book" => "<path d='M12 6c-2-2-6-2-9-1v14c3-1 7-1 9 1 2-2 6-2 9-1V5c-3-1-7-1-9 1v14'/>",
         "news" => "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='M7 9h4v4H7zm7 0h3m-3 4h3m-10 3h10'/>",
         "trend" => "<path d='m3 17 6-6 4 3 7-8m-5 0h5v5'/>",
         "mail" => "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='m4 7 8 6 8-6'/>",
@@ -2351,6 +2461,15 @@ fn feed(
                 "<a class='button light' href='/moderation/tools?community={}'>{} Mod tools</a>",
                 encode(&item.slug),
                 icon("shield")
+            )
+            .unwrap();
+        }
+        if item.owner.is_some() {
+            write!(
+                html,
+                "<a class='button light' href='{}'>{} Wiki</a>",
+                escape(&wiki::public_url(item, "")),
+                icon("book"),
             )
             .unwrap();
         }

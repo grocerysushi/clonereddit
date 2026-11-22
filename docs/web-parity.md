@@ -371,11 +371,17 @@ Moderators can choose **All conditions** to require every configured condition o
 
 Chromium checks at 1440 and 390 CSS pixels verified that each condition can trigger a rule in **Any condition** mode, for both flagging and removal. They also verified mode changes after restart and **All conditions** behavior for existing rules.
 
+## Community wikis update
+
+Workflow **096** is implemented. Moderators can create, edit, and publish Markdown pages from **Mod Tools → Wiki**. They can grant or revoke editing for each page. Joined or approved members with a grant can edit that page’s draft. Readers see the last published version under the community’s **Wiki**, subject to community visibility. This brings the implementation count to **94 implemented, 5 partial, and 1 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels verified creating and publishing pages, changing the saved draft while readers still saw the live version, and granting and revoking editor access. The checks also covered private-community access, stale edits, and restart. Rust checks covered state persistence, membership changes, bans, and account deletion.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-3. Expand community operations. Add granular role permissions, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
+3. Expand community operations. Add granular role permissions, moderator invitations, and threaded mod mail with archiving. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 
 ## Reddit Help references

@@ -10,7 +10,7 @@ use super::{
     account_byline, action_fields, action_form, can_view_post, community_icon, community_owner,
     community_url, display_post_title, encode, escape, field, hidden, icon, score,
 };
-use super::{restricted, scheduled};
+use super::{restricted, scheduled, wiki};
 
 #[path = "automod.rs"]
 mod automod;
@@ -93,6 +93,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Manage reporting rules and view topic guidelines.",
     ),
     (
+        "wiki",
+        wiki::TITLE,
+        "book",
+        "Create and publish wiki pages and manage their editors.",
+    ),
+    (
         "post-flair",
         POST_FLAIR_TITLE,
         "tag",
@@ -145,7 +151,9 @@ pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
         "scheduled" => ModPermission::Schedule,
         "restricted-users" => ModPermission::Restrictions,
         "appeals" => ModPermission::Appeals,
-        "content" | "automod" | "highlights" | "rules" | "post-flair" => ModPermission::Content,
+        "content" | "automod" | "highlights" | "rules" | "post-flair" | "wiki" => {
+            ModPermission::Content
+        }
         _ => return false,
     };
     state.can_moderate(item, permission)
@@ -182,6 +190,7 @@ pub(super) fn render(
             "discussions" => workspace.discussions(state),
             "highlights" => workspace.highlights(state),
             "rules" => workspace.rules(state, field(query, "edit"), field(query, "delete"), None),
+            "wiki" => wiki::tools(state, item, query, None),
             "post-flair" => {
                 post_flair_tools::render(item, field(query, "edit"), field(query, "delete"), None)
             }
@@ -224,6 +233,22 @@ pub(super) fn automod_error(
         let body = automod::rules(state, item, field(form, "id"), Some((form, error)));
         workspace.frame(state, "automod", AUTOMOD_TITLE, "", &body)
     }
+}
+
+pub(super) fn wiki_error(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let new_page = BTreeMap::new();
+    let query = if field(form, "action") == "create-wiki-page" {
+        &new_page
+    } else {
+        form
+    };
+    let body = wiki::tools(state, item, query, Some((form, error)));
+    Workspace::new(state, item).frame(state, "wiki", wiki::TITLE, "", &body)
 }
 
 pub(super) fn automod_return_url(item: &Community, form: &BTreeMap<String, String>) -> String {

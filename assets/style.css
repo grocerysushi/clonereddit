@@ -755,6 +755,21 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-community-rule-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .mod-community-rule-actions .button { margin: 0; min-height: 34px; padding: 4px 8px; font-size: .8rem; }
 .mod-community-rule-actions .button:disabled { opacity: .55; cursor: default; }
+.wiki-public, .wiki-editor { min-width: 0; overflow-wrap: anywhere; }
+.wiki-toolbar, .wiki-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.wiki-public > .wiki-toolbar { margin-bottom: 12px; }
+.wiki-row { justify-content: space-between; }
+.wiki-row > * { min-width: 0; }
+.wiki-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.wiki-list > li { padding-block: 8px; border-top: 1px solid var(--line); }
+.wiki-list .button { margin-top: 0; }
+.wiki-editor .stack-form { margin-top: 12px; }
+.wiki-editor > .muted { margin-top: 4px; }
+.wiki-editor .button:disabled { opacity: .55; cursor: default; }
+.wiki-public > :is(.notice, .preference-list) { margin-top: 12px; }
+.wiki-page-link { font-weight: 650; text-decoration: underline; text-underline-offset: 3px; }
+.wiki-content { margin-top: 13px; }
+.wiki-content :is(h1, h2, h3, h4, h5, h6) { font: 700 1.05rem / 1.35 var(--sans); letter-spacing: normal; }
 .mod-discussion-actions, .mod-discussion-lock-controls, .mod-comment-lock-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .mod-discussion-actions .button { margin: 0; font-size: .8rem; }
 .mod-discussion-lock-controls[data-discussion-locked='true'] .mod-discussion-lock-status,

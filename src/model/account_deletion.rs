@@ -73,6 +73,9 @@ impl State {
             }
         }
         for community in &mut self.communities {
+            for page in &mut community.wiki_pages {
+                page.editors.retain(|editor| editor != handle);
+            }
             if community.owner.as_deref() == Some(handle) {
                 community.owner = Some(DELETED_ACCOUNT.into());
             }
