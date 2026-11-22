@@ -12,6 +12,24 @@
   --serif: Georgia, "Times New Roman", serif;
 }
 
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #161b16;
+  --card: #212820;
+  --ink: #eef0e7;
+  --quiet: #b2bdac;
+  --line: #3d4a3d;
+  --light-lime: #34462f;
+  --pale: #2a352b;
+  --focus: #bbde68;
+  --accent-ink: #cce58d;
+  --field: #171d17;
+  --control-line: #707d69;
+  --error-paper: #422d29;
+  --error-line: #84594e;
+  --error-ink: #efb8a7;
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 html { background: var(--paper); scroll-padding-top: 92px; }
 body { margin: 0; color: var(--ink); font: 1rem/1.55 var(--sans); }
@@ -322,6 +340,8 @@ textarea { resize: vertical; }
 .stack-form legend { padding: 0 3px; font-size: .9rem; font-weight: 750; }
 .stack-form .checkbox { display: flex; align-items: center; gap: 8px; font-weight: 500; padding: 3px 0; }
 input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
+.appearance-settings .stack-form { max-width: 38rem; }
+.appearance-settings .stack-form p { margin-top: 6px; font-size: .85rem; }
 .preference-list, .policy-page h2, .policy-page .form-actions { margin-top: 22px; }
 .preference-list h2:not(:first-child) { margin-top: 16px; }
 .preference-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: .93rem; }
@@ -836,6 +856,112 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .restricted-duration > small { grid-column: 1 / -1; }
 .restricted-error { margin-top: 8px; background: #f8e8de; border-color: #e7c5b4; color: #78382d; }
 .community-restriction-note { margin: 7px 0; font-size: .9rem; }
+
+/* Surfaces that use colors outside the shared palette. */
+:where(html[data-theme="dark"]) :focus-visible,
+:where(html[data-theme="dark"]) .search:focus-within,
+:where(html[data-theme="dark"]) .notification-switch-control input:focus-visible + .notification-switch-track {
+  outline-color: var(--focus);
+}
+:where(html[data-theme="dark"]) ::placeholder { color: var(--quiet); opacity: 1; }
+:where(html[data-theme="dark"]) input:is([type="radio"], [type="checkbox"]) { accent-color: var(--focus); }
+:where(html[data-theme="dark"]) :is(
+  .stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea),
+  .post-search-filters input[type="search"], .account-security input[type="email"],
+  .restricted-form input[type="number"], .mod-automod-conditions input[type="number"],
+  .reply-form :is(textarea, input[type="text"]), .discussion-search input[type="search"],
+  .scheduled-form input[type="datetime-local"], .mod-workspace select,
+  .mod-tool-search input, .mod-appeal-search input, .profile-share input, .comment-share-controls input
+) {
+  background: var(--field);
+  border-color: var(--control-line);
+}
+:where(html[data-theme="dark"]) :is(.search, .button.light, .account-shortcut, .sort-picker > summary, .feed-layout-switch) {
+  border-color: var(--control-line);
+}
+:where(html[data-theme="dark"]) :is(.button.light:hover, .sort-picker > summary:hover, .action:hover, .action.saved) {
+  background: var(--pale);
+}
+:where(html[data-theme="dark"]) .button.dark { background: #aecf64; color: var(--paper); }
+:where(html[data-theme="dark"]) .button.dark:hover { background: #c6e483; }
+:where(html[data-theme="dark"]) :is(
+  .account-delete-form .account-delete-danger, .comment-delete-form .button.dark,
+  .mod-community-rule-delete-form .button.dark, .post-flair-delete-confirm .button.dark
+) {
+  background: #74362e;
+  color: #fff;
+}
+:where(html[data-theme="dark"]) :is(
+  .account-delete-form .account-delete-danger, .comment-delete-form .button.dark,
+  .mod-community-rule-delete-form .button.dark, .post-flair-delete-confirm .button.dark
+):hover {
+  background: #8c4438;
+}
+:where(html[data-theme="dark"]) .account-delete-entry .account-delete-link { color: var(--error-ink); border-color: var(--error-line); }
+:where(html[data-theme="dark"]) .account-delete-entry .account-delete-link:hover { background: var(--error-paper); }
+:where(html[data-theme="dark"]) .notice { border-color: #617654; color: var(--accent-ink); }
+:where(html[data-theme="dark"]) :is(
+  .notice.setup-error, .comment-form-error, .publishing-error, .scheduled-error, .restricted-error,
+  :is(.account-security, .account-preferences) .account-error,
+  .restricted-kind[data-kind="ban"],
+  .mod-discussion-lock-controls[data-discussion-locked="true"] .mod-discussion-lock-status,
+  .mod-comment-lock-controls[data-comment-locked="true"] .mod-comment-lock-status
+) {
+  background: var(--error-paper);
+  border-color: var(--error-line);
+  color: var(--error-ink);
+}
+:where(html[data-theme="dark"]) :is(
+  .wordmark-period, .subtle-link, .back-link, .outgoing, .post-body a, .comment .reference-link,
+  .publishing-source a, .pinned-label, .community-highlights h2 svg, .post-event, .poll-picked,
+  .account-unread, .profile-tabs a[aria-current="page"], .profile-settings-tabs a[aria-current="page"],
+  .setup-steps li[aria-current="step"], .mod-empty-icon
+) {
+  color: var(--accent-ink);
+}
+:where(html[data-theme="dark"]) :is(
+  .overline, .nav-group > a > svg, .mod-tools-nav nav svg, .meta-dot, .action, .review-card > svg
+) {
+  color: var(--quiet);
+}
+:where(html[data-theme="dark"]) .post-body { color: var(--ink); }
+:where(html[data-theme="dark"]) :is(.post-body code, .markup-guide code, .review-card > svg, .votes) { background: var(--pale); }
+:where(html[data-theme="dark"]) .votes button:is(:hover, [aria-pressed="true"]) { background: #4a613d; }
+:where(html[data-theme="dark"]) .action.saved svg { fill: #8eb067; }
+:where(html[data-theme="dark"]) :is(.brand-mark, .profile-avatar-edit, .discussion-search-excerpt mark) { color: var(--paper); }
+:where(html[data-theme="dark"]) .right-policy { background: #304329; border-color: #60754c; }
+:where(html[data-theme="dark"]) .right-policy::after { opacity: .32; }
+:where(html[data-theme="dark"]) :is(.policy-label, .right-policy p) { color: #dfebd3; }
+:where(html[data-theme="dark"]) .policy-button { color: var(--paper); }
+:where(html[data-theme="dark"]) .account-shortcut-count { background: #597e3c; color: #fff; }
+:where(html[data-theme="dark"]) .notification-switch-track::before { background: var(--quiet); }
+:where(html[data-theme="dark"]) .notification-switch-control input:checked + .notification-switch-track {
+  border-color: var(--focus);
+  background: var(--focus);
+}
+:where(html[data-theme="dark"]) .notification-switch-control input:checked + .notification-switch-track::before { background: var(--paper); }
+:where(html[data-theme="dark"]) :is(
+  .account-message-own, .account-secret input, .account-shortcut:is(:hover, [aria-current]),
+  :is(.account-notifications-nav, .account-message-tabs, .comment-sort, .mod-queue-tabs, .creator-insight-ranges) a[aria-current="page"],
+  .poll-vote label:has(input:checked), .stack-form .setup-choice:has(input:checked)
+) {
+  border-color: #617654;
+}
+:where(html[data-theme="dark"]) .home-tabs a[aria-current="page"] { border-bottom-color: var(--focus); }
+:where(html[data-theme="dark"]) :is(.masthead, .mod-tools-header) { border-top-color: var(--control-line); }
+:where(html[data-theme="dark"]) :is(.rising li, .comment:is(.depth-1, .depth-2, .depth-3)) { border-color: var(--line); }
+:where(html[data-theme="dark"]) .comment:target { outline-color: #8ab277; }
+:where(html[data-theme="dark"]) .mast-art {
+  background-image: repeating-radial-gradient(ellipse at 84% 122%, transparent 0 16px, #53674a 17px 18px, transparent 19px 25px);
+}
+:where(html[data-theme="dark"]) .profile-heading { background: linear-gradient(128deg, #2c3c29, var(--card) 72%); }
+:where(html[data-theme="dark"]) .post-image { background: var(--pale); }
+:where(html[data-theme="dark"]) :is(.flair, .content-tag) { background: #344238; color: #d5e5cf; }
+:where(html[data-theme="dark"]) :is(.flair.sensitive, .spoiler-tag, .sensitive-preview) { background: #463c28; color: #f0d08d; }
+:where(html[data-theme="dark"]) .nsfw-tag { background: #492c3c; color: #f3b7c9; }
+:where(html[data-theme="dark"]) :is(.affiliate-tag, .restricted-kind[data-kind="mute"]) { background: #293a45; color: #b8d9f1; }
+:where(html[data-theme="dark"]) :is(.poll-results, .creator-insight-days) meter::-webkit-meter-optimum-value { background: #9ab77e; }
+:where(html[data-theme="dark"]) .creator-insight-days meter.is-negative::-webkit-meter-optimum-value { background: #d9958a; }
 
 @media (max-width: 1130px) {
   .page-shell, .top-inner { padding-left: 24px; padding-right: 24px; gap: 21px; }

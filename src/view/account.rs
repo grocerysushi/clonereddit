@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use super::{account_security, action_form, encode, escape, field, icon, visible_post};
+use super::{account_security, action_form, appearance, encode, escape, field, icon, visible_post};
 use crate::model::{
     ChatRequestPermission, DirectMessage, Notification, NotificationPreferences, State,
 };
@@ -42,8 +42,10 @@ pub(super) fn settings(
         format!("<label class='notification-switch'><span class='notification-switch-text'><strong id='notify-{name}-label'>{label}</strong><small id='notify-{name}-help'>{help}</small></span><span class='notification-switch-control'><input type='checkbox' role='switch' name='{name}' value='on' aria-labelledby='notify-{name}-label' aria-describedby='notify-{name}-help'{checked}><span class='notification-switch-track' aria-hidden='true'></span></span></label>")
     }).collect();
     let chat_settings = chat::settings(chat);
+    let appearance_url = appearance::PATH;
     format!(
         r#"<section class="panel standalone account-preferences"><h1>Account Settings</h1>{feedback}
+<div class="form-actions"><a class="button light" href="{appearance_url}">Appearance</a></div>
 <section aria-labelledby="notification-preferences-title"><h2 id="notification-preferences-title">Notification preferences</h2>
 <p>Choose which future activity appears in your in-app notifications. Muted moderation notices remain available under <a class="subtle-link" href="/notifications?view=moderation">Moderation updates</a>.</p>
 <form class="stack-form notification-settings-form" action="/account/settings" method="post" aria-labelledby="notification-preferences-title">{switches}<button type="submit" class="button dark">Save preferences</button></form></section>{chat_settings}</section>"#

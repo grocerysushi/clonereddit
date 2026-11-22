@@ -13,6 +13,9 @@ use account_data::ProfileData;
 #[path = "model/account_deletion.rs"]
 mod account_deletion;
 pub use account_deletion::DELETED_ACCOUNT;
+#[path = "model/appearance.rs"]
+mod appearance;
+pub use appearance::Appearance;
 #[path = "model/approved_members.rs"]
 mod approved_members;
 pub use approved_members::ApprovedMember;
@@ -380,6 +383,7 @@ pub struct State {
     pub keywords: Vec<String>,
     pub sensitive: String,
     pub feed_layout: FeedLayout,
+    pub appearance: Appearance,
     pub home_joined_only: bool,
     pub reports: Vec<Report>,
     pub messages: Vec<DirectMessage>,
@@ -581,6 +585,7 @@ impl State {
             keywords: Vec::new(),
             sensitive: "blur".into(),
             feed_layout: FeedLayout::default(),
+            appearance: Appearance::default(),
             home_joined_only: false,
             reports: Vec::new(),
             messages: Vec::new(),
@@ -1178,6 +1183,11 @@ impl State {
                 self.feed_layout =
                     FeedLayout::parse(value(form, "layout")).ok_or("Choose Card or Compact.")?;
                 Ok("Feed layout saved.")
+            }
+            "set-appearance" => {
+                self.appearance =
+                    Appearance::parse(value(form, "appearance")).ok_or("Choose Light or Dark.")?;
+                Ok("Appearance saved.")
             }
             "create" => self.create_post(form),
             "create-poll" => self.create_poll(form),
@@ -2987,6 +2997,9 @@ impl State {
             }
             ["feed-layout", layout] => {
                 self.feed_layout = FeedLayout::parse(layout)?;
+            }
+            ["appearance", appearance] => {
+                self.appearance = Appearance::parse(appearance)?;
             }
             ["home-joined-only", joined_only] => {
                 self.home_joined_only = number(joined_only)?;

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
 use super::{
-    checked_handle, encode, encode_image, next_id, required, unix_seconds, value,
+    checked_handle, encode, encode_image, next_id, required, unix_seconds, value, Appearance,
     ChatRequestPermission, Comment, Community, CustomFeed, DirectMessage, FeedLayout, Notification,
     NotificationPreferences, Post, PostDraft, ProfileAvatar, SocialLink, State, DELETED_ACCOUNT,
 };
@@ -22,6 +22,7 @@ pub(super) struct ProfileData {
     keywords: Vec<String>,
     pub(super) sensitive: String,
     feed_layout: FeedLayout,
+    appearance: Appearance,
     home_joined_only: bool,
     pub(super) custom_feeds: Vec<CustomFeed>,
     recent: Vec<String>,
@@ -73,6 +74,7 @@ impl ProfileData {
             keywords: state.keywords.clone(),
             sensitive: state.sensitive.clone(),
             feed_layout: state.feed_layout,
+            appearance: state.appearance,
             home_joined_only: state.home_joined_only,
             custom_feeds: state.custom_feeds.clone(),
             recent: state.recent.clone(),
@@ -110,6 +112,7 @@ impl ProfileData {
         state.keywords = self.keywords;
         state.sensitive = self.sensitive;
         state.feed_layout = self.feed_layout;
+        state.appearance = self.appearance;
         state.home_joined_only = self.home_joined_only;
         state.custom_feeds = self.custom_feeds;
         state.recent = self.recent;
@@ -146,6 +149,7 @@ impl ProfileData {
                 | "notification-preferences"
                 | "chat-request-permission"
                 | "feed-layout"
+                | "appearance"
                 | "home-joined-only"
                 | "F"
                 | "V"
@@ -202,6 +206,9 @@ impl ProfileData {
         }
         if self.feed_layout != FeedLayout::default() {
             writeln!(file, "feed-layout\t{}", self.feed_layout.code())?;
+        }
+        if self.appearance != Appearance::default() {
+            writeln!(file, "appearance\t{}", self.appearance.code())?;
         }
         if self.home_joined_only {
             writeln!(file, "home-joined-only\ttrue")?;

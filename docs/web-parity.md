@@ -377,12 +377,18 @@ Workflow **096** is implemented. Moderators can create, edit, and publish Markdo
 
 Chromium checks at 1440 and 390 CSS pixels verified creating and publishing pages, changing the saved draft while readers still saw the live version, and granting and revoking editor access. The checks also covered private-community access, stale edits, and restart. Rust checks covered state persistence, membership changes, bans, and account deletion.
 
+## Appearance update
+
+Workflow **100** is implemented. **Appearance** lets visitors switch between Light and Dark. The server applies the selected theme when it renders the page. Signed-in choices follow the account, and guests keep their preference in the browser. Light is the default for existing accounts and new visitors. This brings the implementation count to **95 implemented, 5 partial, and 0 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels verified switching both ways, returning to the site, signing out, signing in from a second browser, and restarting the server. They also checked the rendered colors and account and guest preference isolation. Rust checks covered older snapshots and persistence alongside other account preferences.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 3. Expand community operations. Add granular role permissions, moderator invitations, and threaded mod mail with archiving. Preserve moderation decisions and access state across restarts.
-4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
+4. Complete accessibility checks. Run keyboard and screen-reader workflows and cover user-media alternatives and mobile layouts in the main workflows.
 
 ## Reddit Help references
 

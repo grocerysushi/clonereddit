@@ -113,6 +113,7 @@ Recurring posts follow the selected time zone. Monthly schedules use the last da
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 
 37. In **Mod Tools → Wiki**, create a page with a title and a stable address. Save the Markdown draft and publish it when ready. Later edits stay in the draft until a moderator publishes them. Use the page’s editor list to grant or revoke draft editing for a joined or approved member. Members can open their assigned drafts from the community’s **Wiki**. Published pages follow the community’s viewing permissions.
+38. Open **Appearance** from navigation or **Account Settings**, choose **Light** or **Dark**, and select **Save appearance**. The choice follows your account when you sign in. Guest choices are saved in the browser.
 
 Uploaded post and comment attachments are stored in `commonline.state.media` by default. The server appends `.media` to a custom state path. Move or back up the state file, accounts file, and media directory together. Keep those private local files out of source control.
 

@@ -1,6 +1,7 @@
 mod account;
 mod account_security;
 mod appeals;
+mod appearance;
 mod comment_body_editor;
 mod comment_image;
 mod community_appearance;
@@ -52,6 +53,12 @@ pub fn route(
     auth: &mut AuthStore,
     mail: &AccountMail,
 ) -> Response {
+    if state.username.is_empty() {
+        state.appearance = request.browser_appearance();
+    }
+    if request.path == appearance::PATH {
+        return appearance::route(&request, state, path);
+    }
     if request.path.starts_with("/account/") {
         return session::route(&request, state, path, auth, mail);
     }
@@ -1730,6 +1737,7 @@ fn icon(name: &str) -> String {
         "more" => "<path d='M5 12h.01M12 12h.01M19 12h.01' stroke-width='3'/>",
         "shield" => "<path d='M12 3 4 6v5c0 5 3 8 8 10 5-2 8-5 8-10V6zM9 12l2 2 4-4'/>",
         "spark" => "<path d='M12 2v20M2 12h20M5 5l14 14m0-14L5 19'/>",
+        "sun" => "<circle cx='12' cy='12' r='4'/><path d='M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M19 5l-1.5 1.5m-11 11L5 19'/>",
         "log" => "<rect x='5' y='3' width='14' height='18' rx='2'/><path d='M9 8h6m-6 4h6m-6 4h4'/>",
         "book" => "<path d='M12 6c-2-2-6-2-9-1v14c3-1 7-1 9 1 2-2 6-2 9-1V5c-3-1-7-1-9 1v14'/>",
         "news" => "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='M7 9h4v4H7zm7 0h3m-3 4h3m-10 3h10'/>",
@@ -1930,6 +1938,7 @@ fn layout_with_rail(
             "plus",
             "start-community",
         ),
+        (appearance::PATH, "Appearance", "sun", appearance::PATH),
     ]
     .into_iter()
     .filter(|(_, _, _, key)| signed_in || *key != "start-community")
@@ -2119,9 +2128,9 @@ fn layout_with_rail(
     };
     let search_fields = search::header_fields(search_query);
     format!(
-        r##"<!doctype html><html lang="en"><head>
+        r##"<!doctype html><html lang="en" data-theme="{theme}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f6f6f0"><title>{title} · ThreadPorch</title><link rel="stylesheet" href="/style.css"></head>
+<meta name="theme-color" content="{theme_color}"><title>{title} · ThreadPorch</title><link rel="stylesheet" href="/style.css"></head>
 <body><a class="skip" href="#content">Skip to content</a>
 <header class="topbar"><div class="top-inner">
 <a class="wordmark" href="/" aria-label="ThreadPorch home"><span class="brand-mark">{brand}</span>ThreadPorch<span class="wordmark-period">.</span></a>
@@ -2134,6 +2143,8 @@ fn layout_with_rail(
 <aside class="right-rail{rail_class}" aria-label="Additional information">{right}</aside>
 </div></body></html>"##,
         title = escape(title),
+        theme = state.appearance.code(),
+        theme_color = appearance::theme_color(state.appearance),
         brand = icon("mark"),
         search_icon = icon("search"),
         search_view = escape(search_view),

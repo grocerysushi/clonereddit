@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::model::FeedLayout;
+use crate::model::{Appearance, FeedLayout};
 
 const MAX_HEADERS: usize = 16 * 1024;
 const MAX_BODY: usize = 128 * 1024;
@@ -33,7 +33,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const SESSION_COOKIE_NAME: &str = "commonline_session";
 pub(crate) const SESSION_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 const FEED_LAYOUT_COOKIE_NAME: &str = "commonline_feed_layout";
-const FEED_LAYOUT_MAX_AGE_SECS: u64 = 365 * 24 * 60 * 60;
+const APPEARANCE_COOKIE_NAME: &str = "commonline_appearance";
+const BROWSER_PREFERENCE_MAX_AGE_SECS: u64 = 365 * 24 * 60 * 60;
 const WIZARD_FIELDS: &[&str] = &[
     "review_community",
     "setup_step",
@@ -95,18 +96,21 @@ pub struct Request {
 
 impl Request {
     pub fn browser_feed_layout(&self) -> FeedLayout {
+        self.browser_preference(FEED_LAYOUT_COOKIE_NAME, FeedLayout::parse)
+    }
+
+    pub fn browser_appearance(&self) -> Appearance {
+        self.browser_preference(APPEARANCE_COOKIE_NAME, Appearance::parse)
+    }
+
+    fn browser_preference<T: Default>(&self, key: &str, parse: impl Fn(&str) -> Option<T>) -> T {
         self.cookie
             .as_deref()
             .unwrap_or_default()
             .split(';')
             .filter_map(|part| part.trim().split_once('='))
-            .find_map(|(name, value)| {
-                if name == FEED_LAYOUT_COOKIE_NAME {
-                    FeedLayout::parse(value)
-                } else {
-                    None
-                }
-            })
+            .filter(|(name, _)| *name == key)
+            .find_map(|(_, value)| parse(value))
             .unwrap_or_default()
     }
 }
@@ -139,6 +143,7 @@ pub struct Response {
     body_slice: Option<Range<usize>>,
     session_cookie: Option<String>,
     feed_layout_cookie: Option<FeedLayout>,
+    appearance_cookie: Option<Appearance>,
     client_policy: ClientPolicy,
 }
 
@@ -175,6 +180,7 @@ impl Response {
             body_slice: None,
             session_cookie: None,
             feed_layout_cookie: None,
+            appearance_cookie: None,
             client_policy: ClientPolicy::None,
         }
     }
@@ -203,6 +209,11 @@ impl Response {
 
     pub fn with_feed_layout_cookie(mut self, layout: FeedLayout) -> Self {
         self.feed_layout_cookie = Some(layout);
+        self
+    }
+
+    pub fn with_appearance_cookie(mut self, appearance: Appearance) -> Self {
+        self.appearance_cookie = Some(appearance);
         self
     }
 
@@ -281,8 +292,14 @@ impl Response {
         }
         if let Some(layout) = self.feed_layout_cookie {
             headers.push_str(&format!(
-                "Set-Cookie: {FEED_LAYOUT_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={FEED_LAYOUT_MAX_AGE_SECS}\r\n",
+                "Set-Cookie: {FEED_LAYOUT_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={BROWSER_PREFERENCE_MAX_AGE_SECS}\r\n",
                 layout.code()
+            ));
+        }
+        if let Some(appearance) = self.appearance_cookie {
+            headers.push_str(&format!(
+                "Set-Cookie: {APPEARANCE_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={BROWSER_PREFERENCE_MAX_AGE_SECS}\r\n",
+                appearance.code()
             ));
         }
         if self.status == 405 {
