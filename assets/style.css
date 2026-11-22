@@ -336,6 +336,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .reply-form { display: grid; gap: 5px; margin: 10px 0 16px; }
 .reply-form button { justify-self: end; }
 .comment { padding: 12px 0 8px; border-top: 1px solid var(--line); }
+.comment:target { background: var(--light-lime); border-radius: 6px; outline: 2px solid #9db885; outline-offset: 2px; scroll-margin-top: 12px; }
 .comment.depth-1, .comment.depth-2, .comment.depth-3 { padding-left: 12px; border-left: 2px solid #c9d8bc; }
 .comment.depth-1 { margin-left: 18px; }
 .comment.depth-2 { margin-left: 36px; }
@@ -347,9 +348,17 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .comment .post-actions { margin-top: 5px; }
 .comment-edited { color: var(--quiet); font-size: .74rem; }
 .comment-menu { position: relative; margin-left: auto; flex: none; }
-.comment-menu summary { display: grid; place-items: center; padding: 3px; width: 34px; list-style: none; }
-.comment-menu summary::-webkit-details-marker { display: none; }
+.comment-menu > summary { display: grid; place-items: center; padding: 3px; width: 34px; list-style: none; }
+.comment-menu > summary::-webkit-details-marker { display: none; }
 .comment-menu-popover { min-width: 143px; }
+.comment-share > summary { list-style: none; }
+.comment-share > summary::-webkit-details-marker { display: none; }
+.comment-share-controls { width: min(222px, calc(100vw - 64px)); min-width: 0; padding: 4px 7px 6px; }
+.comment-share-controls label { display: grid; gap: 3px; color: var(--quiet); font-size: .8rem; }
+.comment-share-controls input { width: 100%; min-width: 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.comment-share-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 6px; }
+.comment-share-actions .button[hidden] { display: none; }
+.comment-share-controls [role='status'] { font-size: .8rem; }
 .comment-edit-form, .comment-delete-confirm { margin: 9px 0 5px; padding: 9px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--paper); }
 .comment-edit-form { gap: 8px; }
 .comment-delete-confirm h3 { font-size: .98rem; margin: 0; }

@@ -307,7 +307,7 @@ pub fn route(
             return automod_submission(state, path, action, &request.form);
         }
         if matches!(action, "comment" | "edit-comment" | "delete-comment") {
-            return comment_submission(state, path, action, &request.form);
+            return comment_submission(state, path, action, &request);
         }
         if matches!(action, "save-draft" | "delete-draft") {
             return draft_submission(state, path, action, &request.form);
@@ -446,6 +446,7 @@ pub fn route(
                         post,
                         discussion::CommentSort::parse(field(query, "comment_sort")),
                         CommentAction::from_query(query),
+                        &request.origin,
                     ),
                 ),
                 None => return missing(state),
@@ -666,6 +667,8 @@ pub fn route(
     };
     if formatting_editor {
         response.with_wasm_client()
+    } else if request.path == "/thread" {
+        response.with_script_client()
     } else {
         response
     }
@@ -783,12 +786,8 @@ fn public_profile(
     ))
 }
 
-fn comment_submission(
-    state: &mut State,
-    path: &Path,
-    action: &str,
-    form: &BTreeMap<String, String>,
-) -> Response {
+fn comment_submission(state: &mut State, path: &Path, action: &str, request: &Request) -> Response {
+    let form = &request.form;
     let posting = action == "comment";
     let editing = action == "edit-comment";
     let (post_id, existing, parent) = if posting {
@@ -863,7 +862,7 @@ fn comment_submission(
                     error: &error,
                 },
             };
-            let body = thread(state, post, sort, interaction);
+            let body = thread(state, post, sort, interaction, &request.origin);
             Response::html(layout(
                 state,
                 &post.community,
@@ -872,6 +871,7 @@ fn comment_submission(
                 "",
                 "",
             ))
+            .with_script_client()
         }
     }
 }
@@ -3126,6 +3126,7 @@ fn thread(
     post: &Post,
     sort: discussion::CommentSort,
     action: CommentAction<'_>,
+    origin: &str,
 ) -> String {
     let back = sort.thread_url(post.id);
     let mut html = String::from("<a class='back-link' href='/'>← Front page</a>");
@@ -3199,6 +3200,7 @@ fn thread(
                 comment,
                 depth,
                 &back,
+                origin,
                 sort,
                 action,
                 can_write,
@@ -3217,7 +3219,7 @@ fn thread(
             );
         }
     }
-    html.push_str("</section>");
+    html.push_str("</section><script type='module' src='/comment-share.js'></script>");
     html
 }
 
@@ -3285,6 +3287,7 @@ fn comment_card(
     comment: &Comment,
     depth: usize,
     back: &str,
+    origin: &str,
     sort: discussion::CommentSort,
     action: CommentAction<'_>,
     can_write: bool,
@@ -3340,7 +3343,14 @@ fn comment_card(
         })
         .unwrap_or_default();
     let moderation = content_tool_url(state, community, ContentKind::Comment, comment.id);
-    let menu = discussion::menu(state, comment, back, can_write, moderation.as_deref());
+    let menu = discussion::menu(
+        state,
+        comment,
+        back,
+        origin,
+        can_write,
+        moderation.as_deref(),
+    );
     let reply_control = if locked {
         "<span class='comment-lock-note muted'>Replies to this comment are locked.</span>".into()
     } else if can_reply {

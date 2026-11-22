@@ -317,6 +317,12 @@ Workflow **039** is implemented. Authors can open **Insights** from Creator Tool
 
 Chromium checks at 1440 and 390 CSS pixels covered Creator Tools navigation, author and reader access, daily ranges, vote flips and clears, comment activity, and persistence after restart. HTTP checks compared the ranges with recorded activity across days, ignored author and header-only views, and checked legacy posts and deletion.
 
+## Comment sharing update
+
+Workflow **046** is implemented. The **Share** action copies a direct link that opens the discussion at the selected comment. The link follows the recipient’s existing viewing permissions. This brings the implementation count to **86 implemented, 5 partial, and 9 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels verified clipboard contents and the manual copy fallback, then opened nested comments from separate accounts and guest sessions. HTTP checks covered private access, deleted and removed comments, surviving replies, and link targets after restart.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

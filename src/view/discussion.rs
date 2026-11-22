@@ -80,13 +80,15 @@ pub(super) fn menu(
     state: &State,
     comment: &Comment,
     back: &str,
+    origin: &str,
     can_edit: bool,
     moderation: Option<&str>,
 ) -> String {
-    let owns = comment.author == state.username;
-    if comment.deleted || state.username.is_empty() {
+    if comment.deleted {
         return String::new();
     }
+    let signed_in = !state.username.is_empty();
+    let owns = signed_in && comment.author == state.username;
 
     let edit = if owns && can_edit {
         format!(
@@ -108,11 +110,24 @@ pub(super) fn menu(
             escape(url)
         )
     });
-    let report = escape(&reporting::content_url(ContentKind::Comment, comment.id));
+    let report = if signed_in {
+        let url = escape(&reporting::content_url(ContentKind::Comment, comment.id));
+        format!("<a class='menu-item' href='{url}'>Report comment</a>")
+    } else {
+        String::new()
+    };
+    let share = share(comment, origin);
     format!(
-        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{edit}{delete}<a class='menu-item' href='{report}'>Report comment</a>{moderate}</div></details>",
+        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{share}{edit}{delete}{report}{moderate}</div></details>",
         icon("more")
     )
+}
+
+fn share(comment: &Comment, origin: &str) -> String {
+    let permalink = comment_url(&format!("/thread?id={}", comment.post), comment.id);
+    let absolute = escape(&format!("{origin}{permalink}"));
+    let permalink = escape(&permalink);
+    format!("<details class='comment-share' data-comment-share><summary class='menu-item'>Share</summary><div class='comment-share-controls'><label>Comment link<input type='url' readonly data-comment-link value='{absolute}'></label><div class='comment-share-actions'><button type='button' class='button light' data-comment-copy hidden>Copy link</button><a class='subtle-link' data-comment-open href='{permalink}'>Open comment</a></div><p class='muted' data-comment-share-status role='status'></p></div></details>")
 }
 
 pub(super) fn editor(

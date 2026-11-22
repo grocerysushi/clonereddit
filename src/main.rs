@@ -154,6 +154,13 @@ fn run() -> io::Result<()> {
                         include_bytes!("../assets/post-format.wasm").as_slice(),
                     )
                 }
+                "/comment-share.js" => {
+                    return Response::text(
+                        200,
+                        "text/javascript; charset=utf-8",
+                        include_bytes!("../assets/comment-share.js").as_slice(),
+                    )
+                }
                 _ => {}
             }
         }

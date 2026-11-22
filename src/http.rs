@@ -111,6 +111,12 @@ enum UploadTarget {
     InlinePostImage,
 }
 
+enum ClientPolicy {
+    None,
+    Script,
+    Wasm,
+}
+
 pub struct Response {
     status: u16,
     content_type: &'static str,
@@ -120,7 +126,7 @@ pub struct Response {
     body_slice: Option<Range<usize>>,
     session_cookie: Option<String>,
     feed_layout_cookie: Option<FeedLayout>,
-    wasm_client: bool,
+    client_policy: ClientPolicy,
 }
 
 impl Response {
@@ -156,12 +162,17 @@ impl Response {
             body_slice: None,
             session_cookie: None,
             feed_layout_cookie: None,
-            wasm_client: false,
+            client_policy: ClientPolicy::None,
         }
     }
 
+    pub fn with_script_client(mut self) -> Self {
+        self.client_policy = ClientPolicy::Script;
+        self
+    }
+
     pub fn with_wasm_client(mut self) -> Self {
-        self.wasm_client = true;
+        self.client_policy = ClientPolicy::Wasm;
         self
     }
 
@@ -234,10 +245,10 @@ impl Response {
             Some(selection) => &self.body[selection.clone()],
             None => self.body.as_slice(),
         };
-        let client_policy = if self.wasm_client {
-            "; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'"
-        } else {
-            ""
+        let client_policy = match self.client_policy {
+            ClientPolicy::None => "",
+            ClientPolicy::Script => "; script-src 'self'",
+            ClientPolicy::Wasm => "; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'",
         };
         let mut headers = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
