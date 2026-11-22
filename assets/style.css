@@ -280,7 +280,7 @@ main { min-width: 0; }
 .stack-form { display: grid; gap: 17px; margin-top: 20px; }
 .stack-form label { display: grid; gap: 5px; font-size: .9rem; font-weight: 650; }
 .stack-form small { color: var(--quiet); font-weight: 400; }
-.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .account-security input[type="email"], .reply-form textarea { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
+.stack-form :is(input:not([type]), input[type="url"], input[type="password"], select, textarea), .account-security input[type="email"], .restricted-form input[type="number"], .reply-form textarea { width: 100%; border: 1px solid #ced4c6; border-radius: 7px; background: #fff; color: var(--ink); padding: 9px 10px; font-size: .98rem; }
 textarea { resize: vertical; }
 .stack-form .muted { margin: 0; }
 .stack-form button { justify-self: start; }
@@ -660,6 +660,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .restricted-reason { margin-top: 4px; white-space: pre-wrap; }
 .restricted-empty, .restricted-form-panel > .muted { margin-top: 4px; }
 .restricted-form { margin-top: 11px; }
+.restricted-duration { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 12px; }
+.restricted-duration > small { grid-column: 1 / -1; }
 .restricted-error { margin-top: 8px; background: #f8e8de; border-color: #e7c5b4; color: #78382d; }
 .community-restriction-note { margin: 7px 0; font-size: .9rem; }
 

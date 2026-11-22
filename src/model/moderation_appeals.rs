@@ -12,6 +12,7 @@ pub enum AppealStatus {
     Approved,
     Denied,
     Lifted,
+    Expired,
 }
 
 impl AppealStatus {
@@ -21,6 +22,7 @@ impl AppealStatus {
             Self::Approved => "Approved",
             Self::Denied => "Denied",
             Self::Lifted => "Restriction lifted",
+            Self::Expired => "Restriction expired",
         }
     }
 
@@ -30,6 +32,7 @@ impl AppealStatus {
             Self::Approved => "approved",
             Self::Denied => "denied",
             Self::Lifted => "lifted",
+            Self::Expired => "expired",
         }
     }
 
@@ -39,6 +42,7 @@ impl AppealStatus {
             "approved" => Some(Self::Approved),
             "denied" => Some(Self::Denied),
             "lifted" => Some(Self::Lifted),
+            "expired" => Some(Self::Expired),
             _ => None,
         }
     }
@@ -61,8 +65,13 @@ pub struct Appeal {
 
 impl State {
     pub fn can_submit_appeal(&self, restriction: &CommunityRestriction) -> bool {
+        self.can_submit_appeal_at(restriction, unix_seconds())
+    }
+
+    fn can_submit_appeal_at(&self, restriction: &CommunityRestriction, now: u64) -> bool {
         !self.username.is_empty()
             && restriction.username == self.username
+            && restriction.is_active_at(now)
             && !self
                 .appeals
                 .iter()
@@ -75,12 +84,13 @@ impl State {
     ) -> Result<&'static str, String> {
         let id =
             canonical_u64(value(form, "restriction")).ok_or("Choose an active restriction.")?;
+        let now = unix_seconds();
         let restriction = self
             .restrictions
             .iter()
-            .find(|item| item.id == id && item.username == self.username)
+            .find(|item| item.id == id && item.username == self.username && item.is_active_at(now))
             .ok_or("Choose one of your active restrictions.")?;
-        if !self.can_submit_appeal(restriction) {
+        if !self.can_submit_appeal_at(restriction, now) {
             return Err("You have already appealed this restriction.".into());
         }
         let body = required(form, "body", "Appeal", 4_000)?;
@@ -121,6 +131,7 @@ impl State {
             _ => return Err("Choose whether to approve or deny the appeal.".into()),
         };
         let response = required(form, "response", "Decision explanation", 4_000)?;
+        let now = unix_seconds();
         let restriction = self
             .restrictions
             .iter()
@@ -129,6 +140,7 @@ impl State {
                     && &item.community == community
                     && item.username == appeal.appellant
                     && item.kind == appeal.kind
+                    && item.is_active_at(now)
             })
             .ok_or("The restriction attached to this appeal is no longer active.")?;
         if status == AppealStatus::Approved {
@@ -137,7 +149,7 @@ impl State {
         appeal.status = status;
         appeal.response = response.into();
         appeal.reviewer = Some(self.username.clone());
-        appeal.decided_at = Some(unix_seconds());
+        appeal.decided_at = Some(now);
 
         let community = community.clone();
         let appellant = appeal.appellant.clone();
@@ -188,6 +200,17 @@ impl State {
                 restriction.community
             ),
         )
+    }
+
+    pub(super) fn resolve_expired_appeal(&mut self, restriction: &CommunityRestriction, now: u64) {
+        if let Some(appeal) = self.appeals.iter_mut().find(|item| {
+            item.restriction_id == restriction.id && item.status == AppealStatus::Pending
+        }) {
+            appeal.status = AppealStatus::Expired;
+            appeal.response = "This restriction expired automatically.".into();
+            appeal.reviewer = None;
+            appeal.decided_at = Some(now);
+        }
     }
 
     pub(super) fn read_appeal_record(&mut self, fields: &[&str]) -> Option<()> {

@@ -189,11 +189,18 @@ impl App {
         if self.retry_after.is_some_and(|retry| started < retry) {
             return;
         }
+        let now = schedule_time::now();
         let result =
             account_deletion::finish_pending(&mut self.state, &self.state_path, &mut self.auth)
                 .and_then(|()| {
                     self.state
-                        .publish_due(&self.state_path, schedule_time::now())
+                        .expire_restrictions(&self.state_path, now)
+                        .map(|_| ())
+                        .map_err(|error| format!("Could not save restriction expiry. {error}"))
+                })
+                .and_then(|()| {
+                    self.state
+                        .publish_due(&self.state_path, now)
                         .map(|_| ())
                         .map_err(|error| format!("Could not publish scheduled posts. {error}"))
                 });

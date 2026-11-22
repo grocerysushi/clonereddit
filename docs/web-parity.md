@@ -215,11 +215,17 @@ Workflow **071** is implemented. Established message conversations fetch new mes
 
 Independent Chromium profiles at 1440 and 390 CSS pixels exchanged live messages without a page reload. Draft text and selection survived receipt, and a scrolled-back transcript stayed in place. The browser caught up once per message after an interrupted connection. An access check confirmed the signed-in viewer could poll only their own conversation and that revoking the session stopped updates. A separate server check verified ordered catch-up after restart.
 
+## Timed restrictions update
+
+Workflows **079** and **080** are implemented. Moderators can apply permanent or timed community bans and mod mail mutes. Each timed restriction expires separately and can be lifted early. Expiry clears the restriction, closes its pending appeal, and records an automatic moderation event. This brings the implementation count to **72 implemented, 14 partial, and 14 missing**.
+
+Desktop and mobile Chromium checks exercised live timed restrictions with affected and unrelated accounts. The deadlines survived a restart, and the affected accounts regained the corresponding publishing or mod mail access when each timer ran out. A separate server check verified automatic recovery from deadlines that elapsed while the server was stopped, private notifications, and exactly-once expiry processing.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-3. Expand community operations. Add structured rules and reporting, granular role permissions, timed restrictions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
+3. Expand community operations. Add structured rules and reporting, granular role permissions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 
 ## Reddit Help references

@@ -33,6 +33,9 @@ pub use moderation_roles::{ModPermission, ModeratorAssignment, ModeratorRole};
 #[path = "model/notification_preferences.rs"]
 mod notification_preferences;
 pub use notification_preferences::NotificationPreferences;
+#[path = "model/timed_restrictions.rs"]
+mod timed_restrictions;
+use timed_restrictions::{representable_expiration, restriction_expiration};
 
 const FORMAT: &str = "commonline-v2";
 const LEGACY_FORMAT: &str = "commonline-v1";
@@ -288,6 +291,7 @@ pub struct CommunityRestriction {
     pub kind: String,
     pub reason: String,
     pub created_at: u64,
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -1073,10 +1077,14 @@ impl State {
     }
 
     fn has_restriction(&self, slug: &str, handle: &str, kind: &str) -> bool {
+        let now = unix_seconds();
         restriction_handle(handle).is_ok_and(|handle| {
-            self.restrictions
-                .iter()
-                .any(|item| item.community == slug && item.username == handle && item.kind == kind)
+            self.restrictions.iter().any(|item| {
+                item.community == slug
+                    && item.username == handle
+                    && item.kind == kind
+                    && item.is_active_at(now)
+            })
         })
     }
 
@@ -1701,16 +1709,24 @@ impl State {
             return Err("Choose a ban or a mod-mail mute.".into());
         }
         let reason = bounded(form, "reason", "Reason", 280)?;
-        if let Some(existing) = self.restrictions.iter_mut().find(|item| {
+        let now = unix_seconds();
+        let expires_at = restriction_expiration(form, now)?;
+        if let Some(index) = self.restrictions.iter().position(|item| {
             item.community == community && item.username == username && item.kind == kind
         }) {
-            existing.reason = reason.into();
-            let message = if kind == "ban" {
-                "Community ban updated."
-            } else {
-                "Mod-mail mute updated."
-            };
-            return self.record_moderation(&community, message);
+            let existing = &mut self.restrictions[index];
+            if existing.is_active_at(now) {
+                existing.reason = reason.into();
+                existing.expires_at = expires_at;
+                let message = if kind == "ban" {
+                    "Community ban updated."
+                } else {
+                    "Mod-mail mute updated."
+                };
+                return self.record_moderation(&community, message);
+            }
+            let expired = self.restrictions.remove(index);
+            self.record_expired_restriction(&expired, now)?;
         }
         let id = next_id(&mut self.next_restriction)?;
         self.restrictions.push(CommunityRestriction {
@@ -1719,7 +1735,8 @@ impl State {
             username: username.clone(),
             kind: kind.into(),
             reason: reason.into(),
-            created_at: unix_seconds(),
+            created_at: now,
+            expires_at,
         });
         self.notify_restriction_issued(&username, &community, kind)?;
         let message = if kind == "ban" {
@@ -1737,10 +1754,13 @@ impl State {
         let community_index = self.moderated_community_index(form, ModPermission::Restrictions)?;
         let community = &self.communities[community_index];
         let id = canonical_u64(value(form, "id")).ok_or("Choose a valid restriction.")?;
+        let now = unix_seconds();
         let index = self
             .restrictions
             .iter()
-            .position(|item| item.id == id && item.community == community.slug)
+            .position(|item| {
+                item.id == id && item.community == community.slug && item.is_active_at(now)
+            })
             .ok_or("This restriction is unavailable in this community.")?;
         self.protect_community_staff(community, &self.restrictions[index].username)?;
         let item = self.restrictions.remove(index);
@@ -1818,12 +1838,21 @@ impl State {
     }
 
     fn record_moderation_action(&mut self, community: &str, action: &str) -> Result<(), String> {
+        self.record_moderation_action_at(community, action, unix_seconds())
+    }
+
+    fn record_moderation_action_at(
+        &mut self,
+        community: &str,
+        action: &str,
+        at: u64,
+    ) -> Result<(), String> {
         let id = next_id(&mut self.next_mod_event)?;
         self.mod_log.push(ModerationEvent {
             id,
             community: community.into(),
             action: action.trim_end_matches('.').into(),
-            at: unix_seconds(),
+            at,
         });
         if self.mod_log.len() > MODERATION_LOG_LIMIT {
             self.mod_log.remove(0);
@@ -2554,7 +2583,16 @@ impl State {
             ["restriction-sequence", next_restriction] => {
                 self.next_restriction = number(next_restriction)?
             }
-            ["community-restriction", id, community, username, kind, reason, created_at] => {
+            ["community-restriction", id, community, username, kind, reason, created_at, expiration @ ..] =>
+            {
+                let expires_at = match expiration {
+                    [] | [""] => None,
+                    [timestamp] => Some(number(timestamp)?),
+                    _ => return None,
+                };
+                if !expires_at.is_none_or(representable_expiration) {
+                    return None;
+                }
                 self.restrictions.push(CommunityRestriction {
                     id: number(id)?,
                     community: decode(community)?,
@@ -2562,6 +2600,7 @@ impl State {
                     kind: decode(kind)?,
                     reason: decode(reason)?,
                     created_at: number(created_at)?,
+                    expires_at,
                 });
             }
             ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id, authors @ ..] =>
@@ -2934,7 +2973,7 @@ impl State {
         }
         writeln!(file, "restriction-sequence\t{}", self.next_restriction)?;
         for item in &self.restrictions {
-            writeln!(
+            write!(
                 file,
                 "community-restriction\t{}\t{}\t{}\t{}\t{}\t{}",
                 item.id,
@@ -2944,6 +2983,10 @@ impl State {
                 encode(&item.reason),
                 item.created_at
             )?;
+            if let Some(expires_at) = item.expires_at {
+                write!(file, "\t{expires_at}")?;
+            }
+            writeln!(file)?;
         }
         Ok(())
     }

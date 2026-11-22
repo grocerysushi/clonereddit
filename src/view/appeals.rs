@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
-use super::{action_fields, community, escape};
-use crate::model::State;
-use crate::schedule_time::{display, to_local};
+use super::{action_fields, community, escape, restricted::restriction_expiry};
+use crate::model::{AppealStatus, State};
+use crate::schedule_time::{display, now, to_local};
 
 pub(super) fn render(state: &State, draft: Option<(u64, &str)>, error: &str) -> String {
     let mut html = String::from("<section class='panel standalone moderation-tool'><h1>Your appeals</h1><p>Ask the moderation team to review a community ban or mod mail mute. Your appeal and the decision appear here.</p>");
@@ -15,11 +15,12 @@ pub(super) fn render(state: &State, draft: Option<(u64, &str)>, error: &str) -> 
         .unwrap();
     }
     html.push_str("<section class='preference-list' aria-labelledby='active-restrictions'><h2 id='active-restrictions'>Active restrictions</h2>");
+    let now = now();
     let mut restrictions = state
         .restrictions
         .iter()
         .rev()
-        .filter(|item| item.username == state.username)
+        .filter(|item| item.username == state.username && item.is_active_at(now))
         .peekable();
     if restrictions.peek().is_none() {
         html.push_str("<p class='muted'>You have no active community restrictions.</p>");
@@ -27,7 +28,8 @@ pub(super) fn render(state: &State, draft: Option<(u64, &str)>, error: &str) -> 
     for restriction in restrictions {
         let name = community_name(state, &restriction.community);
         let id = restriction.id;
-        write!(html, "<article class='log-item' id='restriction-{id}'><h3>{name} · {}</h3><p class='muted'>Applied {}</p>", restriction_name(&restriction.kind), date(restriction.created_at)).unwrap();
+        let expiry = restriction_expiry(restriction.expires_at);
+        write!(html, "<article class='log-item' id='restriction-{id}'><h3>{name} · {}</h3><p class='muted'>Applied {}</p><p class='muted'>{expiry}</p>", restriction_name(&restriction.kind), date(restriction.created_at)).unwrap();
         if state.can_submit_appeal(restriction) {
             let fields = action_fields(
                 "submit-appeal",
@@ -61,7 +63,12 @@ pub(super) fn render(state: &State, draft: Option<(u64, &str)>, error: &str) -> 
         let name = community_name(state, &case.community);
         write!(html, "<article class='log-item' id='appeal-{}'><span class='flair'>{}</span><h3>{name} · {}</h3><p class='muted'>Submitted {}</p><p class='account-message-body'>{}</p>", case.id, case.status.label(), restriction_name(&case.kind), date(case.created_at), escape(&case.body)).unwrap();
         if let Some(decided) = case.decided_at {
-            write!(html, "<blockquote class='moderation-reply'><strong>Decision from the moderation team</strong><p class='muted'>{}</p><p class='account-message-body'>{}</p></blockquote>", date(decided), escape(&case.response)).unwrap();
+            let heading = if case.status == AppealStatus::Expired {
+                "Restriction expired"
+            } else {
+                "Decision from the moderation team"
+            };
+            write!(html, "<blockquote class='moderation-reply'><strong>{heading}</strong><p class='muted'>{}</p><p class='account-message-body'>{}</p></blockquote>", date(decided), escape(&case.response)).unwrap();
         }
         html.push_str("</article>");
     }
