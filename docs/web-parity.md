@@ -311,6 +311,12 @@ Workflow **038** is implemented. Authors can upload an image in the text post co
 
 Chromium checks at 1440 and 390 CSS pixels covered inserting two images between paragraphs, draft recovery, editing placement, and rendering after restart. HTTP checks covered file validation, account and private-community access, moderator removal and restoration, and cleanup after deleting an image, draft, or post.
 
+## Post insights update
+
+Workflow **039** is implemented. Authors can open **Insights** from Creator Tools for a daily history of discussion views, net votes, and comments added. The seven- and 30-day ranges use UTC calendar days and begin when tracking starts. Earlier activity is unavailable. This brings the implementation count to **85 implemented, 6 partial, and 9 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered Creator Tools navigation, author and reader access, daily ranges, vote flips and clears, comment activity, and persistence after restart. HTTP checks compared the ranges with recorded activity across days, ignored author and header-only views, and checked legacy posts and deletion.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

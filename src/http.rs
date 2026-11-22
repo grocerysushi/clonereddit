@@ -68,6 +68,7 @@ type Fields = BTreeMap<String, String>;
 
 pub struct Request {
     pub method: String,
+    pub head_only: bool,
     pub path: String,
     pub query: Fields,
     pub form: Fields,
@@ -450,6 +451,7 @@ fn read_request(
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut request = Request {
         method: if *head_only { "GET" } else { method }.to_owned(),
+        head_only: *head_only,
         path: path.to_owned(),
         query: parse_fields(query)?,
         form: Fields::new(),

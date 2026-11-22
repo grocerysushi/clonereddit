@@ -2,8 +2,9 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{can_view_post, encode, escape, icon, score, visible_post};
+use super::{can_view_post, display_post_title, encode, escape, icon, score, visible_post};
 use crate::model::{Community, Post, State};
+use crate::schedule_time;
 
 pub(super) fn render(state: &State, section: &str) -> String {
     let (title, body, can_publish) = if section == "trends" {
@@ -33,6 +34,104 @@ pub(super) fn render(state: &State, section: &str) -> String {
     format!(
         "<section class='panel standalone creator-tool'><header class='creator-header'><h1 class='creator-heading'>{title}</h1>{publish}</header>{body}</section>"
     )
+}
+
+pub(super) fn insights(state: &State, post: &Post, range: &str) -> String {
+    let days = if range == "30" { 30 } else { 7 };
+    let history = state.post_insight_days(post, days, schedule_time::now());
+    let mut html = format!(
+        "<section class='panel standalone creator-tool creator-insights'><header class='creator-header'><h1 class='creator-heading'>Post insights</h1><a class='button light' href='/creator?section=performance'>Back to performance</a></header><p class='creator-insight-post'><a class='subtle-link' href='/thread?id={id}'>{title}</a></p><nav class='creator-insight-ranges' aria-label='Insights date range'>",
+        id = post.id,
+        title = escape(display_post_title(state, post))
+    );
+    for choice in [7, 30] {
+        let selected = if choice == days {
+            " aria-current='page'"
+        } else {
+            ""
+        };
+        write!(html, "<a class='button light' href='/creator?section=insights&amp;id={}&amp;range={choice}'{selected}>Last {choice} days</a>", post.id).unwrap();
+    }
+    html.push_str("</nav>");
+    if history.is_empty() {
+        html.push_str(
+            "<p class='muted'>No insights have been recorded in this date range.</p></section>",
+        );
+        return html;
+    }
+
+    let (views, votes, comments) =
+        history
+            .iter()
+            .fold((0_u64, 0_i64, 0_u64), |(views, votes, comments), day| {
+                (
+                    views.saturating_add(day.views),
+                    votes.saturating_add(day.votes),
+                    comments.saturating_add(day.comments),
+                )
+            });
+    let formatted_votes = vote_change(votes);
+    write!(
+        html,
+        "<dl class='creator-stats creator-insight-totals' aria-label='Totals for the selected date range'><div data-metric='views'><dt>Views</dt><dd>{views}</dd></div><div data-metric='votes'><dt>Net votes</dt><dd>{formatted_votes}</dd></div><div data-metric='comments'><dt>Comments added</dt><dd>{comments}</dd></div></dl>"
+    ).unwrap();
+    html.push_str("<p class='muted creator-insight-note' id='creator-insight-note'>Views count discussion opens by other readers, including guests. Net votes reflect new votes, changes, and clears. Comments added includes replies. Dates are in UTC, and totals cover tracked days.</p><table class='creator-insight-days' aria-describedby='creator-insight-note'><caption>Daily activity</caption><thead><tr><th scope='col'>Date</th><th scope='col'>Views</th><th scope='col'>Net votes</th><th scope='col'>Comments</th></tr></thead><tbody>");
+
+    let (max_views, max_votes, max_comments) =
+        history
+            .iter()
+            .fold((1, 1, 1), |(views, votes, comments), day| {
+                (
+                    views.max(day.views),
+                    votes.max(day.votes.unsigned_abs()),
+                    comments.max(day.comments),
+                )
+            });
+    for day in history {
+        let utc = schedule_time::to_local(day.day.saturating_mul(86_400), "UTC");
+        let day_label = escape(utc.split('T').next().unwrap_or_default());
+        write!(html, "<tr data-insight-day='{day_label}'><th scope='row'><time datetime='{day_label}'>{day_label}</time></th>").unwrap();
+        insight_cell(
+            &mut html,
+            "views",
+            &day.views.to_string(),
+            day.views,
+            max_views,
+            false,
+        );
+        insight_cell(
+            &mut html,
+            "votes",
+            &vote_change(day.votes),
+            day.votes.unsigned_abs(),
+            max_votes,
+            day.votes < 0,
+        );
+        insight_cell(
+            &mut html,
+            "comments",
+            &day.comments.to_string(),
+            day.comments,
+            max_comments,
+            false,
+        );
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table></section>");
+    html
+}
+
+fn vote_change(delta: i64) -> String {
+    if delta > 0 {
+        format!("+{delta}")
+    } else {
+        delta.to_string()
+    }
+}
+
+fn insight_cell(html: &mut String, metric: &str, value: &str, bar: u64, max: u64, lost: bool) {
+    let class = if lost { " class='is-negative'" } else { "" };
+    write!(html, "<td data-metric='{metric}'><span class='creator-insight-value'>{value}</span><meter aria-hidden='true' min='0' max='{max}' value='{bar}'{class}></meter></td>").unwrap();
 }
 
 fn dashboard(state: &State, posts: &[&Post]) -> String {
@@ -167,9 +266,9 @@ fn post_details(state: &State, post: &Post) -> String {
         .map(|community| community.name.as_str())
         .unwrap_or(&post.community);
     format!(
-        "<div class='creator-row-main'><a class='subtle-link' href='/thread?id={}'>{}</a><p class='muted'>{}</p></div>",
-        post.id,
-        escape(&post.title),
-        escape(community)
+        "<div class='creator-row-main'><a class='subtle-link' href='/thread?id={id}'>{title}</a><p class='muted creator-row-context'>{community}<a class='subtle-link creator-insights-link' href='/creator?section=insights&amp;id={id}' aria-label='Insights for {title}'>Insights</a></p></div>",
+        id = post.id,
+        title = escape(display_post_title(state, post)),
+        community = escape(community)
     )
 }

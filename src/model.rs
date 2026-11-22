@@ -55,6 +55,10 @@ pub use post_flair::{CommunityPostFlair, COMMUNITY_POST_FLAIR_LABEL_MAX};
 mod post_inline_images;
 pub use post_inline_images::inline_image_key;
 use post_inline_images::{InlineImage, InlineTarget};
+#[path = "model/post_insights.rs"]
+mod post_insights;
+pub use post_insights::PostInsightDay;
+use post_insights::PostInsights;
 #[path = "model/reporting.rs"]
 mod reporting;
 pub use reporting::{ReportReason, ReportedRule};
@@ -334,6 +338,7 @@ pub struct CommunityRestriction {
 pub struct State {
     pub communities: Vec<Community>,
     pub posts: Vec<Post>,
+    post_insights: PostInsights,
     inline_images: BTreeMap<String, InlineImage>,
     locked_discussions: BTreeSet<u64>,
     locked_comments: BTreeSet<u64>,
@@ -529,6 +534,7 @@ impl State {
         Self {
             communities,
             posts,
+            post_insights: PostInsights::new(seeded_at),
             inline_images: BTreeMap::new(),
             locked_discussions: BTreeSet::new(),
             locked_comments: BTreeSet::new(),
@@ -642,6 +648,7 @@ impl State {
                 )
             })?;
         }
+        state.post_insights.prune_all(unix_seconds());
         if state.posts.iter().any(|post| post.created_at.is_none()) {
             let now = unix_seconds();
             let snapshot_at = fs::metadata(path)
@@ -790,22 +797,6 @@ impl State {
             .map_err(io::Error::other)?;
         self.screen_post(id).map_err(io::Error::other)?;
         Ok(())
-    }
-
-    pub fn record_post_visit(&mut self, id: u64, path: &Path) {
-        if self.guest()
-            || self.history.first() == Some(&id)
-            || self.viewable_post_community(id).is_none()
-        {
-            return;
-        }
-        let previous = self.history.clone();
-        self.history.retain(|visited| *visited != id);
-        self.history.insert(0, id);
-        self.history.truncate(HISTORY_LIMIT);
-        if self.save(path).is_err() {
-            self.history = previous;
-        }
     }
 
     pub fn set_profile_image(
@@ -983,7 +974,10 @@ impl State {
         match action {
             "vote" => {
                 let id = self.post_id(form, "id")?;
+                let before = i64::from(self.votes.get(&id).copied().unwrap_or_default());
                 vote(&mut self.votes, id, direction(form)?);
+                let after = i64::from(self.votes.get(&id).copied().unwrap_or_default());
+                self.record_post_vote_change(id, after - before);
                 Ok("Vote updated.")
             }
             "comment-vote" => {
@@ -1741,6 +1735,7 @@ impl State {
             return Ok(AUTOMOD_REMOVED_COMMENT);
         }
         self.notify_comment(post_id, parent)?;
+        self.record_post_comment(post_id);
         Ok("Comment posted.")
     }
 
@@ -2404,6 +2399,7 @@ impl State {
             .position(|post| post.id == id && post.author == self.username)
             .ok_or("You can delete posts from your own profile.")?;
         let post = self.posts.remove(index);
+        self.post_insights.remove(id);
         self.remove_inline_images(InlineTarget::Post(id));
         self.locked_discussions.remove(&id);
         // Retained community reports keep the scope of the original discussion.
@@ -2600,6 +2596,24 @@ impl State {
                     return None;
                 }
                 post.created_at = Some(number(created_at)?);
+            }
+            ["post-insights-start", day] => {
+                self.post_insights.since = number(day)?;
+            }
+            ["post-insight", id, day, views, votes, comments] => {
+                let id = number(id)?;
+                if !self.posts.iter().any(|post| post.id == id) {
+                    return None;
+                }
+                self.post_insights.read_day(
+                    id,
+                    PostInsightDay {
+                        day: number(day)?,
+                        views: number(views)?,
+                        votes: number(votes)?,
+                        comments: number(comments)?,
+                    },
+                )?;
             }
             ["discussion-lock", id] => {
                 let id = number(id)?;
@@ -3115,6 +3129,7 @@ impl State {
             }
         }
         self.write_inline_images(file)?;
+        self.post_insights.write(file, unix_seconds())?;
         for comment in &self.comments {
             let parent = comment.parent.map_or_else(String::new, |id| id.to_string());
             let edited_at = comment

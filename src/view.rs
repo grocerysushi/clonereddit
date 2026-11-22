@@ -432,7 +432,7 @@ pub fn route(
             (title, active, content)
         }
         "/thread" => {
-            if !state.username.is_empty() {
+            if request.method == "GET" && !request.head_only {
                 if let Some(id) = find_post(state, query).map(|post| post.id) {
                     state.record_post_visit(id, path);
                 }
@@ -490,6 +490,17 @@ pub fn route(
             ),
             None => return missing(state),
         },
+        "/creator" if field(query, "section") == "insights" => {
+            let Some(post) = find_post(state, query).filter(|post| post.author == state.username)
+            else {
+                return missing(state);
+            };
+            (
+                "Post insights",
+                "performance",
+                creator::insights(state, post, field(query, "range")),
+            )
+        }
         "/creator" => {
             let section = match field(query, "section") {
                 "performance" => "performance",
