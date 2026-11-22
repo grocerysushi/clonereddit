@@ -9,6 +9,7 @@ argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "pa
 base64ct = { version = "1.8.3", features = ["alloc"] }
 getrandom = "0.2.17"
 hmac = "0.12.1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 sha1 = "0.10.7"
 sha2 = "0.10.9"
 subtle = "2.6.1"

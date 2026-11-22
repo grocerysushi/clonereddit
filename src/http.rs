@@ -117,7 +117,7 @@ pub struct Response {
     body_slice: Option<Range<usize>>,
     session_cookie: Option<String>,
     feed_layout_cookie: Option<FeedLayout>,
-    chat_client: bool,
+    wasm_client: bool,
 }
 
 impl Response {
@@ -153,12 +153,12 @@ impl Response {
             body_slice: None,
             session_cookie: None,
             feed_layout_cookie: None,
-            chat_client: false,
+            wasm_client: false,
         }
     }
 
-    pub fn with_chat_client(mut self) -> Self {
-        self.chat_client = true;
+    pub fn with_wasm_client(mut self) -> Self {
+        self.wasm_client = true;
         self
     }
 
@@ -231,7 +231,7 @@ impl Response {
             Some(selection) => &self.body[selection.clone()],
             None => self.body.as_slice(),
         };
-        let chat_policy = if self.chat_client {
+        let client_policy = if self.wasm_client {
             "; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'"
         } else {
             ""
@@ -240,7 +240,7 @@ impl Response {
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
              Connection: close\r\nCache-Control: no-store\r\n\
              X-Content-Type-Options: nosniff\r\nReferrer-Policy: same-origin\r\n\
-             Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'{chat_policy}\r\n",
+             Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'{client_policy}\r\n",
             self.status,
             reason,
             self.content_type,

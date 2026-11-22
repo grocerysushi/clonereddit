@@ -299,6 +299,12 @@ Workflow **024** is implemented. In **Feed controls**, signed-in users can turn 
 
 Chromium checks at 1440 and 390 CSS pixels covered disabling and re-enabling recommendations, joining and leaving communities, private access changes, and persistence across independent accounts and a restart. HTTP checks covered all sorts, existing visibility filters and other feeds, and earlier settings submissions that lack the new field.
 
+## Post formatting update
+
+Workflow **034** is implemented. The composer toolbar adds Markdown for bold, italics, links, bulleted and numbered lists, and block quotes. The published post renders those formats along with existing inline code and line breaks. This brings the implementation count to **83 implemented, 7 partial, and 10 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered text selection, adding and editing a link, drafts, publishing and editing, and formatting after restart. HTTP checks covered older posts, formatted media, polls, reposts, and scheduled posts, plus escaped HTML and unsupported link targets.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

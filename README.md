@@ -14,11 +14,12 @@ Open [127.0.0.1:4173](http://127.0.0.1:4173/) in your browser. If the port is oc
 
 The server stores changes in `commonline.state` and credentials in `commonline.state.accounts` in the working directory. Set `COMMONLINE_STATE` to another file path for a separate demo and the server will append `.accounts` to it. Choose an unused path to start with the original sample data. Run one server per state path.
 
-The browser chat controller is written in Rust and distributed as a WebAssembly asset. A small browser binding handles fetch requests, timers, and DOM insertion. After editing the controller, rebuild the asset from the project directory.
+The browser chat and post formatting controls are written in Rust and distributed as WebAssembly assets. Small browser bindings connect them to the page. After editing either Rust client, rebuild its asset from the project directory.
 
 ```sh
 rustup target add wasm32-unknown-unknown
 rustc --target wasm32-unknown-unknown --edition 2021 --crate-type cdylib -C opt-level=z -C panic=abort -C strip=symbols -o assets/chat-live.wasm client/chat_live.rs
+rustc --target wasm32-unknown-unknown --edition 2021 --crate-type cdylib -C opt-level=z -C panic=abort -C strip=symbols -o assets/post-format.wasm client/post_format.rs
 ```
 
 ## Accounts and recovery
@@ -93,6 +94,7 @@ Emails link back to the same localhost server. Keep local outbox files private b
 23. In a community feed, open **Flair** next to the sort controls and choose a label. The filter applies to posts and Community Highlights. Select **Clear flair** to see all labels again while keeping your current sort and time range.
 24. On the **Posts** or **Media** search tab, combine **Author**, **Community**, and **Post flair**. Enter a handle, a community address or name, and the full flair label. The fields also work on their own. Use double quotes around an exact phrase, or type filters directly, for example `author:u/irisarchive community:c/culture flair:Question "public archive"`. **Clear fields** removes the three field filters and keeps the search terms.
 25. Choose **Compact** or **Card** next to the feed sort controls. Compact shows titles and post actions in a denser list. Open a discussion to see its full content. Commonline saves the choice to your account when signed in and to your browser when browsing as a guest.
+26. Select text in the post composer and use **Bold**, **Italic**, **Link**, **Bulleted list**, **Numbered list**, or **Block quote**. The toolbar inserts Markdown, which renders when you publish. For a link, replace the selected example URL with your own HTTP or HTTPS address. **Formatting help** shows the syntax for typing it yourself.
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 

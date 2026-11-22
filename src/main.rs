@@ -140,6 +140,20 @@ fn run() -> io::Result<()> {
                         include_bytes!("../assets/chat-live.wasm").as_slice(),
                     )
                 }
+                "/post-format.js" => {
+                    return Response::text(
+                        200,
+                        "text/javascript; charset=utf-8",
+                        include_bytes!("../assets/post-format.js").as_slice(),
+                    )
+                }
+                "/post-format.wasm" => {
+                    return Response::text(
+                        200,
+                        "application/wasm",
+                        include_bytes!("../assets/post-format.wasm").as_slice(),
+                    )
+                }
                 _ => {}
             }
         }

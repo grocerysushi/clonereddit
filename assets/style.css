@@ -244,7 +244,12 @@ main { min-width: 0; }
 .flair.sensitive { background: #f6e5ca; color: #65461a; }
 .post h2, .post h1 { margin: 7px 0 4px; font-size: 1.29rem; line-height: 1.25; font-weight: 730; letter-spacing: -.028em; }
 .post h2 a:hover { text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 1px; }
-.post-body { color: #485145; font-size: .94rem; white-space: pre-line; line-height: 1.55; }
+.post-body { color: #485145; font-size: .94rem; line-height: 1.55; overflow-wrap: anywhere; }
+.post-body :where(ul, ol) { margin: 0; padding-inline-start: 1.45em; }
+.post-body :where(blockquote) { margin: 0; padding: 3px 0 3px 11px; border-inline-start: 3px solid #aab89c; }
+.post-body :where(pre) { margin: 0; overflow-x: auto; }
+.post-body > * + * { margin-block-start: .6em; }
+.post-body a { color: #466123; text-decoration: underline; text-underline-offset: 3px; }
 .post-actions { margin-top: 12px; gap: 7px; flex-wrap: wrap; }
 .post-image { height: clamp(150px, 15vw, 218px); margin-top: 12px; object-fit: cover; object-position: center 54%; border-radius: 8px; background: #dce4d0; }
 .votes { display: inline-flex; align-items: center; background: #e9efde; border-radius: 7px; min-height: 32px; font-size: .82rem; }
@@ -436,7 +441,11 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .composer-toggle + .composer-toggle { border-top: 1px solid var(--line); }
 .composer-toggle small { display: block; }
 .composer-toggle input { width: 19px; height: 19px; flex: none; }
-.markup-guide { margin-top: -10px; color: var(--quiet); font-size: .88rem; }
+.post-format-editor { display: grid; gap: 6px; min-width: 0; }
+.post-format-controls:not([hidden]) { display: flex; flex-wrap: wrap; gap: 4px; }
+.post-format-controls button { min-height: 34px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); font-size: .82rem; }
+.post-format-controls button:hover { background: var(--light-lime); }
+.markup-guide { color: var(--quiet); font-size: .88rem; }
 .markup-guide p { margin-top: 4px; }
 .composer-actions, .draft-discard-confirmation .form-actions { flex-wrap: wrap; }
 .draft-discard-confirmation { display: block; }

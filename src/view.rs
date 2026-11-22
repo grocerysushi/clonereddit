@@ -9,8 +9,10 @@ mod discussion;
 mod feed_layout;
 mod moderation;
 mod moderation_workspace;
+mod post_body_editor;
 mod post_composer;
 mod post_flair;
+mod post_rich_text;
 mod post_search_controls;
 mod post_search_query;
 mod profile;
@@ -610,7 +612,7 @@ pub fn route(
     };
     let right = (active == "profile")
         .then(|| profile_panel::render(state, &request.origin, false, profile_tab));
-    Response::html(layout_with_rail(
+    let response = Response::html(layout_with_rail(
         state,
         active,
         title,
@@ -619,7 +621,18 @@ pub fn route(
         notice,
         right,
         searching.then_some(query),
-    ))
+    ));
+    let formatting_editor = match request.path.as_str() {
+        "/new" => field(query, "drafts") != "1" && !query.contains_key("discard_draft"),
+        "/edit" => true,
+        "/moderation/tools" => field(query, "section") == "scheduled",
+        _ => false,
+    };
+    if formatting_editor {
+        response.with_wasm_client()
+    } else {
+        response
+    }
 }
 
 fn chat_request_submission(
@@ -685,7 +698,7 @@ fn inbox_response(
     let response = Response::html(layout(state, "messages", "Messages", content, "", notice));
     let peer = field(query, "peer").trim().to_ascii_lowercase();
     if state.has_chat_conversation(&peer) {
-        response.with_chat_client()
+        response.with_wasm_client()
     } else {
         response
     }
@@ -929,7 +942,7 @@ fn text_composer_error(state: &State, form: &BTreeMap<String, String>, error: &s
         draft,
         Some((form, error)),
     );
-    Response::html(layout(state, "", "New post", &body, "", ""))
+    Response::html(layout(state, "", "New post", &body, "", "")).with_wasm_client()
 }
 
 fn publishing_error(
@@ -940,7 +953,7 @@ fn publishing_error(
 ) -> Response {
     let query = BTreeMap::from([("type".into(), kind.into())]);
     let body = publishing::editor(state, &query, Some(form), error).unwrap_or_default();
-    Response::html(layout(state, "", "Check your post", &body, "", ""))
+    Response::html(layout(state, "", "Check your post", &body, "", "")).with_wasm_client()
 }
 
 fn registered_accounts(state: &State, auth: &AuthStore) -> Vec<String> {
@@ -1236,6 +1249,7 @@ fn scheduled_submission(
                 "",
                 "",
             ))
+            .with_wasm_client()
         }
     }
 }
@@ -2842,7 +2856,10 @@ fn post_preview(state: &State, post: &Post, back: &str, full: bool, sensitive: b
     let body = if body_excerpt.is_empty() {
         String::new()
     } else {
-        format!("<p class='post-body'>{}</p>", rich_text(&body_excerpt))
+        format!(
+            "<div class='post-body'>{}</div>",
+            post_rich_text::render(&body_excerpt)
+        )
     };
     let outgoing = if post.url.starts_with("https://") || post.url.starts_with("http://") {
         format!("<a class='outgoing' href='{}' target='_blank' rel='noopener noreferrer'>Open linked article ↗</a>", escape(&post.url))
@@ -2986,34 +3003,6 @@ fn event_details(state: &State, post_id: u64) -> String {
         .map(|stamp| format!("<span><strong>Ends</strong> {}</span>", time(stamp)))
         .unwrap_or_default();
     format!("<div class='post-event'>{}<div><span><strong>Event starts</strong> {}</span>{end}</div></div>", icon("calendar"), time(start))
-}
-
-fn rich_text(mut remaining: &str) -> String {
-    let mut html = String::new();
-    while let Some(index) = remaining.find(['*', '`']) {
-        html.push_str(&escape(&remaining[..index]));
-        let span = &remaining[index..];
-        let (delimiter, tag) = if span.starts_with("**") {
-            ("**", "strong")
-        } else if span.starts_with('*') {
-            ("*", "em")
-        } else {
-            ("`", "code")
-        };
-        let text = &span[delimiter.len()..];
-        if let Some(end) = text
-            .find(delimiter)
-            .filter(|end| *end > 0 && !text[..*end].contains('\n'))
-        {
-            write!(html, "<{tag}>{}</{tag}>", escape(&text[..end])).unwrap();
-            remaining = &text[end + delimiter.len()..];
-        } else {
-            html.push_str(delimiter);
-            remaining = text;
-        }
-    }
-    html.push_str(&escape(remaining));
-    html
 }
 
 #[derive(Clone, Copy)]

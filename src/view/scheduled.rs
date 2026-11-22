@@ -343,7 +343,7 @@ impl<'a> Editor<'a> {
 <form class="stack-form scheduled-form" method="post" action="/action">{fields}
 <label>Item type<select name="kind"><option value="post"{post}>Post</option><option value="event"{event}>Event</option></select></label>
 <label>Title<input name="title" required maxlength="160" value="{title}"></label>
-<label>Body text <small>Optional</small><textarea name="body" rows="4" maxlength="8000">{body}</textarea></label>
+{body}
 <label>Link <small>Optional</small><input type="url" name="url" maxlength="600" value="{url}"></label>
 {flair}
 <fieldset class="scheduled-dates"><legend>Date and time</legend>
@@ -362,7 +362,7 @@ impl<'a> Editor<'a> {
             post = selection(self.kind != "event"),
             event = selection(self.kind == "event"),
             title = escape(self.title),
-            body = escape(self.body),
+            body = super::post_body_editor::editor(self.body, 4),
             url = escape(self.url),
             flair = post_flair::scheduled(item, self.flair_id, self.flair),
             publish_at = escape(&self.publish_at),

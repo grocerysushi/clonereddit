@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{action_fields, community, escape, field, hidden, icon, post_flair, publishing};
+use super::{
+    action_fields, community, escape, field, hidden, icon, post_body_editor, post_flair, publishing,
+};
 use crate::model::{Post, PostDraft, State};
 
 const DRAFTS_URL: &str = "/new?drafts=1";
@@ -221,14 +223,13 @@ pub(super) fn editor(
         r#"<section class="panel standalone composer"><header class="creator-header"><h1>{heading}</h1>{draft_actions}</header>{tabs}{alert}<form class="stack-form" method="post" action="/action">{fields}{new_fields}
 <label>Title<input name="title" required maxlength="160" value="{title}" placeholder="What are we discussing?"></label>
 <details class="composer-tags"{tags_open}><summary>{tag_icon} Add tags</summary><div class="composer-tag-options">{tag_fields}</div></details>
-<label>Body text <small>Optional</small><textarea name="body" rows="7" maxlength="8000" placeholder="Add context or ask a question">{body}</textarea></label>
-<details class="markup-guide"><summary>Formatting help</summary><p>Use <code>**bold**</code>, <code>*italic*</code>, or <code>`inline code`</code> in the body.</p></details>
+{body}
 <label>Link <small>Optional</small><input name="url" type="url" maxlength="600" value="{url}" placeholder="https://"></label>
 <div class="form-actions composer-actions"><a class="button light" href="{cancel}">Cancel</a><button class="button dark" type="submit">{submit}</button>{save}{discard}</div></form></section>"#,
         tag_icon = icon("tag"),
         tags_open = if tags.contains(&true) { " open" } else { "" },
         title = escape(title),
-        body = escape(body),
+        body = post_body_editor::editor(body, 7),
         url = escape(url),
         cancel = escape(&cancel),
     )

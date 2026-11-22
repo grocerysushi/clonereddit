@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use super::{
     action_fields, can_view_post, community, community_url, encode, escape, field, icon,
-    is_sensitive, post_composer::drafts_link, post_flair,
+    is_sensitive, post_body_editor, post_composer::drafts_link, post_flair,
 };
 use crate::model::{Post, State};
 
@@ -99,10 +99,7 @@ pub(super) fn editor(
         custom_flair,
     );
     let title = title_field(entered("title"), kind == "repost");
-    let body = format!(
-        "<label>Body text <small>Optional</small><textarea name='body' rows='5' maxlength='8000' placeholder='Add context'>{}</textarea></label>",
-        escape(entered("body"))
-    );
+    let body = post_body_editor::editor(entered("body"), 5);
     let (heading, submit, endpoint, enctype, fields, content) = match kind {
         "media" => {
             let media = "<div class='publishing-media-upload'><label>Images or video<input type='file' name='post_media' accept='image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm' multiple required aria-describedby='publishing-media-help'></label><small id='publishing-media-help'>Choose up to six PNG, JPEG, WebP, or GIF images of 2 MiB each, or one MP4 or WebM video of up to 16 MiB.</small></div>";
