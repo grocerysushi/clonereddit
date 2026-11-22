@@ -2,12 +2,45 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use super::{account_security, action_fields, action_form, encode, escape, field, visible_post};
-use crate::model::{DirectMessage, Notification, State};
+use super::{
+    account_security, action_fields, action_form, encode, escape, field, icon, visible_post,
+};
+use crate::model::{DirectMessage, Notification, NotificationPreferences, State};
 use crate::schedule_time::{display, to_local};
 
 const INBOX: &str = "/messages";
 const NOTIFICATIONS: &str = "/notifications";
+
+pub(super) fn notification_settings(
+    prefs: NotificationPreferences,
+    saved: bool,
+    error: &str,
+) -> String {
+    let feedback = if !error.is_empty() {
+        format!(
+            "<p class='notice account-error' role='alert'>{}</p>",
+            escape(error)
+        )
+    } else if saved {
+        "<p class='notice' role='status'>Notification preferences saved.</p>".to_owned()
+    } else {
+        String::new()
+    };
+    let switches: String = [
+        ("replies", "Replies", "Replies to your posts and comments.", prefs.replies),
+        ("messages", "Personal messages", "New direct messages. Conversations stay in Messages.", prefs.messages),
+        ("moderation", "Moderation notices", "Restrictions, removals, and appeal decisions.", prefs.moderation),
+    ].into_iter().map(|(name, label, help, enabled)| {
+        let checked = if enabled { " checked" } else { "" };
+        format!("<label class='notification-switch'><span class='notification-switch-text'><strong id='notify-{name}-label'>{label}</strong><small id='notify-{name}-help'>{help}</small></span><span class='notification-switch-control'><input type='checkbox' role='switch' name='{name}' value='on' aria-labelledby='notify-{name}-label' aria-describedby='notify-{name}-help'{checked}><span class='notification-switch-track' aria-hidden='true'></span></span></label>")
+    }).collect();
+    format!(
+        r#"<section class="panel standalone account-preferences"><h1>Account Settings</h1>{feedback}
+<section aria-labelledby="notification-preferences-title"><h2 id="notification-preferences-title">Notification preferences</h2>
+<p>Choose which future activity appears in your in-app notifications. Muted moderation notices remain available under <a class="subtle-link" href="/notifications?view=moderation">Moderation updates</a>.</p>
+<form class="stack-form notification-settings-form" action="/account/settings" method="post" aria-labelledby="notification-preferences-title">{switches}<button type="submit" class="button dark">Save preferences</button></form></section></section>"#
+    )
+}
 
 pub(super) fn auth_form(kind: &str, username: &str, error: &str) -> String {
     let (title, submit, endpoint, password_label, password_attributes, footer) = match kind {
@@ -274,14 +307,23 @@ fn message_form(contacts: &BTreeSet<&str>, selected: Option<&str>, draft: &str) 
 pub(super) fn visible_notifications(state: &State) -> impl Iterator<Item = &Notification> {
     state.notifications.iter().filter(|item| {
         item.recipient == state.username
+            && !item.silent
             && item.post.is_none_or(|id| visible_post(state, id).is_some())
     })
 }
 
-pub(super) fn notifications(state: &State) -> String {
-    let mut items: Vec<_> = visible_notifications(state).collect();
+pub(super) fn notifications(state: &State, moderation_only: bool) -> String {
+    let mut items: Vec<_> = if moderation_only {
+        state
+            .notifications
+            .iter()
+            .filter(|item| item.recipient == state.username && (item.appeal || item.moderation))
+            .collect()
+    } else {
+        visible_notifications(state).collect()
+    };
     items.sort_by_key(|item| Reverse((item.at, item.id)));
-    let read = if items.iter().any(|item| !item.read) {
+    let read = if !moderation_only && items.iter().any(|item| !item.read) {
         action_form(
             "read-notifications",
             NOTIFICATIONS,
@@ -293,15 +335,26 @@ pub(super) fn notifications(state: &State) -> String {
     } else {
         String::new()
     };
-    let mut html = format!(
-        "<section class='panel standalone account-notifications'><header class='creator-header'><h1>Notifications</h1>{read}</header>"
-    );
+    let selected = " aria-current='page'";
+    let (all_current, moderation_current) = if moderation_only {
+        ("", selected)
+    } else {
+        (selected, "")
+    };
+    let mut html = format!("<section class='panel standalone account-notifications'><header class='account-notifications-header'><h1>Notifications</h1><div class='account-notifications-actions'><a class='button light' href='/account/settings'>{} Settings</a>{read}</div></header><nav class='account-notifications-nav' aria-label='Notification history'><a href='/notifications'{all_current}>All notifications</a><a href='/notifications?view=moderation'{moderation_current}>Moderation updates</a></nav>", icon("sliders"));
     if items.is_empty() {
-        html.push_str("<p class='muted account-empty'>No notifications yet.</p>");
+        let empty = if moderation_only {
+            "No moderation updates yet."
+        } else {
+            "No notifications yet."
+        };
+        write!(html, "<p class='muted account-empty'>{empty}</p>").unwrap();
     } else {
         html.push_str("<ul class='account-notification-list'>");
         for item in items {
-            let unread = if item.read {
+            let unread = if item.silent {
+                "<span class='flair'>Muted</span>"
+            } else if item.read {
                 ""
             } else {
                 "<span class='account-unread'>Unread</span>"

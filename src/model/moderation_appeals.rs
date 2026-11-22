@@ -142,11 +142,9 @@ impl State {
         let community = community.clone();
         let appellant = appeal.appellant.clone();
         let decision = status.label().to_ascii_lowercase();
-        self.push_notification(
+        self.push_appeal_notification(
             &appellant,
             format!("Your appeal for c/{community} was {decision}."),
-            None,
-            true,
         )?;
         let audit = format!("Appeal #{id} {decision} by u/{}", self.username);
         self.record_moderation_action(&community, &audit)?;
@@ -164,11 +162,9 @@ impl State {
         } else {
             "mod mail mute"
         };
-        self.push_notification(
+        self.push_appeal_notification(
             username,
             format!("You received a {restriction} in c/{community}. You can submit an appeal."),
-            None,
-            true,
         )
     }
 
@@ -185,14 +181,12 @@ impl State {
         appeal.response = "The moderation team lifted this restriction.".into();
         appeal.reviewer = Some(self.username.clone());
         appeal.decided_at = Some(unix_seconds());
-        self.push_notification(
+        self.push_appeal_notification(
             &restriction.username,
             format!(
                 "Your restriction in c/{} was lifted.",
                 restriction.community
             ),
-            None,
-            true,
         )
     }
 

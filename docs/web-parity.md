@@ -197,10 +197,16 @@ Workflow **060** is implemented. Account Security requires explicit confirmation
 
 Independent Chromium profiles at 1440 and 390 CSS pixels passed the confirmation and deletion flow. Incorrect passwords and invalid authenticator codes were rejected, and prior credentials could no longer sign in after deletion. An isolated server check verified that every existing session and saved recovery code was invalidated and that an interrupted cleanup finished after restart. The prior discussion and the other participant’s message copy remained available.
 
+## Notification preferences update
+
+Workflow **073** is implemented. Account Settings lets each account independently choose in-app alerts for replies, direct messages, and moderation updates. Settings apply to future alerts. Direct messages still reach the inbox, and moderation notices are available privately in **Moderation updates**. This brings the implementation count to **68 implemented, 17 partial, and 15 missing**.
+
+Independent Chromium profiles at 1440 and 390 CSS pixels saved different settings and retained them after restarting the server. Real replies, messages, and moderation events followed the intended recipient’s switches. Re-enabling categories restored future alerts, and private moderation history preserved muted notices without adding to the bell count.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
-2. Add notification preferences and chat request controls.
+2. Add chat request controls.
 3. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
 4. Expand community operations. Add structured rules and reporting, granular role permissions, timed restrictions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 5. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.

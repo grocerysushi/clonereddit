@@ -30,6 +30,8 @@ Open **Your profile** to sign out or edit your public profile. Guests can see yo
 
 The **Messages** and **Notifications** buttons in the header show unread counts. Open a user's public profile or choose a registered recipient in Messages to start a conversation. Notifications cover incoming personal messages and replies to your posts or comments. For a local two-account check, use two separate browser profiles or one regular window and one private window.
 
+Open **Your profile → Account settings** or **Notifications → Settings** to choose which new in-app alerts you receive for replies, direct messages, and moderation updates. All three are on by default. Changing a preference applies to future alerts. Messages still arrive in your inbox, and private moderation notices and reasons remain available under **Notifications → Moderation updates**.
+
 To claim a profile from a version that predates accounts, stop the server, keep `COMMONLINE_STATE` set to the same path, and run `cargo run --locked -- --legacy-recovery` from this directory. The command prints the existing username and a one-time claim code. Restart the server, choose **Use a recovery code**, and enter that username, the claim code, and a new password. Save the replacement recovery code displayed after the reset.
 
 ### Email delivery
@@ -86,7 +88,7 @@ The website target is **99 of 100 accepted workflows** on desktop and mobile web
 | Discovery and feeds | For You, Following, Popular, fictional News, Explore, All discussions, community and custom feeds, Recent, site-wide and community search, Best/Hot/New/Top | Saved searches, richer ranking and filters |
 | Posting and discussion | Title-only, text, link, image gallery and video posts, polls, cross-community reposts, post tags, one local text/link draft, post and comment editing and deletion, threaded replies, votes, save and hide | Richer editing and media transcoding |
 | Creator tools | Dashboard, per-post vote and reply totals, community trends, and publishing links | Impression counts, reach, and analytics over time |
-| Identity and communication | Account creation and deletion, verified recovery email, emailed password resets, one-time recovery codes, password changes, authenticator-app two-factor sign-in, active sessions with individual and bulk sign-out, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications, private messages, and mod mail | Live chat updates |
+| Identity and communication | Account creation and deletion, verified recovery email, emailed password resets, one-time recovery codes, password changes, authenticator-app two-factor sign-in, active sessions with individual and bulk sign-out, editable public profiles, avatar and cover uploads, private activity and history, keyword mutes, account blocking, notifications with per-category preferences, private messages, and mod mail | Live chat updates |
 | Community operations | Guided creation, topics and visibility, approved-member access, mature labels, artwork uploads and previews, authenticated owner settings and pinning, scoped moderator workspace and roles, post and comment removal and restoration with author notices, phrase-based AutoMod, community bans and mod mail mutes, restriction appeals and decisions, regional reports and review status, saved responses, activity log, and scheduled posts and events | Recurring schedules and additional AutoMod conditions |
 
 ### Original core workflows

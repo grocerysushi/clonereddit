@@ -3,8 +3,8 @@ use std::io::{self, Write};
 
 use super::{
     checked_handle, encode, encode_image, next_id, required, unix_seconds, value, Comment,
-    Community, CustomFeed, DirectMessage, Notification, Post, PostDraft, ProfileAvatar, SocialLink,
-    State, DELETED_ACCOUNT,
+    Community, CustomFeed, DirectMessage, Notification, NotificationPreferences, Post, PostDraft,
+    ProfileAvatar, SocialLink, State, DELETED_ACCOUNT,
 };
 
 #[derive(Clone, Default)]
@@ -35,6 +35,7 @@ pub(super) struct ProfileData {
     social_links: Vec<SocialLink>,
     created: u64,
     draft: Option<PostDraft>,
+    pub(super) notification_preferences: NotificationPreferences,
 }
 
 impl ProfileData {
@@ -78,6 +79,7 @@ impl ProfileData {
             social_links: state.social_links.clone(),
             created: state.profile_created,
             draft: state.draft.clone(),
+            notification_preferences: state.notification_preferences,
         }
     }
 
@@ -108,6 +110,7 @@ impl ProfileData {
         state.social_links = self.social_links;
         state.profile_created = self.created;
         state.draft = self.draft;
+        state.notification_preferences = self.notification_preferences;
     }
 
     pub(super) fn from_records(username: &str, sensitive: String, records: &str) -> Option<Self> {
@@ -120,6 +123,7 @@ impl ProfileData {
                 | "profile-image"
                 | "social-link"
                 | "draft"
+                | "notification-preferences"
                 | "F"
                 | "V"
                 | "H"
@@ -156,6 +160,14 @@ impl ProfileData {
             self.created,
             next_social_link
         )?;
+        let prefs = self.notification_preferences;
+        if prefs != NotificationPreferences::default() {
+            writeln!(
+                file,
+                "notification-preferences\t{}\t{}\t{}",
+                prefs.replies, prefs.messages, prefs.moderation,
+            )?;
+        }
         for (kind, image) in [("avatar", &self.avatar), ("cover", &self.cover)] {
             if let Some(image) = image {
                 writeln!(
@@ -433,7 +445,7 @@ impl State {
         self.notify(
             &to,
             format!("u/{} sent you a message.", self.username),
-            None,
+            NotificationKind::Message,
         )?;
         Ok("Message sent.")
     }
@@ -483,30 +495,18 @@ impl State {
             self.notify(
                 &recipient,
                 format!("u/{} {subject}.", self.username),
-                Some(post),
+                NotificationKind::Reply(post),
             )?;
         }
         Ok(())
     }
 
-    fn notify(&mut self, recipient: &str, body: String, post: Option<u64>) -> Result<(), String> {
-        if recipient.is_empty()
-            || recipient == self.username
-            || self.either_blocked(&self.username, recipient)
-        {
-            return Ok(());
-        }
-        self.push_notification(recipient, body, post, false)
-    }
-
-    pub(super) fn push_notification(
+    pub(super) fn push_appeal_notification(
         &mut self,
         recipient: &str,
         body: String,
-        post: Option<u64>,
-        appeal: bool,
     ) -> Result<(), String> {
-        self.push_notification_record(recipient, body, post, appeal, false)
+        self.notify(recipient, body, NotificationKind::Appeal)
     }
 
     pub(super) fn push_moderation_notification(
@@ -514,20 +514,31 @@ impl State {
         recipient: &str,
         body: String,
     ) -> Result<(), String> {
-        self.push_notification_record(recipient, body, None, false, true)
+        self.notify(recipient, body, NotificationKind::Moderation)
     }
 
-    fn push_notification_record(
+    fn notify(
         &mut self,
         recipient: &str,
         body: String,
-        post: Option<u64>,
-        appeal: bool,
-        moderation: bool,
+        kind: NotificationKind,
     ) -> Result<(), String> {
-        if recipient == DELETED_ACCOUNT {
+        if recipient.is_empty() || recipient == DELETED_ACCOUNT {
             return Ok(());
         }
+        let prefs = self.notification_preferences_for(recipient);
+        let direct = matches!(kind, NotificationKind::Reply(_) | NotificationKind::Message);
+        if direct && (recipient == self.username || self.either_blocked(&self.username, recipient))
+        {
+            return Ok(());
+        }
+        let (post, appeal, moderation, silent) = match kind {
+            NotificationKind::Reply(post) if prefs.replies => (Some(post), false, false, false),
+            NotificationKind::Message if prefs.messages => (None, false, false, false),
+            NotificationKind::Reply(_) | NotificationKind::Message => return Ok(()),
+            NotificationKind::Appeal => (None, true, false, !prefs.moderation),
+            NotificationKind::Moderation => (None, false, true, !prefs.moderation),
+        };
         let id = next_id(&mut self.next_notification)?;
         self.notifications.push(Notification {
             id,
@@ -536,9 +547,17 @@ impl State {
             post,
             appeal,
             moderation,
+            silent,
             at: unix_seconds(),
-            read: false,
+            read: silent,
         });
         Ok(())
     }
+}
+
+enum NotificationKind {
+    Reply(u64),
+    Message,
+    Appeal,
+    Moderation,
 }

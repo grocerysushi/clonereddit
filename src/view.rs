@@ -493,7 +493,7 @@ pub fn route(
         "/notifications" => (
             "Notifications",
             "notifications",
-            account::notifications(state),
+            account::notifications(state, field(query, "view") == "moderation"),
         ),
         "/appeals" => ("Your appeals", "appeals", appeals::render(state, None, "")),
         "/policy" => ("Moderation policy", "policy", policy()),

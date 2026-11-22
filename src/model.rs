@@ -27,6 +27,9 @@ pub use moderation_appeals::{Appeal, AppealStatus};
 #[path = "model/moderation_roles.rs"]
 mod moderation_roles;
 pub use moderation_roles::{ModPermission, ModeratorAssignment, ModeratorRole};
+#[path = "model/notification_preferences.rs"]
+mod notification_preferences;
+pub use notification_preferences::NotificationPreferences;
 
 const FORMAT: &str = "commonline-v2";
 const LEGACY_FORMAT: &str = "commonline-v1";
@@ -156,6 +159,7 @@ pub struct Notification {
     pub post: Option<u64>,
     pub appeal: bool,
     pub moderation: bool,
+    pub silent: bool,
 }
 
 #[derive(Clone)]
@@ -300,6 +304,7 @@ pub struct State {
     pub reports: Vec<Report>,
     pub messages: Vec<DirectMessage>,
     pub notifications: Vec<Notification>,
+    notification_preferences: NotificationPreferences,
     pub mod_mail: Vec<ModMail>,
     pub mod_log: Vec<ModerationEvent>,
     pub saved_responses: Vec<SavedResponse>,
@@ -479,6 +484,7 @@ impl State {
             reports: Vec::new(),
             messages: Vec::new(),
             notifications: Vec::new(),
+            notification_preferences: NotificationPreferences::default(),
             mod_mail: Vec::new(),
             mod_log: Vec::new(),
             saved_responses: Vec::new(),
@@ -2468,11 +2474,20 @@ impl State {
                 at: number(at)?,
                 read: number(read)?,
             }),
+            ["notification-preferences", replies, messages, moderation] => {
+                self.notification_preferences = NotificationPreferences {
+                    replies: number(replies)?,
+                    messages: number(messages)?,
+                    moderation: number(moderation)?,
+                };
+            }
             ["notification", id, recipient, body, at, read, post, destination @ ..] => {
-                let (appeal, moderation) = match destination {
-                    [] => (false, false),
-                    ["appeal"] if post.is_empty() => (true, false),
-                    ["moderation"] if post.is_empty() => (false, true),
+                let (appeal, moderation, silent) = match destination {
+                    [] => (false, false, false),
+                    ["appeal"] if post.is_empty() => (true, false, false),
+                    ["moderation"] if post.is_empty() => (false, true, false),
+                    ["appeal", "silent"] if post.is_empty() => (true, false, true),
+                    ["moderation", "silent"] if post.is_empty() => (false, true, true),
                     _ => return None,
                 };
                 self.notifications.push(Notification {
@@ -2480,10 +2495,11 @@ impl State {
                     recipient: decode(recipient)?,
                     body: decode(body)?,
                     at: number(at)?,
-                    read: number(read)?,
+                    read: number::<bool>(read)? || silent,
                     post: optional_number(post)?,
                     appeal,
                     moderation,
+                    silent,
                 })
             }
             fields @ (["appeal-sequence", ..] | ["appeal", ..]) => {
@@ -2829,9 +2845,10 @@ impl State {
             } else {
                 ""
             };
+            let delivery = if notification.silent { "\tsilent" } else { "" };
             writeln!(
                 file,
-                "notification\t{}\t{}\t{}\t{}\t{}\t{post}{destination}",
+                "notification\t{}\t{}\t{}\t{}\t{}\t{post}{destination}{delivery}",
                 notification.id,
                 encode(&notification.recipient),
                 encode(&notification.body),

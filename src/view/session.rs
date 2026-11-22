@@ -5,7 +5,7 @@ use crate::account_deletion;
 use crate::auth::{session_token, AuthGrant, AuthStore, LoginProgress, SessionDevice};
 use crate::http::{Request, Response};
 use crate::mail::AccountMail;
-use crate::model::State;
+use crate::model::{NotificationPreferences, State};
 
 pub(super) fn requires_account(request: &Request) -> bool {
     matches!(
@@ -40,6 +40,9 @@ pub(super) fn route(
     auth: &mut AuthStore,
     mail: &AccountMail,
 ) -> Response {
+    if request.path == "/account/settings" {
+        return account_settings(request, state, path);
+    }
     if request.path == "/account/security" || request.path.starts_with("/account/security/") {
         return security_route(request, state, path, auth, mail);
     }
@@ -109,6 +112,58 @@ pub(super) fn route(
     match result {
         Ok(grant) => signed_in(state, auth, grant, "/"),
         Err(error) => form_page(state, &username, &error),
+    }
+}
+
+fn account_settings(request: &Request, state: &mut State, path: &Path) -> Response {
+    if state.username.is_empty() {
+        return Response::redirect("/account/login");
+    }
+
+    let previous = state.notification_preferences();
+    if request.method == "GET" {
+        return page(
+            state,
+            "Account settings",
+            &account::notification_settings(previous, field(&request.query, "saved") == "1", ""),
+        );
+    }
+    if ["replies", "messages", "moderation"]
+        .iter()
+        .any(|key| request.form.get(*key).is_some_and(|value| value != "on"))
+    {
+        return page(
+            state,
+            "Account settings",
+            &account::notification_settings(
+                previous,
+                false,
+                "Choose valid notification preferences.",
+            ),
+        );
+    }
+
+    let submitted = NotificationPreferences {
+        replies: request.form.contains_key("replies"),
+        messages: request.form.contains_key("messages"),
+        moderation: request.form.contains_key("moderation"),
+    };
+    state.set_notification_preferences(submitted);
+    match state.save(path) {
+        Ok(()) => Response::redirect("/account/settings?saved=1"),
+        Err(error) => {
+            state.set_notification_preferences(previous);
+            eprintln!("Commonline could not save notification preferences. {error}");
+            page(
+                state,
+                "Account settings",
+                &account::notification_settings(
+                    submitted,
+                    false,
+                    "Could not save notification preferences. Try again.",
+                ),
+            )
+        }
     }
 }
 
