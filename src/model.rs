@@ -643,7 +643,7 @@ impl State {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Unsupported Commonline state format",
+                    "Unsupported ThreadPorch state format",
                 ))
             }
         };
@@ -654,7 +654,7 @@ impl State {
             state.read_record(line).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("Invalid Commonline state record at line {}", index + 2),
+                    format!("Invalid ThreadPorch state record at line {}", index + 2),
                 )
             })?;
         }

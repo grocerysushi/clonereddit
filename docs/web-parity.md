@@ -1,12 +1,12 @@
-# Commonline web parity benchmark
+# ThreadPorch web parity benchmark
 
-The target is **99 of 100 workflows verified**. This benchmark covers common signed-in experiences in a desktop or mobile browser, including publishing, account management, communication, and community moderation. It excludes native apps, paid products, advertising, business products, and Reddit’s internal systems. Commonline can meet a workflow with its own interface. Regional legal review policy is tracked separately.
+The target is **99 of 100 workflows verified**. This benchmark covers common signed-in experiences in a desktop or mobile browser, including publishing, account management, communication, and community moderation. It excludes native apps, paid products, advertising, business products, and Reddit’s internal systems. ThreadPorch can meet a workflow with its own interface. Regional legal review policy is tracked separately.
 
 This extends the [original 30-workflow benchmark](../README.md#original-core-workflows). Its denominator stays fixed at 100. Changing a workflow or its acceptance criteria requires revisiting both the baseline and the target percentage.
 
 ## Acceptance and baseline
 
-Each row is worth one point. Count it once the expected result passes end to end on the same Commonline revision in desktop and mobile browsers. The baseline uses Chromium at widths of 1440 and 390 CSS pixels. Use separate signed-in browser profiles when another user’s access, role, or account state matters. For a stateful workflow, restart the server with the same storage and check the outcome again. Test a denied action as well as a permitted one when permissions or visibility are involved. Record the revision, browser and width, observed result, and any restart or account checks per row.
+Each row is worth one point. Count it once the expected result passes end to end on the same ThreadPorch revision in desktop and mobile browsers. The baseline uses Chromium at widths of 1440 and 390 CSS pixels. Use separate signed-in browser profiles when another user’s access, role, or account state matters. For a stateful workflow, restart the server with the same storage and check the outcome again. Test a denied action as well as a permitted one when permissions or visibility are involved. Record the revision, browser and width, observed result, and any restart or account checks per row.
 
 **Implemented** means the published baseline has the main workflow at the scope stated in the row. **Partial** means a smaller workflow exists. **Missing** means the required workflow is absent. These describe the code. A check in the verified subset records a completed test. A source review, a unit test, or a pass on only one viewport does not earn a point on its own.
 
@@ -122,7 +122,7 @@ The starting revision, `c748fcb`, had **53 implemented, 23 partial, and 24 missi
 | 084 | Remove and restore a post without losing its discussion, attachments, or votes. | Implemented. |
 | 085 | Remove and restore a comment while keeping eligible descendants readable. | Implemented. |
 | 086 | Give an author a private removal reason and notify the author when content is restored. | Implemented. |
-| 087 | Submit a community restriction appeal and receive a written decision with the appropriate access change. | Implemented. Commonline uses a dedicated appeal form. |
+| 087 | Submit a community restriction appeal and receive a written decision with the appropriate access change. | Implemented. ThreadPorch uses a dedicated appeal form. |
 | 088 | Lock and unlock a discussion and verify ordinary users cannot reply while it is locked. | Missing. |
 | 089 | Highlight and reorder multiple discussions on the community’s main page. | Partial. Owners can pin one discussion. |
 | 090 | Exchange multiple messages in a moderator mailbox thread and archive the conversation when resolved. | Partial. Mod mail supports an incoming message and one moderator reply. |

@@ -168,7 +168,7 @@ fn restriction_form(
         r#"<section class="panel mod-section restricted-form-panel"><h2>Restrict a user</h2>{alert}
 <p id="restriction-kind-help" class="muted">A ban blocks posting, editing, and replying in this community. A mute blocks messages to its moderation inbox.</p>
 <form method="post" action="/action" class="stack-form restricted-form">{fields}
-<label>Username<input name="username" minlength="2" maxlength="26" value="{username}" autocomplete="off" autocapitalize="none" spellcheck="false"{list} required><small>Use a Commonline handle. The u/ prefix is optional.</small></label>{suggestions}
+<label>Username<input name="username" minlength="2" maxlength="26" value="{username}" autocomplete="off" autocapitalize="none" spellcheck="false"{list} required><small>Use a ThreadPorch handle. The u/ prefix is optional.</small></label>{suggestions}
 <label>Restriction<select name="kind" aria-describedby="restriction-kind-help"><option value="ban"{ban}>Ban</option><option value="mute"{mute}>Mute</option></select></label>
 <div class="restricted-duration">
 <label>Duration<input type="number" name="duration" min="1" step="1" inputmode="numeric" value="{duration}" aria-describedby="restriction-duration-help"></label>

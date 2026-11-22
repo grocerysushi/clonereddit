@@ -352,7 +352,7 @@ where
 {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
     let address = listener.local_addr()?;
-    println!("Commonline is running at http://{address}/");
+    println!("ThreadPorch is running at http://{address}/");
     let mut stdout = io::stdout().lock();
     stdout.flush()?;
     drop(stdout);
@@ -717,7 +717,7 @@ fn check_post_origin(headers: &Fields, host: Option<&str>) -> Result<(), Respons
         .get("sec-fetch-site")
         .is_some_and(|site| !matches!(site.as_str(), "same-origin" | "none"));
     if cross_origin || cross_site {
-        return Err(Response::error(403, "Submit forms from Commonline."));
+        return Err(Response::error(403, "Submit forms from ThreadPorch."));
     }
     Ok(())
 }

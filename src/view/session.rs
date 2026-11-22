@@ -179,7 +179,7 @@ fn account_settings(request: &Request, state: &mut State, path: &Path) -> Respon
         Err(error) => {
             state.set_notification_preferences(previous_notifications);
             state.set_chat_request_permission(previous_chat);
-            eprintln!("Commonline could not save account settings. {error}");
+            eprintln!("ThreadPorch could not save account settings. {error}");
             let error = if saving_chat {
                 "Could not save chat request settings. Try again."
             } else {
@@ -235,7 +235,7 @@ fn reset_route(
                 );
             }
             if let Ok(Some(issue)) = auth.request_email_reset(input("account")) {
-                let body = format!("Use this one-time code to reset your Commonline password:\n\n{}\n\nOpen {}/account/reset and enter your username or verified email. If you did not request a reset, you can ignore this email.", issue.code, request.origin);
+                let body = format!("Use this one-time code to reset your ThreadPorch password:\n\n{}\n\nOpen {}/account/reset and enter your username or verified email. If you did not request a reset, you can ignore this email.", issue.code, request.origin);
                 mail.queue_reset(issue.address, body);
             }
             page(state, "Reset by email", &account_security::reset_request(
@@ -326,7 +326,7 @@ fn security_route(
                 );
             }
             auth.request_email_verification(&username, input("password"), input("otp"), input("email")).and_then(|issue| {
-                let body = format!("Use this one-time code to verify this email address for Commonline:\n\n{}\n\nEnter it in Security at {}/account/security. If you did not request verification, you can ignore this email.", issue.code, request.origin);
+                let body = format!("Use this one-time code to verify this email address for ThreadPorch:\n\n{}\n\nEnter it in Security at {}/account/security. If you did not request verification, you can ignore this email.", issue.code, request.origin);
                 mail.send_verification(&issue.address, &body)
                     .map(|()| "Verification code sent.")
                     .map_err(|_| "Could not send the code. Try again shortly.".into())
@@ -426,7 +426,7 @@ fn delete_account(
             Ok(()) => {
                 let cleanup_pending = account_deletion::finish_pending(state, path, auth)
                     .inspect_err(|error| {
-                        eprintln!("Commonline will retry account deletion cleanup. {error}")
+                        eprintln!("ThreadPorch will retry account deletion cleanup. {error}")
                     })
                     .is_err();
                 let title = if cleanup_pending {

@@ -61,7 +61,7 @@ pub(super) fn compose(
 ) -> String {
     let Some(peer) = selected else {
         if contacts.is_empty() {
-            return "<p class='muted account-empty'>You can send a message when another account joins Commonline.</p>".into();
+            return "<p class='muted account-empty'>You can send a message when another account joins ThreadPorch.</p>".into();
         }
         let mut options = String::from("<option value=''>Choose a recipient</option>");
         for &peer in contacts {

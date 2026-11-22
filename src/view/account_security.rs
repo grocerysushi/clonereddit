@@ -193,7 +193,7 @@ pub(super) fn setup(secret: &str, error: &str) -> String {
         "<p>Enter a current code from the authenticator entry you added. Return to Account security to start again.</p>".to_owned()
     } else {
         format!(
-            r#"<p>Add a time-based account named Commonline in your authenticator app, then paste this setup key. Choose six digits, a 30-second period, and SHA-1 if your app asks. Enter its code within 10 minutes.</p>
+            r#"<p>Add a time-based account named ThreadPorch in your authenticator app, then paste this setup key. Choose six digits, a 30-second period, and SHA-1 if your app asks. Enter its code within 10 minutes.</p>
 <label class="account-secret account-totp-key">Setup key<input readonly autocomplete="off" autocapitalize="none" spellcheck="false" value="{}"></label>"#,
             escape(secret)
         )
@@ -216,7 +216,7 @@ pub(super) fn challenge(token: &str, error: &str) -> String {
     let token = hidden("challenge", token);
     let otp = otp_field(true);
     format!(
-        r#"<section class="panel standalone account-auth account-security"><h1>Enter your authenticator code</h1>{alert}<p>Open your authenticator app and enter the six-digit code for Commonline.</p>
+        r#"<section class="panel standalone account-auth account-security"><h1>Enter your authenticator code</h1>{alert}<p>Open your authenticator app and enter the six-digit code for the account you set up.</p>
 <form class="stack-form account-auth-form" method="post" action="/account/login/otp">{token}{otp}<button type="submit" class="button dark">Verify and sign in</button></form>
 <div class="account-auth-links"><a class="subtle-link" href="/account/login">Back to sign in</a></div></section>"#
     )

@@ -27,7 +27,7 @@ const MAINTENANCE_RETRY: Duration = Duration::from_secs(10);
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Commonline: {error}");
+        eprintln!("ThreadPorch: {error}");
         std::process::exit(1);
     }
 }
@@ -102,7 +102,7 @@ fn run() -> io::Result<()> {
             match scheduler.lock() {
                 Ok(mut app) => app.run_maintenance(),
                 Err(_) => {
-                    eprintln!("Commonline stopped background maintenance because the local state is unavailable. Restart the server to retry.");
+                    eprintln!("ThreadPorch stopped background maintenance because the local state is unavailable. Restart the server to retry.");
                     break;
                 }
             }
@@ -229,13 +229,13 @@ impl App {
         match result {
             Ok(()) => {
                 if self.retry_after.take().is_some() {
-                    eprintln!("Commonline resumed scheduled publishing.");
+                    eprintln!("ThreadPorch resumed scheduled publishing.");
                 }
             }
             Err(error) => {
                 if self.retry_after.is_none() {
                     eprintln!(
-                        "Commonline paused scheduled publishing. Could not update {} ({error}). Check that the state file and its directory are writable. Retrying every {} seconds.",
+                        "ThreadPorch paused scheduled publishing. Could not update {} ({error}). Check that the state file and its directory are writable. Retrying every {} seconds.",
                         self.state_path.display(),
                         MAINTENANCE_RETRY.as_secs(),
                     );

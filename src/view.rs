@@ -1116,7 +1116,7 @@ fn community_management_submission(
     let handle = handle.strip_prefix("u/").unwrap_or(&handle);
     let result =
         if matches!(action, "set-moderator-role" | "approve-member") && !auth.has_account(handle) {
-            Err("Choose a registered Commonline account.".into())
+            Err("Choose a registered ThreadPorch account.".into())
         } else {
             state.apply(action, form, path)
         };
@@ -1978,10 +1978,10 @@ fn layout_with_rail(
     format!(
         r##"<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f6f6f0"><title>{title} · Commonline</title><link rel="stylesheet" href="/style.css"></head>
+<meta name="theme-color" content="#f6f6f0"><title>{title} · ThreadPorch</title><link rel="stylesheet" href="/style.css"></head>
 <body><a class="skip" href="#content">Skip to content</a>
 <header class="topbar"><div class="top-inner">
-<a class="wordmark" href="/" aria-label="Commonline home"><span class="brand-mark">{brand}</span>commonline<span class="wordmark-period">.</span></a>
+<a class="wordmark" href="/" aria-label="ThreadPorch home"><span class="brand-mark">{brand}</span>ThreadPorch<span class="wordmark-period">.</span></a>
 <form class="search" action="/" role="search"><input type="hidden" name="view" value="{search_view}">{search_fields}<input type="search" name="q" aria-label="{search_label}" placeholder="{search_label}" value="{query}" maxlength="120"><button type="submit" aria-label="Run search">{search_icon}</button></form>
 <div class="header-actions">{account_actions}</div>
 </div></header>
@@ -2032,7 +2032,7 @@ fn right_rail(state: &State) -> String {
         write!(items, "<li><span class='rank'>{:02}</span><a href='/?view={}'>{}<span><strong>{}</strong><small>{}</small></span></a></li>", index+1, encode(&item.slug), community_icon(item), escape(&item.name), community_members(state, item)).unwrap();
     }
     format!(
-        r#"<section class="right-policy" aria-labelledby="policy-title"><div class="policy-label">{}<span>THE COMMONLINE POLICY</span></div><h2 id="policy-title">Lawful speech<br>stays up.</h2><p>You choose what shows up in your feed.</p><a class="button policy-button" href="/policy">Read the policy</a></section>
+        r#"<section class="right-policy" aria-labelledby="policy-title"><div class="policy-label">{}<span>THE THREADPORCH POLICY</span></div><h2 id="policy-title">Lawful speech<br>stays up.</h2><p>You choose what shows up in your feed.</p><a class="button policy-button" href="/policy">Read the policy</a></section>
 <section class="panel rising"><h2>Popular communities</h2><ol>{items}</ol><a class="subtle-link" href="/?view=communities">Explore communities</a></section>
 <section class="panel review-card">{}<div><h2>Legal review log</h2><p>Track a report and see its status.</p><a class="subtle-link" href="/reports">View review log</a></div></section>"#,
         icon("shield"),
@@ -2176,17 +2176,17 @@ fn feed(
         ),
         ("all", _, true) => masthead(
             "All discussions.",
-            "Browse conversations from across Commonline.",
+            "Browse conversations from across ThreadPorch.",
             "DISCOVER",
         ),
         ("popular", _, true) => masthead(
             "Popular.",
-            "Browse discussions across Commonline, ranked by votes.",
+            "Browse discussions across ThreadPorch, ranked by votes.",
             "DISCOVER",
         ),
         ("news", _, true) => masthead(
             "News.",
-            "News posts shared by Commonline communities.",
+            "News posts shared by ThreadPorch communities.",
             "NEWS FEED",
         ),
         ("communities", _, true) => {
@@ -2212,12 +2212,12 @@ fn feed(
         ("home", _, true) if home_joined_only => masthead(
             "The front page.",
             "Posts from communities you’ve joined.",
-            "THE COMMONLINE FEED",
+            "THE THREADPORCH FEED",
         ),
         _ => masthead(
             "The front page.",
             "Independent communities. Open discussion.",
-            "THE COMMONLINE FEED",
+            "THE THREADPORCH FEED",
         ),
     };
     if let Some(post_query) = &post_query {
@@ -3466,7 +3466,7 @@ fn reply_form(
 }
 
 fn preferences(state: &State) -> String {
-    let mut html = String::from("<section class='panel standalone'><h1>Feed controls</h1><p>These preferences apply only to your view of Commonline.</p>");
+    let mut html = String::from("<section class='panel standalone'><h1>Feed controls</h1><p>These preferences apply only to your view of ThreadPorch.</p>");
     write!(
         html,
         "<div class='preference-list'><h2>Feed layout</h2>{}</div>",
@@ -3564,7 +3564,7 @@ fn preferences(state: &State) -> String {
 
 fn policy() -> String {
     String::from(
-        r#"<section class="panel standalone policy-page"><div class="overline"><span></span> MODERATION POLICY</div><h1>Lawful speech stays up.</h1><p>Commonline is designed to allow lawful discussion, including controversial viewpoints and sensitive topics. You choose what appears in your feed.</p>
+        r#"<section class="panel standalone policy-page"><div class="overline"><span></span> MODERATION POLICY</div><h1>Lawful speech stays up.</h1><p>ThreadPorch is designed to allow lawful discussion, including controversial viewpoints and sensitive topics. You choose what appears in your feed.</p>
 <h2>Personal controls</h2><p>Mute communities or keywords, block an account, hide a post, or collapse sensitive previews. These choices apply to your view.</p>
 <h2>Legal review</h2><p>Use a post’s menu to report a possible legal violation. Tell us which country or region applies and why the content should be reviewed. Submitting a report leaves the content available while the issue is reviewed.</p>
 <h2>Community restrictions</h2><p>If a community bans your account or mutes your mod mail, you can ask its moderation team to review the restriction in <a class="subtle-link" href="/appeals">Your appeals</a>.</p>

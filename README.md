@@ -1,6 +1,6 @@
-# Commonline
+# ThreadPorch
 
-Commonline is an original discussion website prototype. People can create communities, post and discuss lawful material, choose what appears in their own feeds, and flag content for regional legal review. Browse the sample communities as a guest or create an account to participate.
+ThreadPorch is an original discussion website prototype. People can create communities, post and discuss lawful material, choose what appears in their own feeds, and flag content for regional legal review. Browse the sample communities as a guest or create an account to participate.
 
 ## Run locally
 
@@ -13,6 +13,8 @@ cargo run --locked
 Open [127.0.0.1:4173](http://127.0.0.1:4173/) in your browser. If the port is occupied, run `cargo run --locked -- --port 0` and open the address printed in the terminal. Stop the server with Ctrl+C. Cargo needs access to the locked Rust dependencies on the first build. Add `--offline` after Cargo caches them.
 
 The server stores changes in `commonline.state` and credentials in `commonline.state.accounts` in the working directory. Set `COMMONLINE_STATE` to another file path for a separate demo and the server will append `.accounts` to it. Choose an unused path to start with the original sample data. Run one server per state path.
+
+ThreadPorch keeps the original `commonline.state` filename and `COMMONLINE_*` settings so existing installations can upgrade using their current files and configuration.
 
 The browser chat and post formatting controls are written in Rust and distributed as WebAssembly assets. Small browser bindings connect them to the page. After editing either Rust client, rebuild its asset from the project directory.
 
@@ -30,7 +32,7 @@ If you forget your password, select **Reset by email** on the sign-in page and e
 
 In **Security → Two-factor authentication**, use your password to generate a setup key, add it to a time-based authenticator app, and enter the app’s six-digit code. Once enabled, sign-in and both password reset methods require an authenticator code. Store your authenticator backup securely so you can recover access if your device is lost. Turning off two-factor authentication requires your password and a fresh app code.
 
-In **Security → Active sessions**, review each session’s browser, operating system, and sign-in time when available. Select **Sign out** beside a session to end it, or **Sign out everywhere else** to keep only the current browser signed in. Older sessions stay in the list even when their device and sign-in time are unavailable. Commonline uses a general browser and operating-system label without storing the full browser identifier or an IP address for this feature.
+In **Security → Active sessions**, review each session’s browser, operating system, and sign-in time when available. Select **Sign out** beside a session to end it, or **Sign out everywhere else** to keep only the current browser signed in. Older sessions stay in the list even when their device and sign-in time are unavailable. ThreadPorch uses a general browser and operating-system label without storing the full browser identifier or an IP address for this feature.
 
 In **Security → Delete account**, confirm permanent deletion with your current password and a fresh authenticator code if two-factor authentication is enabled. Deletion revokes every session, removes credentials, profile data, drafts, and personal saves, and reserves the retired handle. Existing posts and comments stay in their threads with a deleted byline. Recipient copies of messages and moderation records can remain. Communities keep their existing access settings and moderators, and owner-only settings become unavailable.
 
@@ -48,7 +50,7 @@ To claim a profile from a version that predates accounts, stop the server, keep 
 
 ### Email delivery
 
-For local testing, set `COMMONLINE_MAIL_OUTBOX` to a private directory. Commonline writes the generated messages as `.eml` files that you can open in a mail client.
+For local testing, set `COMMONLINE_MAIL_OUTBOX` to a private directory. ThreadPorch writes the generated messages as `.eml` files that you can open in a mail client.
 
 ```powershell
 $env:COMMONLINE_MAIL_OUTBOX = Join-Path (Get-Location) 'mail-outbox'
@@ -93,7 +95,7 @@ Emails link back to the same localhost server. Keep local outbox files private b
 22. In **Mod tools → Post flair**, create, rename, or remove labels, and enable **Require post flair** to require a current label when publishing. Posts keep their original label after it is renamed or removed. Drafts can be saved before choosing a label. Pending scheduled items that need a different flair stay in **Upcoming**, where moderators can edit or cancel them.
 23. In a community feed, open **Flair** next to the sort controls and choose a label. The filter applies to posts and Community Highlights. Select **Clear flair** to see all labels again while keeping your current sort and time range.
 24. On the **Posts** or **Media** search tab, combine **Author**, **Community**, and **Post flair**. Enter a handle, a community address or name, and the full flair label. The fields also work on their own. Use double quotes around an exact phrase, or type filters directly, for example `author:u/irisarchive community:c/culture flair:Question "public archive"`. **Clear fields** removes the three field filters and keeps the search terms.
-25. Choose **Compact** or **Card** next to the feed sort controls. Compact shows titles and post actions in a denser list. Open a discussion to see its full content. Commonline saves the choice to your account when signed in and to your browser when browsing as a guest.
+25. Choose **Compact** or **Card** next to the feed sort controls. Compact shows titles and post actions in a denser list. Open a discussion to see its full content. ThreadPorch saves the choice to your account when signed in and to your browser when browsing as a guest.
 26. Select text in the post composer and use **Bold**, **Italic**, **Link**, **Bulleted list**, **Numbered list**, or **Block quote**. The toolbar inserts Markdown, which renders when you publish. For a link, replace the selected example URL with your own HTTP or HTTPS address. **Formatting help** shows the syntax for typing it yourself.
 27. In **Text and link**, put the cursor where the image should appear. Choose a PNG, JPEG, WebP, or GIF, add a description for screen readers, and select **Insert image**. Move the image’s Markdown line to change its position. A post can have up to six inline images of 2 MiB each. Images saved to a draft carry over when you resume it.
 28. In **Creator tools → Performance**, open **Insights** beside one of your posts. Switch between **Last 7 days** and **Last 30 days** to see discussion views, net vote changes, and comments added by UTC day. Tracking starts when the updated server first runs. Past activity is unavailable for earlier days.
@@ -105,7 +107,7 @@ Emails link back to the same localhost server. Keep local outbox files private b
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 
-Uploaded post attachments are stored in `commonline.state.media` by default. The server appends `.media` to a custom state path. Move or back up the state file, accounts file, and media directory together. Keep those private local files out of source control.
+Uploaded post and comment attachments are stored in `commonline.state.media` by default. The server appends `.media` to a custom state path. Move or back up the state file, accounts file, and media directory together. Keep those private local files out of source control.
 
 The prototype serves accounts over a loopback connection. Passwords use salted Argon2id hashes, and the account file stores hashes of session tokens, recovery codes, and emailed codes. Authenticator keys are stored in the private local account file and rely on its filesystem permissions. A public deployment would require HTTPS and hosting controls, and age labels currently follow the viewer’s feed preferences.
 
@@ -123,7 +125,7 @@ The website target is **99 of 100 accepted workflows** on desktop and mobile web
 
 ### Original core workflows
 
-These 30 workflows defined the original 90% milestone. The expanded benchmark breaks them down and adds acceptance checks for the rest of the website scope. Track Commonline’s regional legal review policy separately from feature parity.
+These 30 workflows defined the original 90% milestone. The expanded benchmark breaks them down and adds acceptance checks for the rest of the website scope. Track ThreadPorch’s regional legal review policy separately from feature parity.
 
 | Area | Five workflows to measure |
 | --- | --- |

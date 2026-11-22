@@ -13,7 +13,7 @@ use base64ct::{Base64, Encoding};
 const SMTP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_SMTP_REPLY: usize = 512;
 const MAX_MESSAGE_BODY: usize = 16 * 1024;
-const LOCAL_FROM: &str = "commonline@localhost";
+const LOCAL_FROM: &str = "threadporch@localhost";
 const RESET_QUEUE_CAPACITY: usize = 32;
 
 pub struct AccountMail {
@@ -28,14 +28,14 @@ impl AccountMail {
             let (sender, receiver) = mpsc::sync_channel::<(String, String)>(RESET_QUEUE_CAPACITY);
             let reset_delivery = delivery.clone();
             thread::Builder::new()
-                .name("commonline-reset-mail".into())
+                .name("threadporch-reset-mail".into())
                 .spawn(move || {
                     while let Ok((address, body)) = receiver.recv() {
                         if reset_delivery
-                            .send(&address, "Reset your Commonline password", &body)
+                            .send(&address, "Reset your ThreadPorch password", &body)
                             .is_err()
                         {
-                            eprintln!("Commonline could not deliver a password-reset message.");
+                            eprintln!("ThreadPorch could not deliver a password-reset message.");
                         }
                     }
                 })?;
@@ -55,13 +55,13 @@ impl AccountMail {
 
     pub fn send_verification(&self, address: &str, body: &str) -> io::Result<()> {
         self.delivery
-            .send(address, "Verify your Commonline email", body)
+            .send(address, "Verify your ThreadPorch email", body)
     }
 
     pub fn queue_reset(&self, address: String, body: String) {
         if let Some(sender) = &self.reset_queue {
             if sender.try_send((address, body)).is_err() {
-                eprintln!("Commonline could not queue a password-reset message.");
+                eprintln!("ThreadPorch could not queue a password-reset message.");
             }
         }
     }
@@ -424,7 +424,7 @@ mod tests {
         assert!(!valid_address("reader@example.test>"));
         let delivery = MailDelivery::Smtp {
             address: "203.0.113.1:25".parse().unwrap(),
-            from: "commonline@example.test".into(),
+            from: "threadporch@example.test".into(),
         };
         for (address, subject) in [
             (
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn mime_and_smtp_stuffing_preserve_literal_message_body() {
-        let from = "commonline@example.test";
+        let from = "threadporch@example.test";
         let to = "reader@example.test";
         let sample = message(from, to, "Verify email", ".first\n.\nLast line", "sample").unwrap();
         assert!(sample.contains("To: reader@example.test\r\n"));

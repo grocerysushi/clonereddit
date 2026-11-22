@@ -174,7 +174,7 @@ pub(super) fn render(
         .map(|item| item.name.as_str())
         .or_else(|| scope.custom.map(|feed| feed.name.as_str()));
     if let Some(name) = scope_name {
-        write!(html, "<div class='community-bar'><span>Searching {}</span><a class='button light' href='{}'>Search all of Commonline</a></div>", escape(name), escape(&url("all", query, kind))).unwrap();
+        write!(html, "<div class='community-bar'><span>Searching {}</span><a class='button light' href='{}'>Search all of ThreadPorch</a></div>", escape(name), escape(&url("all", query, kind))).unwrap();
     }
     html.push_str(&results);
     Some(html)
