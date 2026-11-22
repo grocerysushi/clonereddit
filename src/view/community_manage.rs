@@ -7,7 +7,7 @@ use crate::model::{
 use crate::schedule_time;
 
 use super::super::{
-    account_byline, action_fields, action_form, community_owner, escape, field, hidden,
+    account_byline, action_fields, action_form, community_owner, encode, escape, field, hidden,
 };
 use super::{empty, tools_url};
 
@@ -180,14 +180,15 @@ const APPEAL_OUTCOMES: &[(&str, &str)] = &[
 ];
 
 #[derive(Clone, Copy)]
-struct AppealFilters {
+struct AppealFilters<'a> {
     kind: &'static str,
     resolved: bool,
     outcome: &'static str,
+    search: &'a str,
 }
 
-impl AppealFilters {
-    fn read(query: &BTreeMap<String, String>) -> Self {
+impl<'a> AppealFilters<'a> {
+    fn read(query: &'a BTreeMap<String, String>) -> Self {
         let resolved = field(query, "status") == "resolved";
         let outcome = if resolved {
             appeal_filter_key(APPEAL_OUTCOMES, field(query, "outcome"))
@@ -198,6 +199,7 @@ impl AppealFilters {
             kind: appeal_filter_key(APPEAL_TYPES, field(query, "kind")),
             resolved,
             outcome,
+            search: field(query, "appeal_q").trim(),
         }
     }
 
@@ -231,6 +233,9 @@ impl AppealFilters {
         if self.resolved && self.outcome != "all" {
             write!(url, "&outcome={}", self.outcome).unwrap();
         }
+        if !self.search.is_empty() {
+            write!(url, "&appeal_q={}", encode(self.search)).unwrap();
+        }
         url
     }
 
@@ -248,9 +253,63 @@ impl AppealFilters {
         } else {
             String::new()
         };
+        let clear = if self.search.is_empty() {
+            String::new()
+        } else {
+            let url = AppealFilters { search: "", ..self }.url(item);
+            format!(
+                "<a class='button light mod-appeal-clear' href='{}'>Clear search</a>",
+                escape(&url)
+            )
+        };
         let status = if self.resolved { "resolved" } else { "pending" };
-        format!("<form class='mod-queue-sort mod-appeal-filters' action='/moderation/tools' method='get'>{}{}{}<label>Appeal type<select name='kind'>{options}</select></label>{decision}<button type='submit' class='button light'>Apply filters</button></form>",
-            hidden("community", &item.slug), hidden("section", "appeals"), hidden("status", status))
+        format!("<form class='mod-queue-sort mod-appeal-filters' action='/moderation/tools' method='get'>{}{}{}<label class='mod-appeal-search'>Search appeals<input type='search' name='appeal_q' value='{}' placeholder='Username or appeal ID' autocapitalize='none' spellcheck='false'></label><label>Appeal type<select name='kind'>{options}</select></label>{decision}<button type='submit' class='button light'>Apply filters</button>{clear}</form>",
+            hidden("community", &item.slug), hidden("section", "appeals"), hidden("status", status), escape(self.search))
+    }
+}
+
+enum AppealSearch {
+    All,
+    Id(u64),
+    Username(String),
+    NoMatch,
+}
+
+impl AppealSearch {
+    fn read(query: &str) -> Self {
+        if query.is_empty() {
+            return Self::All;
+        }
+        if let Some(username) = query
+            .strip_prefix('@')
+            .or_else(|| query.strip_prefix("u/"))
+            .or_else(|| query.strip_prefix("U/"))
+        {
+            let username = username.trim();
+            return if username.is_empty() {
+                Self::NoMatch
+            } else {
+                Self::Username(username.to_ascii_lowercase())
+            };
+        }
+        if query.starts_with('#') || query.bytes().all(|byte| byte.is_ascii_digit()) {
+            let digits = query.strip_prefix('#').unwrap_or(query).trim();
+            return if digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                digits.parse().map_or(Self::NoMatch, Self::Id)
+            } else {
+                Self::NoMatch
+            };
+        }
+        Self::Username(query.to_ascii_lowercase())
+    }
+
+    fn matches(&self, id: u64, username: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Id(expected) => id == *expected,
+            Self::Username(expected) => username.to_ascii_lowercase().contains(expected),
+            Self::NoMatch => false,
+        }
     }
 }
 
@@ -276,6 +335,7 @@ pub(super) fn appeals(
         Removal(&'a ContentAppeal),
     }
     let filters = AppealFilters::read(query);
+    let search = AppealSearch::read(filters.search);
     let resolved = filters.resolved;
     let pending_url = escape(
         &AppealFilters {
@@ -295,7 +355,11 @@ pub(super) fn appeals(
     let mut cases: Vec<_> = state
         .appeals
         .iter()
-        .filter(|case| case.community == item.slug && filters.matches(&case.kind))
+        .filter(|case| {
+            case.community == item.slug
+                && filters.matches(&case.kind)
+                && search.matches(case.id, &case.appellant)
+        })
         .map(|case| {
             (
                 case.status,
@@ -307,7 +371,11 @@ pub(super) fn appeals(
             state
                 .content_appeals
                 .iter()
-                .filter(|case| case.community == item.slug && filters.matches(case.kind.as_str()))
+                .filter(|case| {
+                    case.community == item.slug
+                        && filters.matches(case.kind.as_str())
+                        && search.matches(case.id, &case.appellant)
+                })
                 .map(|case| {
                     (
                         case.status,
@@ -341,7 +409,9 @@ pub(super) fn appeals(
         } else {
             "No appeals to review"
         };
-        let text = if filters.outcome != "all" {
+        let text = if !filters.search.is_empty() {
+            "No appeals match this search and the selected filters."
+        } else if filters.outcome != "all" {
             "No appeals match this decision and appeal type."
         } else if filters.kind != "all" {
             "No appeals match this type and status."
@@ -376,7 +446,7 @@ fn render_appeal(
     html: &mut String,
     case: &Appeal,
     item: &Community,
-    filters: AppealFilters,
+    filters: AppealFilters<'_>,
     reason: &str,
     draft: Draft<'_>,
 ) {
@@ -410,7 +480,7 @@ fn render_content_appeal(
     state: &State,
     case: &ContentAppeal,
     item: &Community,
-    filters: AppealFilters,
+    filters: AppealFilters<'_>,
     draft: Draft<'_>,
 ) {
     let id = case.id.to_string();
@@ -454,7 +524,7 @@ fn render_content_appeal(
 fn decision_form(
     html: &mut String,
     item: &Community,
-    filters: AppealFilters,
+    filters: AppealFilters<'_>,
     id: &str,
     content: Option<ContentKind>,
     draft: Draft<'_>,
@@ -483,6 +553,7 @@ fn decision_form(
             ("community", &item.slug),
             ("appeal", id),
             ("kind", filters.kind),
+            ("appeal_q", filters.search),
         ],
     );
     let case_draft =

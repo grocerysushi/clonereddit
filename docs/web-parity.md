@@ -265,6 +265,8 @@ The Appeals queue can filter post removals, comment removals, bans, and mutes in
 
 In Resolved, reviewers can combine appeal type with Approved, Denied, or Closed. Closed includes lifted and expired restrictions, removals restored outside the appeal, and discussions that were deleted while an appeal was pending. Desktop and mobile checks covered combined filters, result counts, and the switch back to Pending. Server checks covered all four closure statuses and community-scoped results.
 
+Reviewers can search the queue by a full or partial username or an exact appeal ID. Prefix a numeric username with `u/` or `@` to search for the account. Desktop and mobile checks covered combined filters, tab counts, clearing the search, and retaining search during a successful or failed decision. Server checks covered exact ID matching and community-scoped results.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
