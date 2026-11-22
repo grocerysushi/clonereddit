@@ -8,6 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[path = "model/account_data.rs"]
 mod account_data;
 use account_data::ProfileData;
+#[path = "model/moderation_appeals.rs"]
+mod moderation_appeals;
+pub use moderation_appeals::{Appeal, AppealStatus};
+#[path = "model/moderation_roles.rs"]
+mod moderation_roles;
+pub use moderation_roles::{ModPermission, ModeratorAssignment, ModeratorRole};
 
 const FORMAT: &str = "commonline-v2";
 const LEGACY_FORMAT: &str = "commonline-v1";
@@ -115,6 +121,7 @@ pub struct Notification {
     pub at: u64,
     pub read: bool,
     pub post: Option<u64>,
+    pub appeal: bool,
 }
 
 #[derive(Clone)]
@@ -215,6 +222,7 @@ pub struct PostDraft {
 pub struct ScheduledItem {
     pub id: u64,
     pub community: String,
+    pub author: Option<String>,
     pub kind: String,
     pub title: String,
     pub body: String,
@@ -261,8 +269,10 @@ pub struct State {
     pub mod_mail: Vec<ModMail>,
     pub mod_log: Vec<ModerationEvent>,
     pub saved_responses: Vec<SavedResponse>,
+    pub moderator_roles: Vec<ModeratorAssignment>,
     pub scheduled: Vec<ScheduledItem>,
     pub restrictions: Vec<CommunityRestriction>,
+    pub appeals: Vec<Appeal>,
     pub custom_feeds: Vec<CustomFeed>,
     pub recent: Vec<String>,
     pub history: Vec<u64>,
@@ -293,6 +303,7 @@ pub struct State {
     next_saved_response: u64,
     next_scheduled: u64,
     next_restriction: u64,
+    next_appeal: u64,
     next_feed: u64,
     next_social_link: u64,
     pending_artwork: VecDeque<SetupArtwork>,
@@ -429,8 +440,10 @@ impl State {
             mod_mail: Vec::new(),
             mod_log: Vec::new(),
             saved_responses: Vec::new(),
+            moderator_roles: Vec::new(),
             scheduled: Vec::new(),
             restrictions: Vec::new(),
+            appeals: Vec::new(),
             custom_feeds: Vec::new(),
             recent: Vec::new(),
             history: Vec::new(),
@@ -461,6 +474,7 @@ impl State {
             next_saved_response: 1,
             next_scheduled: 1,
             next_restriction: 1,
+            next_appeal: 1,
             next_feed: 1,
             next_social_link: 1,
             pending_artwork: VecDeque::new(),
@@ -593,7 +607,7 @@ impl State {
         self.posts.push(Post {
             id,
             community: item.community.clone(),
-            author: owner.clone(),
+            author: item.author.as_ref().unwrap_or(owner).clone(),
             title: item.title.clone(),
             body: item.body.clone(),
             url: item.url.clone(),
@@ -879,11 +893,15 @@ impl State {
             "send-direct-message" => self.send_direct_message(form),
             "read-conversation" => self.read_conversation(form),
             "read-notifications" => self.read_notifications(),
+            "submit-appeal" => self.submit_appeal(form),
+            "decide-appeal" => self.decide_appeal(form),
             "review-report" => self.review_report(form),
             "send-mod-mail" => self.send_mod_mail(form),
             "reply-mod-mail" => self.reply_mod_mail(form),
             "add-saved-response" => self.add_saved_response(form),
             "delete-saved-response" => self.delete_saved_response(form),
+            "set-moderator-role" => self.set_moderator_role(form),
+            "remove-moderator-role" => self.remove_moderator_role(form),
             "schedule-item" => self.schedule_item(form),
             "edit-scheduled-item" => self.edit_scheduled_item(form),
             "cancel-scheduled-item" => self.cancel_scheduled_item(form),
@@ -937,11 +955,11 @@ impl State {
     }
 
     pub fn can_view_community(&self, item: &Community) -> bool {
-        item.visibility != "private" || item.owner.as_deref() == Some(self.username.as_str())
+        item.visibility != "private" || self.can_moderate(item, ModPermission::Reports)
     }
 
     pub fn can_contribute(&self, item: &Community) -> bool {
-        (item.visibility == "public" || item.owner.as_deref() == Some(self.username.as_str()))
+        (item.visibility == "public" || self.can_moderate(item, ModPermission::Reports))
             && !self.is_banned(&item.slug, &self.username)
     }
 
@@ -1131,10 +1149,11 @@ impl State {
     }
 
     fn schedule_item(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let index = self.owned_community_index(form)?;
+        let index = self.moderated_community_index(form, ModPermission::Schedule)?;
         let community = self.communities[index].slug.clone();
         let id = next_id(&mut self.next_scheduled)?;
-        let item = scheduled_item(form, id, &community, "America/Chicago", unix_seconds())?;
+        let mut item = scheduled_item(form, id, &community, "America/Chicago", unix_seconds())?;
+        item.author = Some(self.username.clone());
         let message = if item.kind == "event" {
             "Event scheduled."
         } else {
@@ -1152,7 +1171,9 @@ impl State {
         let index = self.pending_scheduled_index(form, now)?;
         let previous = &self.scheduled[index];
         let community = previous.community.clone();
-        self.scheduled[index] = scheduled_item(form, previous.id, &community, &previous.zone, now)?;
+        let mut updated = scheduled_item(form, previous.id, &community, &previous.zone, now)?;
+        updated.author = Some(self.username.clone());
+        self.scheduled[index] = updated;
         self.record_moderation(&community, "Schedule updated.")
     }
 
@@ -1172,7 +1193,7 @@ impl State {
         form: &BTreeMap<String, String>,
         now: u64,
     ) -> Result<usize, String> {
-        let community_index = self.owned_community_index(form)?;
+        let community_index = self.moderated_community_index(form, ModPermission::Schedule)?;
         let community = &self.communities[community_index].slug;
         let id = canonical_u64(value(form, "id")).ok_or("Choose a valid scheduled item.")?;
         let index = self
@@ -1514,11 +1535,10 @@ impl State {
             .ok_or("This report could not be found.")?;
         let report = &self.reports[index];
         let community = self
-            .posts
-            .iter()
-            .find(|post| post.id == report.post && self.owns_community(&post.community))
-            .map(|post| post.community.clone())
-            .ok_or("Only the owner of the reported post’s community can review this report.")?;
+            .community_for_post(report.post)
+            .filter(|item| self.can_moderate(item, ModPermission::Reports))
+            .map(|item| item.slug.clone())
+            .ok_or("This report could not be found.")?;
         let reviewed = match value(form, "reviewed") {
             "yes" => true,
             "no" => false,
@@ -1539,12 +1559,11 @@ impl State {
     }
 
     fn restrict_user(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
-        let community_index = self.owned_community_index(form)?;
-        let community = self.communities[community_index].slug.clone();
+        let community_index = self.moderated_community_index(form, ModPermission::Restrictions)?;
+        let item = &self.communities[community_index];
         let username = restriction_handle(value(form, "username"))?;
-        if username == self.username {
-            return Err("Choose another account to restrict.".into());
-        }
+        self.protect_community_staff(item, &username)?;
+        let community = item.slug.clone();
         let kind = value(form, "kind");
         if !matches!(kind, "ban" | "mute") {
             return Err("Choose a ban or a mod-mail mute.".into());
@@ -1565,11 +1584,12 @@ impl State {
         self.restrictions.push(CommunityRestriction {
             id,
             community: community.clone(),
-            username,
+            username: username.clone(),
             kind: kind.into(),
             reason: reason.into(),
             created_at: unix_seconds(),
         });
+        self.notify_restriction_issued(&username, &community, kind)?;
         let message = if kind == "ban" {
             "Community ban added."
         } else {
@@ -1582,15 +1602,17 @@ impl State {
         &mut self,
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
-        let community_index = self.owned_community_index(form)?;
-        let community = &self.communities[community_index].slug;
+        let community_index = self.moderated_community_index(form, ModPermission::Restrictions)?;
+        let community = &self.communities[community_index];
         let id = canonical_u64(value(form, "id")).ok_or("Choose a valid restriction.")?;
         let index = self
             .restrictions
             .iter()
-            .position(|item| item.id == id && &item.community == community)
+            .position(|item| item.id == id && item.community == community.slug)
             .ok_or("This restriction is unavailable in this community.")?;
+        self.protect_community_staff(community, &self.restrictions[index].username)?;
         let item = self.restrictions.remove(index);
+        self.resolve_manually_lifted_appeal(&item)?;
         let message = if item.kind == "ban" {
             "Community ban lifted."
         } else {
@@ -1602,7 +1624,7 @@ impl State {
     fn send_mod_mail(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
         let index = self.community_index(form)?;
         let community = &self.communities[index];
-        if community.owner.is_none() {
+        if community.owner.is_none() || !self.can_view_community(community) {
             return Err("This community does not have a moderation inbox.".into());
         }
         if self.is_mod_mail_muted(&community.slug, &self.username) {
@@ -1630,8 +1652,12 @@ impl State {
             .position(|message| message.id == id)
             .ok_or("This message could not be found.")?;
         let community = self.mod_mail[index].community.clone();
-        if !self.owns_community(&community) {
-            return Err("Only this community’s owner can reply to its inbox.".into());
+        if !self
+            .communities
+            .iter()
+            .any(|item| item.slug == community && self.can_moderate(item, ModPermission::Mail))
+        {
+            return Err("This message could not be found.".into());
         }
         let reply = bounded(form, "reply", "Reply", 4_000)?;
         let reply = if reply.is_empty() {
@@ -1655,24 +1681,29 @@ impl State {
         community: &str,
         message: &'static str,
     ) -> Result<&'static str, String> {
+        self.record_moderation_action(community, message)?;
+        Ok(message)
+    }
+
+    fn record_moderation_action(&mut self, community: &str, action: &str) -> Result<(), String> {
         let id = next_id(&mut self.next_mod_event)?;
         self.mod_log.push(ModerationEvent {
             id,
             community: community.into(),
-            action: message.trim_end_matches('.').into(),
+            action: action.trim_end_matches('.').into(),
             at: unix_seconds(),
         });
         if self.mod_log.len() > MODERATION_LOG_LIMIT {
             self.mod_log.remove(0);
         }
-        Ok(message)
+        Ok(())
     }
 
     fn add_saved_response(
         &mut self,
         form: &BTreeMap<String, String>,
     ) -> Result<&'static str, String> {
-        let index = self.owned_community_index(form)?;
+        let index = self.moderated_community_index(form, ModPermission::Mail)?;
         let community = &self.communities[index].slug;
         if self
             .saved_responses
@@ -1703,7 +1734,13 @@ impl State {
         let index = self
             .saved_responses
             .iter()
-            .position(|item| item.id == id && self.owns_community(&item.community))
+            .position(|item| {
+                item.id == id
+                    && self.communities.iter().any(|community| {
+                        community.slug == item.community
+                            && self.can_moderate(community, ModPermission::Mail)
+                    })
+            })
             .ok_or("This saved response is unavailable.")?;
         self.saved_responses.remove(index);
         Ok("Saved response deleted.")
@@ -2292,7 +2329,12 @@ impl State {
                 at: number(at)?,
                 read: number(read)?,
             }),
-            ["notification", id, recipient, body, at, read, post] => {
+            ["notification", id, recipient, body, at, read, post, destination @ ..] => {
+                let appeal = match destination {
+                    [] => false,
+                    ["appeal"] if post.is_empty() => true,
+                    _ => return None,
+                };
                 self.notifications.push(Notification {
                     id: number(id)?,
                     recipient: decode(recipient)?,
@@ -2300,7 +2342,11 @@ impl State {
                     at: number(at)?,
                     read: number(read)?,
                     post: optional_number(post)?,
+                    appeal,
                 })
+            }
+            fields @ (["appeal-sequence", ..] | ["appeal", ..]) => {
+                self.read_appeal_record(fields)?
             }
             ["mod-mail", id, community, sender, subject, body, reply] => {
                 self.mod_mail.push(ModMail {
@@ -2316,6 +2362,9 @@ impl State {
                 self.next_mod_event = number(next_event)?;
                 self.next_saved_response = number(next_response)?;
             }
+            ["moderator-role", slug, handle, role] => {
+                self.read_moderator_role(slug, handle, role)?;
+            }
             ["schedule-sequence", next_scheduled] => self.next_scheduled = number(next_scheduled)?,
             ["restriction-sequence", next_restriction] => {
                 self.next_restriction = number(next_restriction)?
@@ -2330,11 +2379,17 @@ impl State {
                     created_at: number(created_at)?,
                 });
             }
-            ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id] =>
+            ["scheduled-item", id, community, kind, title, body, url, flair, sensitive, spoiler, brand_affiliate, publish_at, zone, event_start, event_end, status, post_id, authors @ ..] =>
             {
+                let author = match authors {
+                    [] | [""] => None,
+                    [handle] => Some(checked_handle(&decode(handle)?).ok()?),
+                    _ => return None,
+                };
                 self.scheduled.push(ScheduledItem {
                     id: number(id)?,
                     community: decode(community)?,
+                    author,
                     kind: decode(kind)?,
                     title: decode(title)?,
                     body: decode(body)?,
@@ -2504,6 +2559,7 @@ impl State {
                 }
             }
         }
+        self.write_moderator_roles(file)?;
         for post in &self.posts {
             writeln!(
                 file,
@@ -2607,9 +2663,10 @@ impl State {
             let post = notification
                 .post
                 .map_or_else(String::new, |id| id.to_string());
+            let destination = if notification.appeal { "\tappeal" } else { "" };
             writeln!(
                 file,
-                "notification\t{}\t{}\t{}\t{}\t{}\t{post}",
+                "notification\t{}\t{}\t{}\t{}\t{}\t{post}{destination}",
                 notification.id,
                 encode(&notification.recipient),
                 encode(&notification.body),
@@ -2617,6 +2674,7 @@ impl State {
                 notification.read
             )?;
         }
+        self.write_appeal_records(file)?;
         for message in &self.mod_mail {
             writeln!(
                 file,
@@ -2663,10 +2721,10 @@ impl State {
                 .event_end
                 .map_or_else(String::new, |time| time.to_string());
             let post_id = item.post_id.map_or_else(String::new, |id| id.to_string());
-            writeln!(file, "scheduled-item\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{event_start}\t{event_end}\t{}\t{post_id}",
+            writeln!(file, "scheduled-item\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{event_start}\t{event_end}\t{}\t{post_id}\t{}",
                 item.id, encode(&item.community), encode(&item.kind), encode(&item.title), encode(&item.body),
                 encode(&item.url), encode(&item.flair), item.sensitive, item.spoiler, item.brand_affiliate,
-                item.publish_at, encode(&item.zone), encode(&item.status))?;
+                item.publish_at, encode(&item.zone), encode(&item.status), encode(item.author.as_deref().unwrap_or_default()))?;
         }
         writeln!(file, "restriction-sequence\t{}", self.next_restriction)?;
         for item in &self.restrictions {
@@ -2931,6 +2989,7 @@ fn scheduled_item(
     Ok(ScheduledItem {
         id,
         community: community.into(),
+        author: None,
         kind: kind.into(),
         title,
         body,

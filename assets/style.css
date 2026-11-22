@@ -453,6 +453,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .page-shell.mod-shell { display: block; }
 .mod-shell > :is(.left-rail, .right-rail) { display: none; }
 .mod-workspace { display: grid; grid-template-columns: minmax(170px, 207px) minmax(0, 1fr) minmax(190px, 244px); align-items: start; gap: clamp(12px, 2.3vw, 29px); }
+.mod-workspace-limited { grid-template-columns: minmax(170px, 207px) minmax(0, 1fr); }
 .mod-tools-nav { min-width: 0; border-right: 1px solid var(--line); padding-right: 14px; }
 .mod-community-brand { display: flex; align-items: center; gap: 9px; padding: 6px 0 11px; line-height: 1.35; font-weight: 750; overflow-wrap: anywhere; }
 .mod-community-brand .community-icon { width: 35px; height: 35px; }
@@ -497,6 +498,24 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4b6a20; }
 .mod-tool-results li small { display: block; color: var(--quiet); }
 .mod-discussions-list li, .mod-log-list li { display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 7px 0; }
 :is(.mod-tool-results, .mod-discussions-list, .mod-log-list) li + li { border-top: 1px solid var(--line); }
+.mod-members-links { flex-wrap: wrap; }
+.mod-role-add, .mod-role-roster { margin-bottom: 9px; }
+.mod-role-roster ul { list-style: none; margin: 0; padding: 0; }
+.mod-role-roster li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 0; }
+.mod-role-roster li + li { border-top: 1px solid var(--line); }
+.mod-role-roster strong { overflow-wrap: anywhere; }
+.mod-role-roster p { font-size: .85rem; }
+.mod-role-actions, .mod-role-actions > form:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.mod-role-actions .button { margin-top: 0; min-height: 35px; padding: 4px 8px; font-size: .8rem; }
+.mod-role-help dl { display: grid; gap: .3rem; margin-block: .5rem 0; }
+.mod-role-help dt { font-weight: 700; }
+.mod-role-help dd { margin: 0 0 .4rem; color: var(--quiet); }
+.mod-appeal-tabs { margin-bottom: 10px; }
+.mod-appeal-decision { margin-top: 10px; }
+.mod-appeal-decision summary { list-style: none; }
+.mod-appeal-decision summary::-webkit-details-marker { display: none; }
+.mod-appeal-decision[open] > summary { background: var(--light-lime); }
+.mod-appeal-record .moderation-reply { overflow-wrap: anywhere; }
 .scheduled-workspace { display: grid; gap: 11px; }
 .scheduled-upcoming, .scheduled-history, .scheduled-form-panel { min-width: 0; padding: 13px 15px; }
 .scheduled-workspace h2 { font-size: 1.1rem; }

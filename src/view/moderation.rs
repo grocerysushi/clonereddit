@@ -5,25 +5,29 @@ use std::fmt::Write;
 use super::{
     action_fields, action_form, community_owner, community_url, encode, escape, post_card,
 };
-use crate::model::{Community, ModMail, State};
+use crate::model::{Community, ModMail, ModPermission, State};
 
 const QUEUE_URL: &str = "/moderation?section=queue";
 const MAIL_URL: &str = "/moderation?section=mail";
 const MOD_FEED_URL: &str = "/moderation?section=mod-feed";
 
 pub(super) fn render(state: &State, section: &str) -> String {
-    let owned: BTreeMap<&str, &Community> = state
+    let assigned: BTreeMap<&str, &Community> = state
         .communities
         .iter()
-        .filter(|item| community_owner(state, item))
+        .filter(|item| match section {
+            "manage" => state.can_open_mod_tools(item),
+            "mail" => state.can_moderate(item, ModPermission::Mail),
+            _ => state.can_moderate(item, ModPermission::Reports),
+        })
         .map(|item| (item.slug.as_str(), item))
         .collect();
 
     match section {
-        "mail" => mail(state, &owned),
-        "mod-feed" => mod_feed(state, &owned),
-        "manage" => manage(&owned),
-        _ => queue(state, &owned),
+        "mail" => mail(state, &assigned),
+        "mod-feed" => mod_feed(state, &assigned),
+        "manage" => manage(state, &assigned),
+        _ => queue(state, &assigned),
     }
 }
 
@@ -49,7 +53,7 @@ fn queue(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
     entries.sort_by_key(|(report, _, _)| (report.reviewed, Reverse(report.id)));
 
     let mut html = String::from(
-        "<section class='panel standalone moderation-tool'><h1>Moderation queue</h1><p>Review legal reports on communities you own. Changing a report’s status leaves the discussion visible.</p>",
+        "<section class='panel standalone moderation-tool'><h1>Moderation queue</h1><p>Review legal reports in communities you moderate. Changing a report’s status leaves the discussion visible.</p>",
     );
     if entries.is_empty() {
         html.push_str("<p class='muted log-empty'>No reports from your communities.</p>");
@@ -166,7 +170,7 @@ fn mail_record(html: &mut String, message: &ModMail, community_name: &str, inbox
 
 fn mod_feed(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
     let mut html = String::from(
-        "<section class='panel standalone moderation-tool'><h1>Mod feed</h1><p>Discussions from all the communities you own.</p>",
+        "<section class='panel standalone moderation-tool'><h1>Mod feed</h1><p>Discussions from communities you moderate.</p>",
     );
     let mut posts: Vec<_> = state
         .posts
@@ -188,24 +192,39 @@ fn mod_feed(state: &State, owned: &BTreeMap<&str, &Community>) -> String {
     html
 }
 
-fn manage(owned: &BTreeMap<&str, &Community>) -> String {
+fn manage(state: &State, assigned: &BTreeMap<&str, &Community>) -> String {
     let mut html = String::from(
         "<section class='panel standalone moderation-tool'><header class='creator-header'><h1>Manage communities</h1><a class='button dark' href='/communities/new'>Create community</a></header>",
     );
-    if owned.is_empty() {
-        html.push_str("<p class='muted log-empty'>Communities you create will appear here.</p>");
+    if assigned.is_empty() {
+        html.push_str(
+            "<p class='muted log-empty'>Communities you create or moderate will appear here.</p>",
+        );
     } else {
         html.push_str("<ul class='creator-list'>");
-        for item in owned.values() {
+        for item in assigned.values() {
+            let is_owner = community_owner(state, item);
+            let slug = encode(&item.slug);
+            let name = escape(&item.name);
+            let title = if state.can_view_community(item) {
+                format!(
+                    "<a class='subtle-link' href='{}'>{name}</a>",
+                    community_url(&item.slug)
+                )
+            } else {
+                format!("<strong>{name}</strong>")
+            };
+            let role = state
+                .moderator_role(item, &state.username)
+                .map_or("Owner", |role| role.label());
+            let settings = if is_owner {
+                format!("<a class='button light' aria-label='Community settings for {name}' href='/communities/settings?community={slug}'>Community settings</a>")
+            } else {
+                String::new()
+            };
             write!(
                 html,
-                "<li class='creator-row'><div class='creator-row-main'><a class='subtle-link' href='{}'>{}</a><p class='muted'>{}</p></div><div class='creator-row-actions'><a class='button light' href='/moderation/tools?community={}'>Mod tools</a><a class='button light' aria-label='Community settings for {}' href='/communities/settings?community={}'>Community settings</a></div></li>",
-                community_url(&item.slug),
-                escape(&item.name),
-                escape(&item.description),
-                encode(&item.slug),
-                escape(&item.name),
-                encode(&item.slug)
+                "<li class='creator-row'><div class='creator-row-main'>{title}<p class='muted'>{role}</p></div><div class='creator-row-actions'><a class='button light' href='/moderation/tools?community={slug}'>Mod tools</a>{settings}</div></li>"
             )
             .unwrap();
         }
@@ -220,6 +239,6 @@ pub(super) fn contact(item: &Community) -> String {
     let community = escape(&item.name);
     let cancel = community_url(&item.slug);
     format!(
-        "<section class='panel standalone moderation-tool'><h1>Contact moderators</h1><p>Send a message to the moderator of <strong>{community}</strong>.</p><form class='stack-form' action='/action' method='post'>{fields}<label>Subject<input name='subject' maxlength='120' required></label><label>Message<textarea name='body' rows='7' maxlength='4000' required></textarea></label><div class='form-actions'><button class='button dark' type='submit'>Send message</button><a class='button light' href='{cancel}'>Cancel</a></div></form></section>"
+        "<section class='panel standalone moderation-tool'><h1>Contact moderators</h1><p>Send a message to the moderators of <strong>{community}</strong>.</p><form class='stack-form' action='/action' method='post'>{fields}<label>Subject<input name='subject' maxlength='120' required></label><label>Message<textarea name='body' rows='7' maxlength='4000' required></textarea></label><div class='form-actions'><button class='button dark' type='submit'>Send message</button><a class='button light' href='{cancel}'>Cancel</a></div></form></section>"
     )
 }

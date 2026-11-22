@@ -2,8 +2,8 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{action_fields, action_form, community_owner, encode, escape, field, icon};
-use crate::model::{Community, ScheduledItem, State};
+use super::{action_fields, action_form, encode, escape, field, icon};
+use crate::model::{Community, ModPermission, ScheduledItem, State};
 use crate::schedule_time::{display, to_local};
 
 const CHICAGO: &str = "America/Chicago";
@@ -15,7 +15,7 @@ const ZONES: &[(&str, &str)] = &[
 ];
 
 pub(super) fn render(state: &State, item: &Community, query: &BTreeMap<String, String>) -> String {
-    if !community_owner(state, item) {
+    if !state.can_moderate(item, ModPermission::Schedule) {
         return String::new();
     }
     let requested = field(query, "edit");
@@ -35,7 +35,7 @@ pub(super) fn render_error(
     form: &BTreeMap<String, String>,
     error: &str,
 ) -> String {
-    if !community_owner(state, item) {
+    if !state.can_moderate(item, ModPermission::Schedule) {
         return String::new();
     }
     let editor = if field(form, "action") == "edit-scheduled-item" {

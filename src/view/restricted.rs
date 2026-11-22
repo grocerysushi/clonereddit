@@ -2,8 +2,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use super::{action_fields, action_form, community_owner, encode, escape, field};
-use crate::model::{Community, State};
+use super::{action_fields, action_form, encode, escape, field};
+use crate::model::{Community, ModPermission, State};
 use crate::schedule_time::{display, to_local};
 
 pub(super) fn render(state: &State, item: &Community) -> String {
@@ -25,7 +25,7 @@ fn workspace(
     form: Option<&BTreeMap<String, String>>,
     error: &str,
 ) -> String {
-    if !community_owner(state, item) {
+    if !state.can_moderate(item, ModPermission::Restrictions) {
         return String::new();
     }
 

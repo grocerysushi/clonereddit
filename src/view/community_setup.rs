@@ -47,13 +47,13 @@ const ACCESS: &[(&str, &str, &str, &str)] = &[
     (
         "restricted",
         "Restricted",
-        "Anyone can read. The owner can contribute.",
+        "Anyone can read. The owner and moderators can contribute.",
         "sliders",
     ),
     (
         "private",
         "Private",
-        "Only the owner can read and contribute.",
+        "The owner and moderators can read and contribute.",
         "shield",
     ),
 ];

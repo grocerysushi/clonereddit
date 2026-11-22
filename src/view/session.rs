@@ -14,6 +14,7 @@ pub(super) fn requires_account(request: &Request) -> bool {
             | "/creator"
             | "/messages"
             | "/notifications"
+            | "/appeals"
             | "/moderation"
             | "/profile"
             | "/communities/start"

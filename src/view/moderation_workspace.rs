@@ -4,13 +4,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::model::{Community, Post, Report, State};
+use crate::model::{Community, ModPermission, Post, Report, State};
 
 use super::{
     action_fields, action_form, community_icon, community_owner, community_url, encode, escape,
     field, hidden, icon, score,
 };
 use super::{restricted, scheduled};
+
+#[path = "community_manage.rs"]
+mod community_manage;
 
 const SCHEDULED_TITLE: &str = "Scheduled posts and events";
 const RESTRICTED_TITLE: &str = "Restricted Users";
@@ -41,6 +44,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Manage community bans and mod mail mutes.",
     ),
     (
+        "appeals",
+        "Appeals",
+        "log",
+        "Review requests to lift community bans and mod mail mutes.",
+    ),
+    (
         "discussions",
         "Discussions",
         "chat",
@@ -57,6 +66,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Members",
         "grid",
         "See ownership, membership, and access.",
+    ),
+    (
+        "roles",
+        "Moderator roles",
+        "shield",
+        "View and manage this community’s moderation team.",
     ),
     (
         "insights",
@@ -78,29 +93,63 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-pub(super) fn render(state: &State, item: &Community, query: &BTreeMap<String, String>) -> String {
+pub(super) fn can_view(state: &State, item: &Community, section: &str) -> bool {
+    let permission = match section {
+        "" => return state.can_open_mod_tools(item),
+        "queue" | "discussions" | "rules" | "members" | "roles" | "insights" | "log" => {
+            ModPermission::Reports
+        }
+        "mail" | "responses" => ModPermission::Mail,
+        "scheduled" => ModPermission::Schedule,
+        "restricted-users" => ModPermission::Restrictions,
+        "appeals" => ModPermission::Appeals,
+        _ => return false,
+    };
+    state.can_moderate(item, permission)
+}
+
+pub(super) fn render(
+    state: &State,
+    item: &Community,
+    query: &BTreeMap<String, String>,
+    registered: &[String],
+) -> String {
     let workspace = Workspace::new(state, item);
+    let available = || {
+        TOOLS
+            .iter()
+            .copied()
+            .filter(|(key, _, _, _)| can_view(state, item, key))
+    };
     let (section, title, _, _) = TOOLS
         .iter()
         .copied()
-        .find(|(key, _, _, _)| *key == field(query, "section"))
-        .unwrap_or(TOOLS[0]);
+        .find(|(key, _, _, _)| *key == field(query, "section") && can_view(state, item, key))
+        .or_else(|| available().next())
+        .unwrap_or(("", "Mod tools", "shield", ""));
     let search = field(query, "tool_q").trim();
     let body = if search.is_empty() {
         match section {
             "mail" => workspace.mail(state),
             "scheduled" => scheduled::render(state, item, query),
             "restricted-users" => restricted::render(state, item),
+            "appeals" => community_manage::appeals(state, item, query, None),
             "discussions" => workspace.discussions(state),
-            "rules" => workspace.rules(),
+            "rules" => workspace.rules(state),
             "members" => workspace.members(state),
+            "roles" => community_manage::roles(state, item, registered, None),
             "insights" => workspace.insights(state),
             "log" => workspace.log(state),
             "responses" => workspace.responses(state),
-            _ => workspace.queue(query),
+            "queue" => workspace.queue(query),
+            _ => empty(
+                "Mod tools unavailable",
+                "Your account needs a moderator role to view these tools.",
+                "shield",
+            ),
         }
     } else {
-        search_results(item, search)
+        search_results(state, item, search)
     };
     let heading = if search.is_empty() {
         title
@@ -108,6 +157,27 @@ pub(super) fn render(state: &State, item: &Community, query: &BTreeMap<String, S
         "Search tools"
     };
     workspace.frame(state, section, heading, search, &body)
+}
+
+pub(super) fn role_error(
+    state: &State,
+    item: &Community,
+    registered: &[String],
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let body = community_manage::roles(state, item, registered, Some((form, error)));
+    Workspace::new(state, item).frame(state, "roles", "Moderator roles", "", &body)
+}
+
+pub(super) fn decision_error(
+    state: &State,
+    item: &Community,
+    form: &BTreeMap<String, String>,
+    error: &str,
+) -> String {
+    let body = community_manage::appeals(state, item, &BTreeMap::new(), Some((form, error)));
+    Workspace::new(state, item).frame(state, "appeals", "Appeals", "", &body)
 }
 
 pub(super) fn schedule_error(
@@ -148,7 +218,7 @@ fn navigation(state: &State, item: &Community, section: &str, search: &str) -> S
     for owned in state
         .communities
         .iter()
-        .filter(|group| community_owner(state, group))
+        .filter(|group| state.can_open_mod_tools(group))
     {
         let selected = if owned.slug == item.slug {
             " selected"
@@ -165,6 +235,9 @@ fn navigation(state: &State, item: &Community, section: &str, search: &str) -> S
     }
     let mut links = String::new();
     for (key, label, glyph, _) in TOOLS {
+        if !can_view(state, item, key) {
+            continue;
+        }
         let active = if *key == section && search.is_empty() {
             " aria-current='page'"
         } else {
@@ -178,25 +251,46 @@ fn navigation(state: &State, item: &Community, section: &str, search: &str) -> S
         )
         .unwrap();
     }
+    let brand_content = format!(
+        "{}<span>{}<small>Mod tools</small></span>",
+        if state.can_view_community(item) {
+            community_icon(item)
+        } else {
+            icon("shield")
+        },
+        escape(&item.name),
+    );
+    let brand = if state.can_view_community(item) {
+        format!(
+            "<a class='mod-community-brand' href='{}'>{brand_content}</a>",
+            community_url(&item.slug)
+        )
+    } else {
+        format!("<div class='mod-community-brand'>{brand_content}</div>")
+    };
+    let settings = if community_owner(state, item) {
+        format!(
+            "<a href='{}'>{}<span>Community settings</span></a>",
+            escape(&settings_url(item)),
+            icon("sliders")
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<aside class="mod-tools-nav" aria-label="Moderation tools">
-<a class="mod-community-brand" href="{community_url}">{mark}<span>{name}<small>Mod tools</small></span></a>
-<form class="mod-scope" action="/moderation/tools" method="get">{section_field}<label>Community<select name="community">{options}</select></label><button type="submit" class="button light">Switch</button></form>
+{brand}
+<form class="mod-scope" action="/moderation/tools" method="get"><label>Community<select name="community">{options}</select></label><button type="submit" class="button light">Switch</button></form>
 <form class="mod-tool-search" action="/moderation/tools" method="get" role="search">{community}{section_field}<label class="sr-only" for="mod-tool-search">Search moderation tools</label><input id="mod-tool-search" name="tool_q" type="search" maxlength="80" value="{search}" placeholder="Search tools"><button type="submit" class="button light" aria-label="Search moderation tools">{search_icon}</button></form>
-<nav aria-label="Mod tools">{links}</nav><nav class="mod-management-links" aria-label="Community management"><a href="{settings}">{settings_icon}<span>Community settings</span></a><a href="/moderation?section=manage">{grid}<span>Manage communities</span></a></nav>
+<nav aria-label="Mod tools">{links}</nav><nav class="mod-management-links" aria-label="Community management">{settings}<a href="/moderation?section=manage">{grid}<span>Manage communities</span></a></nav>
 </aside>"#,
-        community_url = community_url(&item.slug),
-        mark = community_icon(item),
-        name = escape(&item.name),
         search = escape(search),
         search_icon = icon("search"),
-        settings = escape(&settings_url(item)),
-        settings_icon = icon("sliders"),
         grid = icon("grid"),
     )
 }
 
-fn search_results(item: &Community, search: &str) -> String {
+fn search_results(state: &State, item: &Community, search: &str) -> String {
     let needle = search.to_lowercase();
     let mut html = format!(
         "<section class='panel mod-section'><h2>Results for “{}”</h2><ul class='mod-tool-results'>",
@@ -204,9 +298,10 @@ fn search_results(item: &Community, search: &str) -> String {
     );
     let mut any = false;
     for (key, label, glyph, description) in TOOLS {
-        if [*label, *description]
-            .iter()
-            .any(|text| text.to_lowercase().contains(&needle))
+        if can_view(state, item, key)
+            && [*label, *description]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&needle))
         {
             any = true;
             write!(html, "<li><a href='{}'>{}<span><strong>{label}</strong><small>{description}</small></span></a></li>", escape(&tools_url(item, key)), icon(glyph)).unwrap();
@@ -269,11 +364,22 @@ impl<'a> Workspace<'a> {
         body: &str,
     ) -> String {
         let navigation = navigation(state, self.item, section, search);
+        let community = format!("c/{}", escape(&self.item.slug));
+        let community = if state.can_view_community(self.item) {
+            format!(
+                "<a class='subtle-link' href='{}'>{community}</a>",
+                community_url(&self.item.slug)
+            )
+        } else {
+            format!("<span class='muted'>{community}</span>")
+        };
+        let (summary, workspace_class) = if can_view(state, self.item, "insights") {
+            (self.summary(), "")
+        } else {
+            (String::new(), " mod-workspace-limited")
+        };
         format!(
-            "<div class='mod-workspace'>{navigation}<section class='mod-tools-main' aria-labelledby='mod-tools-title'><header class='mod-tools-header'><a class='subtle-link' href='{}'>c/{}</a><h1 id='mod-tools-title'>{heading}</h1></header>{body}</section>{}</div>",
-            community_url(&self.item.slug),
-            escape(&self.item.slug),
-            self.summary(),
+            "<div class='mod-workspace{workspace_class}'>{navigation}<section class='mod-tools-main' aria-labelledby='mod-tools-title'><header class='mod-tools-header'>{community}<h1 id='mod-tools-title'>{heading}</h1></header>{body}</section>{summary}</div>",
         )
     }
 
@@ -445,7 +551,7 @@ impl<'a> Workspace<'a> {
         html
     }
 
-    fn rules(&self) -> String {
+    fn rules(&self, state: &State) -> String {
         let guidelines = if self.item.guidelines.is_empty() {
             "<p class='muted'>No topic guidelines have been added.</p>".to_owned()
         } else {
@@ -454,7 +560,15 @@ impl<'a> Workspace<'a> {
                 escape(&self.item.guidelines)
             )
         };
-        format!("<section class='panel mod-section'><h2>Topic guidelines</h2>{guidelines}<a class='button light' href='{}'>Edit guidelines</a></section>", escape(&settings_url(self.item)))
+        let edit = if community_owner(state, self.item) {
+            format!(
+                "<a class='button light' href='{}'>Edit guidelines</a>",
+                escape(&settings_url(self.item))
+            )
+        } else {
+            String::new()
+        };
+        format!("<section class='panel mod-section'><h2>Topic guidelines</h2>{guidelines}{edit}</section>")
     }
 
     fn members(&self, state: &State) -> String {
@@ -469,7 +583,7 @@ impl<'a> Workspace<'a> {
             "private" => "Private",
             _ => "Public",
         };
-        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><a class='button light' href='{}'>View community</a></section>", escape(owner), state.community_member_count(self.item), community_url(&self.item.slug))
+        format!("<section class='panel mod-section'><h2>Community membership</h2><dl class='mod-metrics'><div><dt>Owner</dt><dd>u/{}</dd></div><div><dt>Members</dt><dd>{}</dd></div><div><dt>Your membership</dt><dd>{membership}</dd></div><div><dt>Access</dt><dd>{visibility}</dd></div></dl><div class='form-actions mod-members-links'><a class='button light' href='{}'>View community</a><a class='button light' href='{}'>Moderator roles</a></div></section>", escape(owner), state.community_member_count(self.item), community_url(&self.item.slug), escape(&tools_url(self.item, "roles")))
     }
 
     fn insights(&self, state: &State) -> String {

@@ -301,7 +301,9 @@ pub(super) fn notifications(state: &State) -> String {
             let post = item
                 .post
                 .and_then(|id| state.posts.iter().find(|post| post.id == id));
-            let link = if item.post.is_none() {
+            let link = if item.appeal {
+                "<a class='subtle-link' href='/appeals'>View your appeals</a>".to_owned()
+            } else if item.post.is_none() {
                 "<a class='subtle-link' href='/messages'>Open messages</a>".to_owned()
             } else {
                 post.filter(|post| {

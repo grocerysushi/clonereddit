@@ -1,4 +1,5 @@
 mod account;
+mod appeals;
 mod community_appearance;
 mod community_setup;
 mod creator;
@@ -20,7 +21,9 @@ use std::path::Path;
 use crate::auth::AuthStore;
 use crate::http::{Request, Response};
 use crate::media;
-use crate::model::{Comment, Community, CustomFeed, Post, PostDraft, ProfileAvatar, State};
+use crate::model::{
+    Comment, Community, CustomFeed, ModPermission, Post, PostDraft, ProfileAvatar, State,
+};
 use crate::schedule_time;
 
 pub fn route(
@@ -183,6 +186,25 @@ pub fn route(
         }
         if action == "send-direct-message" && !auth.has_account(field(&request.form, "recipient")) {
             return message_error(state, auth, &request.form, "Choose a registered recipient.");
+        }
+        if action == "submit-appeal" {
+            return match state.apply(action, &request.form, path) {
+                Ok(notice) => Response::redirect(&format!("/appeals?notice={}", encode(notice))),
+                Err(error) => {
+                    let draft = field(&request.form, "restriction")
+                        .parse()
+                        .ok()
+                        .map(|id| (id, field(&request.form, "body")));
+                    let content = appeals::render(state, draft, &error);
+                    Response::html(layout(state, "appeals", "Your appeals", &content, "", ""))
+                }
+            };
+        }
+        if matches!(
+            action,
+            "set-moderator-role" | "remove-moderator-role" | "decide-appeal"
+        ) {
+            return community_management_submission(state, auth, path, action, &request.form);
         }
         if matches!(
             action,
@@ -374,20 +396,25 @@ pub fn route(
         }
         "/moderation/tools" => {
             let selected = field(query, "community");
+            let section = field(query, "section");
             let item = if selected.is_empty() {
                 state
                     .communities
                     .iter()
-                    .find(|item| community_owner(state, item))
+                    .find(|item| moderation_workspace::can_view(state, item, section))
             } else {
-                community(state, selected).filter(|item| community_owner(state, item))
+                community(state, selected)
+                    .filter(|item| moderation_workspace::can_view(state, item, section))
             };
             match item {
-                Some(item) => (
-                    "Moderator workspace",
-                    "mod-workspace",
-                    moderation_workspace::render(state, item, query),
-                ),
+                Some(item) => {
+                    let registered = registered_accounts_for_owner(state, item, auth);
+                    (
+                        "Moderator workspace",
+                        "mod-workspace",
+                        moderation_workspace::render(state, item, query, &registered),
+                    )
+                }
                 None if selected.is_empty() => {
                     return Response::redirect("/moderation?section=manage")
                 }
@@ -399,7 +426,7 @@ pub fn route(
                 Some(item) if state.is_mod_mail_muted(&item.slug, &state.username) => (
                     "Mod mail unavailable",
                     item.slug.as_str(),
-                    format!("<section class='panel standalone'><h1>Mod mail unavailable</h1><p>Your account is muted from sending mod mail to this community.</p><a class='button light' href='{}'>Back to community</a></section>", community_url(&item.slug)),
+                    format!("<section class='panel standalone'><h1>Mod mail unavailable</h1><p>Your account is muted from sending mod mail to this community.</p><div class='form-actions'><a class='button dark' href='/appeals'>View your appeals</a><a class='button light' href='{}'>Back to community</a></div></section>", community_url(&item.slug)),
                 ),
                 Some(item) => (
                     "Message moderators",
@@ -431,6 +458,7 @@ pub fn route(
             "notifications",
             account::notifications(state),
         ),
+        "/appeals" => ("Your appeals", "appeals", appeals::render(state, None, "")),
         "/policy" => ("Moderation policy", "policy", policy()),
         "/reports" => ("Legal review log", "policy", reports(state)),
         "/report" => match find_post(state, query) {
@@ -634,6 +662,74 @@ fn publishing_error(
     Response::html(layout(state, "", "Check your post", &body, "", ""))
 }
 
+fn registered_accounts_for_owner(state: &State, item: &Community, auth: &AuthStore) -> Vec<String> {
+    if community_owner(state, item) {
+        auth.usernames()
+            .filter(|handle| *handle != state.username)
+            .map(str::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn community_management_submission(
+    state: &mut State,
+    auth: &AuthStore,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let slug = field(form, "community");
+    let is_decision = action == "decide-appeal";
+    let permitted = |item: &Community, state: &State| {
+        if is_decision {
+            state.can_moderate(item, ModPermission::Appeals)
+        } else {
+            community_owner(state, item)
+        }
+    };
+    let Some(item) = community(state, slug).filter(|item| permitted(item, state)) else {
+        return missing(state);
+    };
+    let slug = item.slug.clone();
+    let handle = field(form, "handle").trim().trim_start_matches("u/");
+    let result = if action == "set-moderator-role" && !auth.has_account(handle) {
+        Err("Choose a registered Commonline account.".into())
+    } else {
+        state.apply(action, form, path)
+    };
+    let (section, title) = if is_decision {
+        ("appeals", "Community appeals")
+    } else {
+        ("roles", "Moderator roles")
+    };
+    match result {
+        Ok(notice) => Response::redirect(&format!(
+            "/moderation/tools?community={}&section={section}&notice={}",
+            encode(&slug),
+            encode(notice)
+        )),
+        Err(error) => {
+            let Some(item) = community(state, &slug) else {
+                return missing(state);
+            };
+            let body = if is_decision {
+                moderation_workspace::decision_error(state, item, form, &error)
+            } else {
+                moderation_workspace::role_error(
+                    state,
+                    item,
+                    &registered_accounts_for_owner(state, item, auth),
+                    form,
+                    &error,
+                )
+            };
+            Response::html(layout(state, "mod-workspace", title, &body, "", ""))
+        }
+    }
+}
+
 fn restriction_submission(
     state: &mut State,
     path: &Path,
@@ -641,7 +737,9 @@ fn restriction_submission(
     form: &BTreeMap<String, String>,
 ) -> Response {
     let slug = field(form, "community");
-    if community(state, slug).is_none_or(|item| !community_owner(state, item)) {
+    if community(state, slug)
+        .is_none_or(|item| !state.can_moderate(item, ModPermission::Restrictions))
+    {
         return missing(state);
     }
     match state.apply(action, form, path) {
@@ -674,7 +772,8 @@ fn scheduled_submission(
     form: &BTreeMap<String, String>,
 ) -> Response {
     let slug = field(form, "community");
-    if community(state, slug).is_none_or(|item| !community_owner(state, item)) {
+    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Schedule))
+    {
         return missing(state);
     }
 
@@ -1083,6 +1182,7 @@ fn layout_with_rail(
         ("/?view=all", "All discussions", "grid", "all"),
         ("/?view=saved", "Saved", "save", "saved"),
         ("/settings", "Feed controls", "sliders", "settings"),
+        ("/appeals", "Your appeals", "shield", "appeals"),
         ("/policy", "Moderation policy", "shield", "policy"),
     ]
     .into_iter()
@@ -1466,6 +1566,8 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         .unwrap();
         if community_owner(state, item) {
             write!(html, "<a class='button light' href='/communities/settings?community={}'>{} Community settings</a>", encode(&item.slug), icon("sliders")).unwrap();
+        }
+        if state.can_open_mod_tools(item) {
             write!(
                 html,
                 "<a class='button light' href='/moderation/tools?community={}'>{} Mod tools</a>",
@@ -1479,7 +1581,10 @@ fn feed(state: &State, query: &BTreeMap<String, String>, active: &str) -> String
         }
         html.push_str("</div>");
         if state.is_banned(&item.slug, &state.username) {
-            html.push_str("<p class='community-restriction-note muted'>Your account is banned from posting or replying in this community.</p>");
+            html.push_str("<p class='community-restriction-note muted'>Your account is banned from posting or replying in this community. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
+        }
+        if state.is_mod_mail_muted(&item.slug, &state.username) {
+            html.push_str("<p class='community-restriction-note muted'>Your account is muted in this community’s mod mail. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
         }
         if !item.guidelines.is_empty() {
             write!(html, "<details class='panel community-guidelines'><summary>Topic guidelines</summary><p>{}</p></details>", escape(&item.guidelines)).unwrap();
@@ -2218,7 +2323,7 @@ fn thread(state: &State, post: &Post, action: CommentAction<'_>) -> String {
     } else if state.username.is_empty() {
         html.push_str("<p class='community-restriction-note muted'><a class='subtle-link' href='/account/login'>Sign in</a> to reply.</p>");
     } else if state.is_banned(&post.community, &state.username) {
-        html.push_str("<p class='community-restriction-note muted'>Your account is banned from replying in this community.</p>");
+        html.push_str("<p class='community-restriction-note muted'>Your account is banned from replying in this community. <a class='subtle-link' href='/appeals'>View your appeals</a></p>");
     } else {
         html.push_str(
             "<p class='community-restriction-note muted'>This community limits who can reply.</p>",
@@ -2557,7 +2662,7 @@ fn policy() -> String {
         r#"<section class="panel standalone policy-page"><div class="overline"><span></span> MODERATION POLICY</div><h1>Lawful speech stays up.</h1><p>Commonline is designed to allow lawful discussion, including controversial viewpoints and sensitive topics. You choose what appears in your feed.</p>
 <h2>Personal controls</h2><p>Mute communities or keywords, block an account, hide a post, or collapse sensitive previews. These choices apply to your view.</p>
 <h2>Legal review</h2><p>Use a post’s menu to report a possible legal violation. Tell us which country or region applies and why the content should be reviewed. Submitting a report leaves the content available while the issue is reviewed.</p>
-<h2>Restrictions and review requests</h2><p>The proposed policy would identify the reason and region when applicable law requires a restriction and provide a way to request a review. This prototype records sample reports on this device.</p>
+<h2>Community restrictions</h2><p>If a community bans your account or mutes your mod mail, you can ask its moderation team to review the restriction in <a class="subtle-link" href="/appeals">Your appeals</a>.</p>
 <div class="form-actions"><a class="button dark" href="/reports">View review log</a><a class="button light" href="/settings">Feed controls</a></div></section>"#,
     )
 }

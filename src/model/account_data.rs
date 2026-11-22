@@ -487,12 +487,23 @@ impl State {
         {
             return Ok(());
         }
+        self.push_notification(recipient, body, post, false)
+    }
+
+    pub(super) fn push_notification(
+        &mut self,
+        recipient: &str,
+        body: String,
+        post: Option<u64>,
+        appeal: bool,
+    ) -> Result<(), String> {
         let id = next_id(&mut self.next_notification)?;
         self.notifications.push(Notification {
             id,
             recipient: recipient.into(),
             body,
             post,
+            appeal,
             at: unix_seconds(),
             read: false,
         });
