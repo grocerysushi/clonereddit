@@ -168,9 +168,14 @@ pub(super) fn editor(
     let cancel = escape(&comment_url(back, comment.id));
     let body = escape(body);
     let alert = form_error(error);
+    let required = if comment.image.is_none() {
+        " required"
+    } else {
+        ""
+    };
     format!(
         r#"<form class="stack-form comment-edit-form" method="post" action="/action" aria-label="Edit comment">{fields}{alert}
-<label>Edit comment<textarea name="body" required maxlength="4000" rows="4">{body}</textarea></label>
+<label>Edit comment<textarea name="body"{required} maxlength="4000" rows="4">{body}</textarea></label>
 <div class="form-actions comment-form-actions"><button class="button dark" type="submit">Save changes</button><a class="button light" href="{cancel}">Cancel</a></div></form>"#
     )
 }

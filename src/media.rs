@@ -28,11 +28,8 @@ pub fn store(state_path: &Path, uploads: Vec<Upload>) -> Result<Vec<PostMedia>, 
     fs::create_dir_all(&directory).map_err(storage_error)?;
     let mut stored = Vec::with_capacity(media.len());
     for (mime, bytes) in media {
-        match write_media(&directory, &bytes) {
-            Ok(key) => stored.push(PostMedia {
-                key,
-                content_type: mime.into(),
-            }),
+        match write_asset(&directory, mime, &bytes) {
+            Ok(asset) => stored.push(asset),
             Err(error) => {
                 remove(state_path, &stored);
                 return Err(storage_error(error));
@@ -40,6 +37,20 @@ pub fn store(state_path: &Path, uploads: Vec<Upload>) -> Result<Vec<PostMedia>, 
         }
     }
     Ok(stored)
+}
+
+pub fn store_comment_image(state_path: &Path, upload: Upload) -> Result<PostMedia, String> {
+    if !is_image_type(&upload.content_type) {
+        return Err("Choose a PNG, JPEG, WebP, or GIF image.".into());
+    }
+    let (mime, bytes) = validate(upload)?;
+    let directory = directory(state_path);
+    fs::create_dir_all(&directory).map_err(storage_error)?;
+    write_asset(&directory, mime, &bytes).map_err(storage_error)
+}
+
+pub(crate) fn is_image_type(value: &str) -> bool {
+    media_type(value).is_some_and(|(mime, _)| mime.starts_with("image/"))
 }
 
 pub fn read(state_path: &Path, asset: &PostMedia) -> Option<(&'static str, Vec<u8>)> {
@@ -158,6 +169,13 @@ fn write_media(directory: &Path, bytes: &[u8]) -> io::Result<String> {
         return Err(error);
     }
     Ok(key)
+}
+
+fn write_asset(directory: &Path, mime: &str, bytes: &[u8]) -> io::Result<PostMedia> {
+    Ok(PostMedia {
+        key: write_media(directory, bytes)?,
+        content_type: mime.into(),
+    })
 }
 
 fn storage_error(error: io::Error) -> String {

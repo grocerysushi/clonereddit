@@ -73,6 +73,7 @@ const RECENT_LIMIT: usize = 6;
 const HISTORY_LIMIT: usize = 50;
 const IMAGE_LIMIT: usize = 512 * 1024;
 const SOCIAL_LINK_LIMIT: usize = 6;
+const COMMENT_IMAGE_ALT_LIMIT: usize = 240;
 const ARTWORK_PREVIEW_LIMIT: usize = 4;
 const ARTWORK_PREVIEW_EXPIRED: &str = "This artwork preview expired. Preview the images again.";
 const MODERATION_LOG_LIMIT: usize = 300;
@@ -155,12 +156,19 @@ pub struct PostMedia {
 }
 
 #[derive(Clone)]
+pub struct CommentImage {
+    pub asset: PostMedia,
+    pub alt: String,
+}
+
+#[derive(Clone)]
 pub struct Comment {
     pub id: u64,
     pub post: u64,
     pub parent: Option<u64>,
     pub author: String,
     pub body: String,
+    pub image: Option<CommentImage>,
     pub age: String,
     pub score: i32,
     pub edited_at: Option<u64>,
@@ -528,7 +536,7 @@ impl State {
             (5, 5, None, "clearcache", "I want an on/off state for each term and a preview before applying a new filter.", "2h", 17),
             (6, 3, None, "openledger", "A public summary with no personal information would help me understand how often the process is used.", "5h", 11),
         ].into_iter().map(|(id, post, parent, author, body, age, score)| Comment {
-            id, post, parent, author: author.into(), body: body.into(), age: age.into(), score,
+            id, post, parent, author: author.into(), body: body.into(), image: None, age: age.into(), score,
             edited_at: None, deleted: false,
         }).collect();
 
@@ -711,8 +719,68 @@ impl State {
         }
         let mut updated = self.clone();
         let message = updated.change(action, form)?;
+        let removed_comment_images = self.deleted_comment_images(action, form);
+        self.commit(updated, path)?;
+        crate::media::remove(path, &removed_comment_images);
+        Ok(message)
+    }
+
+    pub fn apply_comment(
+        &mut self,
+        form: &BTreeMap<String, String>,
+        image: Option<PostMedia>,
+        path: &Path,
+    ) -> Result<&'static str, String> {
+        let Some(asset) = image else {
+            return self.apply("comment", form, path);
+        };
+        if self.guest() {
+            return Err("Sign in to continue.".into());
+        }
+        let alt = bounded(
+            form,
+            "image_alt",
+            "Image description",
+            COMMENT_IMAGE_ALT_LIMIT,
+        )?;
+        if !valid_comment_image(&asset) {
+            return Err("This comment image is unavailable.".into());
+        }
+        let image = CommentImage {
+            asset,
+            alt: alt.into(),
+        };
+        let mut updated = self.clone();
+        let message = updated.create_comment_with_image(form, Some(image))?;
         self.commit(updated, path)?;
         Ok(message)
+    }
+
+    fn deleted_comment_images(
+        &self,
+        action: &str,
+        form: &BTreeMap<String, String>,
+    ) -> Vec<PostMedia> {
+        match action {
+            "delete-comment" => id_field(form, "id")
+                .ok()
+                .and_then(|id| self.comments.iter().find(|comment| comment.id == id))
+                .and_then(|comment| comment.image.as_ref())
+                .map(|image| image.asset.clone())
+                .into_iter()
+                .collect(),
+            "delete" => id_field(form, "id")
+                .ok()
+                .into_iter()
+                .flat_map(|id| {
+                    self.comments
+                        .iter()
+                        .filter(move |comment| comment.post == id)
+                })
+                .filter_map(|comment| comment.image.as_ref().map(|image| image.asset.clone()))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     pub fn publish_due(&mut self, path: &Path, now: u64) -> io::Result<usize> {
@@ -1009,7 +1077,7 @@ impl State {
                 if !self
                     .comments
                     .iter()
-                    .any(|comment| comment.id == id && self.comment_can_be_saved(comment))
+                    .any(|comment| comment.id == id && self.can_view_comment(comment))
                 {
                     return Err("This comment is unavailable.".into());
                 }
@@ -1208,7 +1276,7 @@ impl State {
             .filter(|community| self.can_view_community(community) && !self.is_post_removed(id))
     }
 
-    pub fn comment_can_be_saved(&self, comment: &Comment) -> bool {
+    pub fn can_view_comment(&self, comment: &Comment) -> bool {
         !comment.deleted
             && !self.is_comment_removed(comment.id)
             && !self.blocked.contains(&comment.author)
@@ -1713,6 +1781,14 @@ impl State {
     }
 
     fn create_comment(&mut self, form: &BTreeMap<String, String>) -> Result<&'static str, String> {
+        self.create_comment_with_image(form, None)
+    }
+
+    fn create_comment_with_image(
+        &mut self,
+        form: &BTreeMap<String, String>,
+        image: Option<CommentImage>,
+    ) -> Result<&'static str, String> {
         let post_id = self.post_id(form, "post")?;
         if !self
             .community_for_post(post_id)
@@ -1723,7 +1799,11 @@ impl State {
         if self.is_discussion_locked(post_id) {
             return Err("This discussion is locked.".into());
         }
-        let body = required(form, "body", "Comment", 4_000)?;
+        let body = if image.is_some() {
+            bounded(form, "body", "Comment", 4_000)?
+        } else {
+            required(form, "body", "Comment", 4_000)?
+        };
         let parent = match value(form, "parent") {
             "" => None,
             _ => {
@@ -1749,6 +1829,7 @@ impl State {
             parent,
             author: self.username.clone(),
             body: body.into(),
+            image,
             age: "just now".into(),
             score: 1,
             edited_at: None,
@@ -1792,8 +1873,12 @@ impl State {
         {
             return Err("This community limits who can edit a comment.".into());
         }
-        let body = required(form, "body", "Comment", 4_000)?;
         let comment = &mut self.comments[index];
+        let body = if comment.image.is_some() {
+            bounded(form, "body", "Comment", 4_000)?
+        } else {
+            required(form, "body", "Comment", 4_000)?
+        };
         if comment.body == body {
             return Ok("Comment unchanged.");
         }
@@ -1813,6 +1898,7 @@ impl State {
         let comment = &mut self.comments[index];
         comment.author.clear();
         comment.body.clear();
+        comment.image = None;
         comment.edited_at = None;
         comment.deleted = true;
         comment.score = 0;
@@ -2757,9 +2843,26 @@ impl State {
                 });
             }
             ["comment", id, post, parent, author, body, age, score, revision @ ..] => {
-                let (edited_at, deleted) = match revision {
-                    [] => (None, false),
-                    [edited_at, deleted] => (optional_number(edited_at)?, number(deleted)?),
+                let (edited_at, deleted, image) = match revision {
+                    [] => (None, false, None),
+                    [edited_at, deleted] => (optional_number(edited_at)?, number(deleted)?, None),
+                    [edited_at, "false", "image", key, mime, alt] => {
+                        let asset = PostMedia {
+                            key: (*key).into(),
+                            content_type: (*mime).into(),
+                        };
+                        let alt = decode(alt)?;
+                        if !valid_comment_image(&asset)
+                            || alt.chars().count() > COMMENT_IMAGE_ALT_LIMIT
+                        {
+                            return None;
+                        }
+                        (
+                            optional_number(edited_at)?,
+                            false,
+                            Some(CommentImage { asset, alt }),
+                        )
+                    }
                     _ => return None,
                 };
                 self.comments.push(Comment {
@@ -2768,6 +2871,7 @@ impl State {
                     parent: optional_number(parent)?,
                     author: decode(author)?,
                     body: decode(body)?,
+                    image,
                     age: decode(age)?,
                     score: number(score)?,
                     edited_at,
@@ -3168,7 +3272,7 @@ impl State {
             let edited_at = comment
                 .edited_at
                 .map_or_else(String::new, |time| time.to_string());
-            writeln!(
+            write!(
                 file,
                 "comment\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{edited_at}\t{}",
                 comment.id,
@@ -3180,6 +3284,16 @@ impl State {
                 comment.score,
                 comment.deleted,
             )?;
+            if let Some(image) = &comment.image {
+                write!(
+                    file,
+                    "\timage\t{}\t{}\t{}",
+                    image.asset.key,
+                    image.asset.content_type,
+                    encode(&image.alt),
+                )?;
+            }
+            writeln!(file)?;
             if self.is_comment_locked(comment.id) {
                 writeln!(file, "comment-lock\t{}", comment.id)?;
             }
@@ -3418,15 +3532,126 @@ fn validate_post_media(media: &[PostMedia]) -> Result<(), String> {
         !matches!(
             item.content_type.as_str(),
             "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "video/mp4" | "video/webm"
-        ) || item.key.len() != 48
-            || !item
-                .key
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        ) || !valid_media_key(&item.key)
     }) {
         return Err("This media attachment is unavailable.".into());
     }
     Ok(())
+}
+
+fn valid_media_key(key: &str) -> bool {
+    key.len() == 48
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn valid_comment_image(asset: &PostMedia) -> bool {
+    crate::media::is_image_type(&asset.content_type) && valid_media_key(&asset.key)
+}
+
+#[cfg(test)]
+mod comment_image_tests {
+    use super::*;
+    use crate::{http::Upload, media};
+
+    fn form(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).into(), (*value).into()))
+            .collect()
+    }
+
+    fn gif(path: &Path) -> PostMedia {
+        media::store_comment_image(
+            path,
+            Upload {
+                content_type: "image/gif".into(),
+                bytes: b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff\x2c\0\0\0\0\x01\0\x01\0\0\x02\x02\x44\x01\0\x3b".to_vec(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn comment_images_survive_restart_and_are_removed_after_committed_deletion() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "commonline-comment-image-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(directory);
+        let path = fixture.0.join("discussion.state");
+        let username = "comment_image_author";
+        let mut state = State::seeded();
+        state.activate_profile(Some(username));
+        state
+            .apply(
+                "create",
+                &form(&[("community", "open-debate"), ("title", "Image discussion")]),
+                &path,
+            )
+            .unwrap();
+        let post = state.posts.last().unwrap().id.to_string();
+        let parent = gif(&path);
+        let description = "One <pixel> & a 🌱";
+        state
+            .apply_comment(
+                &form(&[("post", &post), ("image_alt", description)]),
+                Some(parent.clone()),
+                &path,
+            )
+            .unwrap();
+        let parent_id = state.comments.last().unwrap().id.to_string();
+        let child = gif(&path);
+        state
+            .apply_comment(
+                &form(&[("post", &post), ("parent", &parent_id), ("body", "Reply")]),
+                Some(child.clone()),
+                &path,
+            )
+            .unwrap();
+        let child_id = state.comments.last().unwrap().id;
+
+        let mut state = State::load(&path).unwrap();
+        state.activate_profile(Some(username));
+        let restored_parent = &state.comments[state.comments.len() - 2];
+        let restored_image = restored_parent.image.as_ref().unwrap();
+        assert_eq!(restored_image.asset.key, parent.key);
+        assert_eq!(restored_image.alt, description);
+        assert!(restored_parent.body.is_empty());
+        assert!(state.comments.first().unwrap().image.is_none());
+        let delete_parent = form(&[("id", &parent_id)]);
+        let missing_path = fixture.0.join("missing").join("discussion.state");
+        assert!(state
+            .apply("delete-comment", &delete_parent, &missing_path)
+            .is_err());
+        assert!(media::read(&path, &parent).is_some());
+
+        state
+            .apply("delete-comment", &delete_parent, &path)
+            .unwrap();
+        assert!(media::read(&path, &parent).is_none());
+        assert!(media::read(&path, &child).is_some());
+        assert_eq!(
+            State::load(&path).unwrap().comments.last().unwrap().id,
+            child_id
+        );
+        state
+            .apply("delete", &form(&[("id", &post)]), &path)
+            .unwrap();
+        assert!(media::read(&path, &child).is_none());
+    }
 }
 
 fn encode_image(bytes: &[u8]) -> String {

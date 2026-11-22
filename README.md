@@ -100,6 +100,7 @@ Emails link back to the same localhost server. Keep local outbox files private b
 29. In a discussion, open a comment’s **Comment actions → Share** and select **Copy link**. The link opens the discussion at that comment for anyone who already has access. You can also select the URL and copy it manually.
 30. Open a comment’s **Comment actions → Save** to bookmark it. Find it under **Saved comments** in your profile’s **Saved** tab and open it to jump back to the discussion. Select **Unsave** in either place to remove the bookmark.
 31. Enter a word or phrase in **Search comments** inside a discussion. Select a result to jump to that comment in the thread, or select **Clear** to remove the results.
+32. While writing a comment or reply, open **Attach an image or GIF** and choose a PNG, JPEG, WebP, or GIF up to 2 MiB. You can add an image description for screen readers and post it with or without comment text. The attachment appears inline in the discussion.
 
 The America/Chicago conversion follows the U.S. daylight saving schedule. Choose an explicit offset for a time that occurs twice when clocks go back. [NIST daylight saving time reference](https://www.nist.gov/pml/time-and-frequency-division/popular-links/daylight-saving-time-dst)
 

@@ -20,6 +20,8 @@ const MAX_PROFILE_BODY: usize = MAX_IMAGE_BYTES + 8 * 1024;
 const MAX_COMMUNITY_BODY: usize = 2 * MAX_IMAGE_BYTES + 32 * 1024;
 const MAX_POST_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_INLINE_IMAGE_BODY: usize = MAX_POST_IMAGE_BYTES + 8 * 1024;
+const MAX_COMMENT_BODY: usize = MAX_POST_IMAGE_BYTES + 32 * 1024;
+const MAX_COMMENT_FIELD_BYTES: usize = 16 * 1024;
 const MAX_POST_VIDEO_BYTES: usize = 16 * 1024 * 1024;
 const MAX_POST_BODY: usize = MAX_POST_VIDEO_BYTES + 100 * 1024;
 const MAX_POST_FILES: usize = 6;
@@ -62,6 +64,15 @@ const POST_MEDIA_FIELDS: &[&str] = &[
     "spoiler",
     "brand_affiliate",
     "url",
+];
+const COMMENT_FIELDS: &[&str] = &[
+    "action",
+    "back",
+    "post",
+    "parent",
+    "comment_sort",
+    "body",
+    "image_alt",
 ];
 
 type Fields = BTreeMap<String, String>;
@@ -109,6 +120,7 @@ enum UploadTarget {
     Community(&'static [&'static str]),
     PostMedia,
     InlinePostImage,
+    CommentImage,
 }
 
 enum ClientPolicy {
@@ -508,6 +520,8 @@ fn read_request(
         ));
     }
 
+    let media_type = headers.get("content-type").map_or("", String::as_str);
+    let format = media_type.split(';').next().unwrap_or_default().trim();
     let upload_target = match (method, path) {
         ("POST", "/profile/image") => Some(UploadTarget::Profile),
         ("POST", "/communities/appearance") => Some(UploadTarget::Community(WIZARD_FIELDS)),
@@ -516,6 +530,9 @@ fn read_request(
         }
         ("POST", "/posts/media/new") => Some(UploadTarget::PostMedia),
         ("POST", "/posts/inline-image") => Some(UploadTarget::InlinePostImage),
+        ("POST", "/action") if format.eq_ignore_ascii_case("multipart/form-data") => {
+            Some(UploadTarget::CommentImage)
+        }
         _ => None,
     };
     let max_body = match upload_target {
@@ -523,6 +540,7 @@ fn read_request(
         Some(UploadTarget::Community(_)) => MAX_COMMUNITY_BODY,
         Some(UploadTarget::PostMedia) => MAX_POST_BODY,
         Some(UploadTarget::InlinePostImage) => MAX_INLINE_IMAGE_BODY,
+        Some(UploadTarget::CommentImage) => MAX_COMMENT_BODY,
         None => MAX_BODY,
     };
     let length = content_length(headers.get("content-length"), max_body)?;
@@ -534,8 +552,6 @@ fn read_request(
     }
 
     check_post_origin(&headers, host)?;
-    let media_type = headers.get("content-type").map_or("", String::as_str);
-    let format = media_type.split(';').next().unwrap_or_default().trim();
     let multipart = if let Some(target) = upload_target {
         if !format.eq_ignore_ascii_case("multipart/form-data") {
             let description = match target {
@@ -573,6 +589,9 @@ fn read_request(
         }
         Some((UploadTarget::InlinePostImage, boundary)) => {
             request.upload = Some(parse_inline_post_image(&body, &boundary)?);
+        }
+        Some((UploadTarget::CommentImage, boundary)) => {
+            (request.form, request.upload) = parse_comment_upload(&body, &boundary)?;
         }
         None => {
             let body = std::str::from_utf8(&body)
@@ -923,6 +942,51 @@ fn parse_inline_post_image(body: &[u8], boundary: &str) -> Result<Upload, Respon
         Ok(())
     })?;
     upload.ok_or_else(invalid)
+}
+
+fn parse_comment_upload(body: &[u8], boundary: &str) -> Result<(Fields, Option<Upload>), Response> {
+    let mut fields = Fields::new();
+    let mut upload = None;
+    let mut seen_image = false;
+    let invalid = || Response::error(400, "Check the comment and image fields.");
+    read_multipart(body, boundary, COMMENT_FIELDS.len() + 1, invalid, |part| {
+        match (part.name.as_str(), part.filename.as_deref()) {
+            ("image", Some(filename)) if !seen_image => {
+                seen_image = true;
+                if filename.is_empty() {
+                    return if part.data.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(invalid())
+                    };
+                }
+                if part.data.len() > MAX_POST_IMAGE_BYTES {
+                    return Err(Response::error(
+                        413,
+                        "Choose an image no larger than 2 MiB.",
+                    ));
+                }
+                upload = Some(Upload {
+                    content_type: part.content_type,
+                    bytes: part.data.to_vec(),
+                });
+            }
+            (name, None) if COMMENT_FIELDS.contains(&name) && !fields.contains_key(name) => {
+                if part.data.len() > MAX_COMMENT_FIELD_BYTES {
+                    return Err(Response::error(413, "A comment field is too large."));
+                }
+                let value = std::str::from_utf8(part.data)
+                    .map_err(|_| Response::error(400, "The form must use UTF-8."))?;
+                fields.insert(part.name, value.to_owned());
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
+    })?;
+    if fields.get("action").map(String::as_str) != Some("comment") {
+        return Err(invalid());
+    }
+    Ok((fields, upload))
 }
 
 fn read_image(content_type: String, data: &[u8]) -> Result<Upload, Response> {

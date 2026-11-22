@@ -713,16 +713,16 @@ mod tests {
         let mut state = State::load(path).unwrap();
         state.activate_profile(Some(reader));
         assert!(state.saved_comments.contains(&comment_id));
-        assert!(!state.comment_can_be_saved(state.comments.last().unwrap()));
+        assert!(!state.can_view_comment(state.comments.last().unwrap()));
         state.activate_profile(Some(owner));
         apply(&mut state, "restore-content", &removal);
         state.activate_profile(Some(reader));
-        assert!(state.comment_can_be_saved(state.comments.last().unwrap()));
+        assert!(state.can_view_comment(state.comments.last().unwrap()));
 
         state.activate_profile(Some(owner));
         apply(&mut state, "revoke-approved-member", &member);
         state.activate_profile(Some(reader));
-        assert!(!state.comment_can_be_saved(state.comments.last().unwrap()));
+        assert!(!state.can_view_comment(state.comments.last().unwrap()));
         apply(&mut state, "unsave-comment", &save);
         apply(&mut state, "unsave-comment", &save);
         let state = State::load(path).unwrap();

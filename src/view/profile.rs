@@ -132,7 +132,7 @@ fn add_saved(html: &mut String, state: &State, back: &str) {
         .comments
         .iter()
         .filter(|comment| {
-            state.saved_comments.contains(&comment.id) && state.comment_can_be_saved(comment)
+            state.saved_comments.contains(&comment.id) && state.can_view_comment(comment)
         })
         .collect();
     saved_comments.sort_by_key(|comment| Reverse(comment.id));

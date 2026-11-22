@@ -335,6 +335,12 @@ Workflow **050** is implemented. Readers can search the comments in a discussion
 
 Chromium checks at 1440 and 390 CSS pixels covered keyboard and button submission, highlighted excerpts, jumping into collapsed reply branches, sort retention, and clearing the search. HTTP checks covered guest and signed-in searches, matching and escaping, exact comment links, changes to comment text, deleted and removed comments, blocks, private access changes, and restart.
 
+## Comment image upload update
+
+Workflow **051** is implemented. Readers can attach one PNG, JPEG, WebP, or GIF up to 2 MiB to a comment or nested reply, with optional text and an image description. The attachment appears inline and follows the comment’s viewing permissions. This brings the implementation count to **89 implemented, 5 partial, and 6 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered posting a still image and a nested animated GIF, preserving attachments across text edits, recovering a draft after an invalid file, and viewing attachments after restart. HTTP checks covered file type and size, malformed forms, read access, discussion locks, moderator removal and restoration, file cleanup on deletion, and upgrade.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

@@ -1,6 +1,7 @@
 mod account;
 mod account_security;
 mod appeals;
+mod comment_image;
 mod community_appearance;
 mod community_setup;
 mod creator;
@@ -88,6 +89,9 @@ pub fn route(
                 "Post attachment unavailable.",
             ),
         };
+    }
+    if request.method == "GET" && request.path == "/comments/image" {
+        return comment_image::response(state, path, &request);
     }
     if request.method == "POST" && request.path == "/communities/appearance/settings" {
         return community_appearance::submit(request, state);
@@ -308,7 +312,14 @@ pub fn route(
             return automod_submission(state, path, action, &request.form);
         }
         if matches!(action, "comment" | "edit-comment" | "delete-comment") {
-            return comment_submission(state, path, action, &request);
+            return comment_submission(
+                state,
+                path,
+                action,
+                &request.form,
+                &request.origin,
+                request.upload.take(),
+            );
         }
         if matches!(action, "save-draft" | "delete-draft") {
             return draft_submission(state, path, action, &request.form);
@@ -793,8 +804,14 @@ fn public_profile(
     ))
 }
 
-fn comment_submission(state: &mut State, path: &Path, action: &str, request: &Request) -> Response {
-    let form = &request.form;
+fn comment_submission(
+    state: &mut State,
+    path: &Path,
+    action: &str,
+    form: &BTreeMap<String, String>,
+    origin: &str,
+    upload: Option<crate::http::Upload>,
+) -> Response {
     let posting = action == "comment";
     let editing = action == "edit-comment";
     let (post_id, existing, parent) = if posting {
@@ -822,7 +839,13 @@ fn comment_submission(state: &mut State, path: &Path, action: &str, request: &Re
     let sort = discussion::CommentSort::parse(field(form, "comment_sort"));
     let back = sort.thread_url(post_id);
     let can_write = can_write_here(state, &post.community);
-    match state.apply(action, form, path) {
+    let had_upload = upload.is_some();
+    let result = if posting && can_write {
+        comment_image::submit(state, path, form, upload)
+    } else {
+        state.apply(action, form, path)
+    };
+    match result {
         Ok(notice) => {
             let target = if posting {
                 state.comments.last().map(|comment| comment.id)
@@ -865,11 +888,15 @@ fn comment_submission(state: &mut State, path: &Path, action: &str, request: &Re
                                 && !state.blocked.contains(&comment.author)
                         })
                     }),
-                    draft: field(form, "body"),
-                    error: &error,
+                    draft: ReplyDraft {
+                        body: field(form, "body"),
+                        image_alt: field(form, "image_alt"),
+                        select_image_again: had_upload,
+                        error: &error,
+                    },
                 },
             };
-            let body = thread(state, post, sort, "", interaction, &request.origin);
+            let body = thread(state, post, sort, "", interaction, origin);
             Response::html(layout(
                 state,
                 &post.community,
@@ -3092,8 +3119,7 @@ enum CommentAction<'a> {
     Read,
     Reply {
         parent: Option<u64>,
-        draft: &'a str,
-        error: &'a str,
+        draft: ReplyDraft<'a>,
     },
     Edit {
         id: u64,
@@ -3104,6 +3130,14 @@ enum CommentAction<'a> {
         id: u64,
         error: &'a str,
     },
+}
+
+#[derive(Clone, Copy, Default)]
+struct ReplyDraft<'a> {
+    body: &'a str,
+    image_alt: &'a str,
+    select_image_again: bool,
+    error: &'a str,
 }
 
 impl CommentAction<'_> {
@@ -3119,8 +3153,7 @@ impl CommentAction<'_> {
         } else if let Ok(id) = field(query, "reply").parse() {
             Self::Reply {
                 parent: Some(id),
-                draft: "",
-                error: "",
+                draft: ReplyDraft::default(),
             }
         } else {
             Self::Read
@@ -3149,15 +3182,14 @@ fn thread(
     if locked {
         replies.push_str("<p class='community-restriction-note discussion-lock-note muted'><strong>Discussion locked.</strong> A moderator can reopen it.</p>");
     } else if can_reply {
-        let (draft, error) = match action {
+        let draft = match action {
             CommentAction::Reply {
                 parent: None,
                 draft,
-                error,
-            } => (draft, error),
-            _ => ("", ""),
+            } => draft,
+            _ => ReplyDraft::default(),
         };
-        replies.push_str(&reply_form(post.id, None, &back, sort, draft, error));
+        replies.push_str(&reply_form(post.id, None, &back, sort, draft));
     } else if state.username.is_empty() {
         replies.push_str("<p class='community-restriction-note muted'><a class='subtle-link' href='/account/login'>Sign in</a> to reply.</p>");
     } else if state.is_banned(&post.community, &state.username) {
@@ -3342,16 +3374,20 @@ fn comment_card(
                 CommentAction::Reply {
                     parent: Some(id),
                     draft,
-                    error,
                 } if id == comment.id && can_reply => {
-                    reply_form(comment.post, Some(comment.id), back, sort, draft, error)
+                    reply_form(comment.post, Some(comment.id), back, sort, draft)
                 }
                 CommentAction::Delete { id, error } if id == comment.id && owns => {
                     discussion::confirm_delete(comment, back, sort, error)
                 }
                 _ => String::new(),
             };
-            (format!("<p>{}</p>", escape(&comment.body)), controls)
+            let body = if comment.body.is_empty() {
+                String::new()
+            } else {
+                format!("<p>{}</p>", escape(&comment.body))
+            };
+            (body, controls)
         }
     };
     let edited = comment
@@ -3385,7 +3421,8 @@ fn comment_card(
         String::new()
     };
     let permalink = escape(&discussion::comment_url(back, comment.id));
-    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment, {}'>· {}</a>{edited}{menu}</div>{body}<div class='post-actions'>{}{reply_control}</div>{controls}</article>",
+    let image = comment_image::render(comment);
+    format!("<article class='comment depth-{}' id='comment-{}'><div class='comment-head'><span class='avatar'>{avatar}</span>{author}<a class='comment-permalink' href='{permalink}' title='Open comment' aria-label='Open comment, {}'>· {}</a>{edited}{menu}</div>{body}{image}<div class='post-actions'>{}{reply_control}</div>{controls}</article>",
         depth.min(3), comment.id, escape(&comment.age), escape(&comment.age), votes("comment-vote", comment.id, state.comment_score(comment), vote, back)
     )
 }
@@ -3395,16 +3432,16 @@ fn reply_form(
     parent: Option<u64>,
     back: &str,
     sort: discussion::CommentSort,
-    draft: &str,
-    error: &str,
+    draft: ReplyDraft<'_>,
 ) -> String {
     let id = post.to_string();
     let target = parent
         .map(|value| hidden("parent", &value.to_string()))
         .unwrap_or_default();
     let fields = action_fields("comment", back, &[("post", &id), sort.form_field()]);
-    let alert = discussion::form_error(error);
-    format!("<form class='reply-form' method='post' action='/action'>{fields}{target}{alert}<label><span class='sr-only'>Write a reply</span><textarea name='body' required maxlength='4000' rows='3' placeholder='Add to the discussion'>{}</textarea></label><button class='button dark' type='submit'>Post reply</button></form>", escape(draft))
+    let alert = discussion::form_error(draft.error);
+    let picker = comment_image::picker(draft.image_alt, draft.select_image_again);
+    format!("<form class='reply-form' method='post' action='/action' enctype='multipart/form-data'>{fields}{target}{alert}<label><span class='sr-only'>Write a reply</span><textarea name='body' maxlength='4000' rows='3' placeholder='Add to the discussion'>{}</textarea></label>{picker}<button class='button dark' type='submit'>Post reply</button></form>", escape(draft.body))
 }
 
 fn preferences(state: &State) -> String {
