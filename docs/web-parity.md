@@ -251,6 +251,10 @@ Chromium checks at 1440 and 390 CSS pixels covered rule creation, editing, reord
 
 Desktop and mobile checks covered canceling and confirming deletion, removing the last rule, and submitting an open report form after its selected rule was deleted. Deleted rules stayed out of new forms after restart, and both post and comment reports kept their original rule details. Server checks verified migration from existing rules and that a replacement receives a new ID even after every rule is deleted.
 
+Moderators can also select an active community rule when removing a post or comment under workflows **084** and **085**. An optional note goes to the author privately. The removal detail and author notification keep the original rule title and description after later edits or deletion. A custom removal reason remains available.
+
+Desktop and mobile Chromium checks covered a rule-based post removal with a note, a comment removal without one, and preservation of the original reason after editing, deleting, and restarting. Server checks covered foreign and deleted rule rejection, legacy and AutoMod notices, private delivery, and restoration.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.

@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use super::{
-    canonical_u64, checked_handle, decode, encode, number, required, unix_seconds, value,
-    ModPermission, Post, State,
+    bounded, canonical_u64, checked_handle, decode, encode, number, required, unix_seconds, value,
+    CommunityRule, ModPermission, Post, State, COMMUNITY_RULE_DESCRIPTION_MAX,
+    COMMUNITY_RULE_TITLE_MAX,
 };
 
 const REASON_LIMIT: usize = 1_000;
@@ -45,6 +46,8 @@ pub struct ContentRemoval {
     pub post_id: u64,
     pub community: String,
     pub reason: String,
+    pub rule: Option<CommunityRule>,
+    pub note: String,
     pub moderator: String,
     pub removed_at: u64,
     pub automated: bool,
@@ -139,14 +142,34 @@ impl State {
         if existing.is_some() {
             return Err("This post or comment is already removed.".into());
         }
-        let reason = required(form, "reason", "Removal reason", REASON_LIMIT)?;
+        let selection = value(form, "rule");
+        let (reason, rule, note) = if selection.is_empty() {
+            (
+                required(form, "reason", "Removal reason", REASON_LIMIT)?.into(),
+                None,
+                String::new(),
+            )
+        } else {
+            let selected = canonical_u64(selection)
+                .and_then(|id| {
+                    self.communities[index]
+                        .rules()
+                        .iter()
+                        .find(|rule| rule.id == id)
+                })
+                .ok_or("Choose an available rule from this community.")?;
+            let note = bounded(form, "reason", "Note to the author", REASON_LIMIT)?;
+            (selected.title.clone(), Some(selected.clone()), note.into())
+        };
         self.record_content_removal(
             ContentRemoval {
                 kind,
                 id,
                 post_id,
                 community,
-                reason: reason.into(),
+                reason,
+                rule,
+                note,
                 moderator: self.username.clone(),
                 removed_at: unix_seconds(),
                 automated: false,
@@ -179,6 +202,8 @@ impl State {
                 post_id,
                 community: community.into(),
                 reason: reason.into(),
+                rule: None,
+                note: String::new(),
                 moderator: String::new(),
                 removed_at: unix_seconds(),
                 automated: true,
@@ -192,21 +217,34 @@ impl State {
         &mut self,
         removal: ContentRemoval,
         author: &str,
-        rule_name: Option<&str>,
+        automod_rule_name: Option<&str>,
     ) -> Result<(), String> {
         let source = if removal.automated {
             "AutoMod"
         } else {
             "Moderators"
         };
-        let notice = format!(
-            "{source} removed your {} #{} in c/{}.\n\n{}",
+        let mut notice = format!(
+            "{source} removed your {} #{} in c/{}.\n\n",
             removal.kind.as_str(),
             removal.id,
             removal.community,
-            removal.reason,
         );
-        let actor = match rule_name {
+        if let Some(rule) = &removal.rule {
+            notice.push_str("Community rule: ");
+            notice.push_str(&rule.title);
+            if !rule.description.is_empty() {
+                notice.push('\n');
+                notice.push_str(&rule.description);
+            }
+            if !removal.note.is_empty() {
+                notice.push_str("\n\nNote from the moderators: ");
+                notice.push_str(&removal.note);
+            }
+        } else {
+            notice.push_str(&removal.reason);
+        }
+        let actor = match automod_rule_name {
             Some(rule_name) => format!("AutoMod ({rule_name})"),
             None => format!("u/{}", removal.moderator),
         };
@@ -234,9 +272,26 @@ impl State {
         let (post_id, _) = self.content_moderation_target(kind, id, &community)?;
         let reason = decode(reason)?;
         let moderator = decode(moderator)?;
-        let automated = match source {
-            [] if checked_handle(&moderator).ok()? == moderator => false,
-            ["automod"] if moderator.is_empty() => true,
+        let (automated, rule, note) = match source {
+            [] if checked_handle(&moderator).ok()? == moderator => (false, None, String::new()),
+            ["automod"] if moderator.is_empty() => (true, None, String::new()),
+            ["rule", id, description, note] if checked_handle(&moderator).ok()? == moderator => {
+                let id = canonical_u64(id).filter(|&id| id != 0)?;
+                let description = decode(description)?;
+                let note = decode(note)?;
+                if reason.chars().count() > COMMUNITY_RULE_TITLE_MAX
+                    || description.chars().count() > COMMUNITY_RULE_DESCRIPTION_MAX
+                    || note.chars().count() > REASON_LIMIT
+                {
+                    return None;
+                }
+                let rule = CommunityRule {
+                    id,
+                    title: reason.clone(),
+                    description,
+                };
+                (false, Some(rule), note)
+            }
             _ => return None,
         };
         if self.content_removal(kind, id).is_some()
@@ -251,6 +306,8 @@ impl State {
             post_id,
             community,
             reason,
+            rule,
+            note,
             moderator,
             removed_at: number(removed_at)?,
             automated,
@@ -260,10 +317,9 @@ impl State {
 
     pub(super) fn write_content_removals(&self, file: &mut impl Write) -> io::Result<()> {
         for item in &self.content_removals {
-            let source = if item.automated { "\tautomod" } else { "" };
-            writeln!(
+            write!(
                 file,
-                "content-removal\t{}\t{}\t{}\t{}\t{}\t{}{source}",
+                "content-removal\t{}\t{}\t{}\t{}\t{}\t{}",
                 item.kind.as_str(),
                 item.id,
                 encode(&item.community),
@@ -271,6 +327,18 @@ impl State {
                 encode(&item.moderator),
                 item.removed_at,
             )?;
+            if item.automated {
+                write!(file, "\tautomod")?;
+            } else if let Some(rule) = &item.rule {
+                write!(
+                    file,
+                    "\trule\t{}\t{}\t{}",
+                    rule.id,
+                    encode(&rule.description),
+                    encode(&item.note),
+                )?;
+            }
+            writeln!(file)?;
         }
         Ok(())
     }
@@ -422,13 +490,10 @@ mod tests {
         let mut state = State::load(&fixture.0).unwrap();
         assert!(state.is_post_removed(id));
         assert_eq!(state.reports.last().unwrap().reviewed, true);
-        assert_eq!(
-            state
-                .content_removal(ContentKind::Post, id)
-                .unwrap()
-                .moderator,
-            "editor_user"
-        );
+        let stored = state.content_removal(ContentKind::Post, id).unwrap();
+        assert_eq!(stored.moderator, "editor_user");
+        assert!(stored.rule.is_none());
+        assert!(stored.note.is_empty());
         let notices: Vec<_> = state
             .notifications
             .iter()
@@ -493,6 +558,179 @@ mod tests {
         state.delete_post(&post_action).unwrap();
         state.activate_profile(Some("board_owner"));
         assert!(state.moderate_content(&removal, true).is_err());
+    }
+
+    #[test]
+    fn rule_removals_preserve_the_reason_and_private_author_note() {
+        let fixture = TempState::new();
+        let mut state = community_fixture();
+        let title = "Cite your sources";
+        let description = "Link to the source.\nExplain its relevance.";
+        state
+            .apply(
+                "save-community-rule",
+                &form(&[
+                    ("community", "test-board"),
+                    ("title", title),
+                    ("description", description),
+                ]),
+                &fixture.0,
+            )
+            .unwrap();
+        state
+            .apply(
+                "save-community-rule",
+                &form(&[
+                    ("community", "other-board"),
+                    ("title", "Different board rule"),
+                ]),
+                &fixture.0,
+            )
+            .unwrap();
+        let rule_id = state
+            .communities
+            .iter()
+            .find(|board| board.slug == "test-board")
+            .unwrap()
+            .rules()[0]
+            .id;
+        let foreign_id = state
+            .communities
+            .iter()
+            .find(|board| board.slug == "other-board")
+            .unwrap()
+            .rules()[0]
+            .id;
+
+        state.activate_profile(Some("post_author"));
+        for title in ["Original post", "Another post"] {
+            state
+                .create_post(&form(&[("community", "test-board"), ("title", title)]))
+                .unwrap();
+        }
+        let post_id = state.posts[state.posts.len() - 2].id;
+        let available_id = state.posts.last().unwrap().id;
+        state.activate_profile(Some("reply_author"));
+        state
+            .create_comment(&form(&[
+                ("post", &post_id.to_string()),
+                ("body", "Original comment"),
+            ]))
+            .unwrap();
+        let comment_id = state.comments.last().unwrap().id;
+        let note = "Please replace <links>.\nInclude both sources.";
+        let rule_target = |kind, id, note: &str, rule: u64| {
+            let mut removal = target("test-board", kind, id, note);
+            removal.insert("rule".into(), rule.to_string());
+            removal
+        };
+        let post = rule_target("post", post_id, note, rule_id);
+        let comment = rule_target("comment", comment_id, "", rule_id);
+        for handle in ["post_author", "appeal_user"] {
+            state.activate_profile(Some(handle));
+            assert!(state.apply("remove-content", &post, &fixture.0).is_err());
+        }
+        state.activate_profile(Some("editor_user"));
+        assert!(state
+            .apply(
+                "remove-content",
+                &rule_target("comment", comment_id, note, foreign_id),
+                &fixture.0
+            )
+            .is_err());
+        let mut malformed = post.clone();
+        malformed.insert("rule".into(), format!("0{rule_id}"));
+        assert!(state
+            .apply("remove-content", &malformed, &fixture.0)
+            .is_err());
+        let too_long = "é".repeat(REASON_LIMIT + 1);
+        assert!(state
+            .apply(
+                "remove-content",
+                &rule_target("post", post_id, &too_long, rule_id),
+                &fixture.0
+            )
+            .is_err());
+        assert!(state.content_removals.is_empty());
+        assert!(!state.notifications.iter().any(|notice| notice.moderation));
+
+        state.apply("remove-content", &comment, &fixture.0).unwrap();
+        state.apply("remove-content", &post, &fixture.0).unwrap();
+        state
+            .apply(
+                "save-community-rule",
+                &form(&[
+                    ("community", "test-board"),
+                    ("id", &rule_id.to_string()),
+                    ("title", "Updated title"),
+                ]),
+                &fixture.0,
+            )
+            .unwrap();
+        state
+            .apply(
+                "delete-community-rule",
+                &form(&[("community", "test-board"), ("id", &rule_id.to_string())]),
+                &fixture.0,
+            )
+            .unwrap();
+
+        let mut state = State::load(&fixture.0).unwrap();
+        state.activate_profile(Some("editor_user"));
+        assert!(state
+            .apply(
+                "remove-content",
+                &rule_target("post", available_id, note, rule_id),
+                &fixture.0
+            )
+            .is_err());
+        assert!(!state.is_post_removed(available_id));
+        for (kind, id, author, expected_note) in [
+            (ContentKind::Post, post_id, "post_author", note),
+            (ContentKind::Comment, comment_id, "reply_author", ""),
+        ] {
+            let removal = state.content_removal(kind, id).unwrap();
+            let rule = removal.rule.as_ref().unwrap();
+            assert_eq!(
+                (rule.id, rule.title.as_str(), rule.description.as_str()),
+                (rule_id, title, description)
+            );
+            assert_eq!(removal.reason, title);
+            assert_eq!(removal.note, expected_note);
+            let header = format!(
+                "Moderators removed your {} #{id} in c/test-board.",
+                kind.as_str()
+            );
+            let notice = state
+                .notifications
+                .iter()
+                .find(|notice| notice.body.starts_with(&header))
+                .unwrap();
+            assert_eq!(notice.recipient, author);
+            assert!(notice.moderation);
+            let mut expected = format!("{header}\n\nCommunity rule: {title}\n{description}");
+            if !expected_note.is_empty() {
+                expected.push_str(&format!("\n\nNote from the moderators: {expected_note}"));
+            }
+            assert_eq!(notice.body, expected);
+        }
+        assert_eq!(
+            state
+                .notifications
+                .iter()
+                .filter(|notice| notice.moderation)
+                .count(),
+            2
+        );
+        assert!(state
+            .mod_log
+            .iter()
+            .all(|event| !event.action.contains(note)));
+        state.apply("restore-content", &post, &fixture.0).unwrap();
+        state
+            .apply("restore-content", &comment, &fixture.0)
+            .unwrap();
+        assert!(state.content_removals.is_empty());
     }
 
     #[test]

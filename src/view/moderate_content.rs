@@ -166,7 +166,14 @@ pub(super) fn render(
                     }),
             });
         if let Some(entry) = entry {
-            html.push_str(&detail(state, item, entry, field(query, "reason")));
+            let requested_rule = error.map_or("", |_| field(query, "rule"));
+            html.push_str(&detail(
+                state,
+                item,
+                entry,
+                requested_rule,
+                field(query, "reason"),
+            ));
         } else {
             write!(
                 html,
@@ -305,7 +312,13 @@ fn list(
     html
 }
 
-fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &str) -> String {
+fn detail(
+    state: &State,
+    item: &Community,
+    entry: Entry<'_>,
+    requested_rule: &str,
+    requested_reason: &str,
+) -> String {
     let kind = entry.kind();
     let id = entry.id();
     let target = detail_url(item, kind, id);
@@ -360,8 +373,43 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
             "",
             "button dark",
         );
-        write!(html, "<blockquote class='moderation-reply'><strong>Removed by {actor}</strong> <time class='muted' datetime='{timestamp}Z'>{}</time><p class='mod-record-detail'>{}</p></blockquote><div class='form-actions'>{restore}</div>",
-            escape(&when), escape(&removal.reason)).unwrap();
+        write!(html, "<blockquote class='moderation-reply'><strong>Removed by {actor}</strong> <time class='muted' datetime='{timestamp}Z'>{}</time>", escape(&when)).unwrap();
+        if let Some(rule) = &removal.rule {
+            write!(
+                html,
+                "<p class='mod-record-detail'><strong>Community rule</strong> {}</p>",
+                escape(&rule.title)
+            )
+            .unwrap();
+            if !rule.description.is_empty() {
+                write!(
+                    html,
+                    "<p class='mod-record-detail'>{}</p>",
+                    escape(&rule.description)
+                )
+                .unwrap();
+            }
+            if !removal.note.is_empty() {
+                write!(
+                    html,
+                    "<p class='mod-record-detail'><strong>Note to the author</strong><br>{}</p>",
+                    escape(&removal.note)
+                )
+                .unwrap();
+            }
+        } else {
+            write!(
+                html,
+                "<p class='mod-record-detail'>{}</p>",
+                escape(&removal.reason)
+            )
+            .unwrap();
+        }
+        write!(
+            html,
+            "</blockquote><div class='form-actions'>{restore}</div>"
+        )
+        .unwrap();
     } else {
         if !entry.parent_removed(state) {
             let anchor = if matches!(entry, Entry::Comment(..)) {
@@ -372,10 +420,61 @@ fn detail(state: &State, item: &Community, entry: Entry<'_>, requested_reason: &
             write!(html, "<p class='mod-content-thread'><a class='subtle-link' href='/thread?id={}{anchor}'>Open discussion</a></p>", entry.post().id).unwrap();
         }
         let remove = action_fields("remove-content", &target, &fields);
-        write!(html, "<form class='stack-form mod-content-action' action='/action' method='post'>{remove}<label>Removal reason<textarea name='reason' rows='4' maxlength='1000' aria-describedby='content-reason-help' required>{}</textarea></label><small id='content-reason-help' class='muted'>This reason appears in the author’s notification.</small><button class='button dark' type='submit'>Remove content</button></form>", escape(requested_reason)).unwrap();
+        html.push_str(&removal_form(
+            item,
+            &remove,
+            requested_rule,
+            requested_reason,
+        ));
     }
     html.push_str("</article>");
     html
+}
+
+fn removal_form(item: &Community, fields: &str, requested_rule: &str, reason: &str) -> String {
+    let rules = item.rules();
+    let has_rules = !rules.is_empty();
+    let mut picker = String::new();
+    if has_rules || !requested_rule.is_empty() {
+        let mut choices = String::from("<option value=''>Custom reason</option>");
+        let mut retained = requested_rule.is_empty();
+        for rule in rules {
+            let id = rule.id.to_string();
+            let selected = if id == requested_rule {
+                retained = true;
+                " selected"
+            } else {
+                ""
+            };
+            write!(
+                choices,
+                "<option value='{id}'{selected}>{}</option>",
+                escape(&rule.title)
+            )
+            .unwrap();
+        }
+        let prompt = if retained {
+            ""
+        } else {
+            "<option value='unavailable' selected>Choose a removal reason</option>"
+        };
+        picker =
+            format!("<label>Community rule<select name='rule'>{prompt}{choices}</select></label>");
+    }
+    let (label, help, required) = if has_rules {
+        (
+            "Reason or note to the author",
+            "Enter a custom reason or add an optional note when you select a rule. The author receives this privately in Notifications.",
+            "",
+        )
+    } else {
+        (
+            "Removal reason",
+            "This reason appears in the author’s notification.",
+            " required",
+        )
+    };
+    format!("<form class='stack-form mod-content-action' action='/action' method='post'>{fields}{picker}<label>{label}<textarea name='reason' rows='4' maxlength='1000' aria-describedby='content-reason-help'{required}>{}</textarea></label><small id='content-reason-help' class='muted'>{help}</small><button class='button dark' type='submit'>Remove content</button></form>", escape(reason))
 }
 
 fn list_url(base: &str, kind: ContentKind, removed: bool, search: &str, page: usize) -> String {
