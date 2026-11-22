@@ -22,6 +22,10 @@ impl State {
             self.activate_profile(None);
         }
         self.account_profiles.remove(handle);
+        self.followed_profiles.remove(handle);
+        for profile in self.account_profiles.values_mut() {
+            profile.followed_profiles.remove(handle);
+        }
         self.remove_private_inline_images(handle);
         if self.legacy_profile.as_deref() == Some(handle) {
             self.legacy_profile = None;

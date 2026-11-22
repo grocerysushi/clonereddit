@@ -358,6 +358,7 @@ pub struct State {
     pub saved_comments: BTreeSet<u64>,
     pub hidden: BTreeSet<u64>,
     pub joined: BTreeSet<String>,
+    pub followed_profiles: BTreeSet<String>,
     pub muted: BTreeSet<String>,
     pub blocked: BTreeSet<String>,
     pub keywords: Vec<String>,
@@ -557,6 +558,7 @@ impl State {
             joined: ["open-debate", "public-square", "technology"]
                 .map(String::from)
                 .into(),
+            followed_profiles: BTreeSet::new(),
             muted: BTreeSet::new(),
             blocked: BTreeSet::new(),
             keywords: Vec::new(),
@@ -1099,6 +1101,19 @@ impl State {
                 }
             }
             "join" => self.join_community(form),
+            "follow-profile" => {
+                let handle = checked_handle(value(form, "handle"))?;
+                if !self.can_follow_profile(&handle) {
+                    return Err("This profile is unavailable to follow.".into());
+                }
+                self.followed_profiles.insert(handle);
+                Ok("Profile followed.")
+            }
+            "unfollow-profile" => {
+                let handle = checked_handle(value(form, "handle"))?;
+                self.followed_profiles.remove(&handle);
+                Ok("Profile unfollowed.")
+            }
             "mute" => {
                 let community = self.community_slug(form)?;
                 if toggle(&mut self.muted, community) {
@@ -1116,6 +1131,10 @@ impl State {
                     Ok("Account unblocked.")
                 } else {
                     self.cancel_chat_requests_with(&author);
+                    self.followed_profiles.remove(&author);
+                    if let Some(profile) = self.account_profiles.get_mut(&author) {
+                        profile.followed_profiles.remove(&self.username);
+                    }
                     self.blocked.insert(author);
                     Ok("Account blocked in your feed.")
                 }
@@ -3123,6 +3142,10 @@ impl State {
             }
             ["joined", slug] => {
                 self.joined.insert(decode(slug)?);
+            }
+            ["followed-profile", handle] => {
+                self.followed_profiles
+                    .insert(checked_handle(&decode(handle)?).ok()?);
             }
             ["muted", slug] => {
                 self.muted.insert(decode(slug)?);

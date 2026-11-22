@@ -16,6 +16,7 @@ pub(super) struct ProfileData {
     pub(super) saved_comments: BTreeSet<u64>,
     pub(super) hidden: BTreeSet<u64>,
     pub(super) joined: BTreeSet<String>,
+    pub(super) followed_profiles: BTreeSet<String>,
     muted: BTreeSet<String>,
     blocked: BTreeSet<String>,
     keywords: Vec<String>,
@@ -66,6 +67,7 @@ impl ProfileData {
             saved_comments: state.saved_comments.clone(),
             hidden: state.hidden.clone(),
             joined: state.joined.clone(),
+            followed_profiles: state.followed_profiles.clone(),
             muted: state.muted.clone(),
             blocked: state.blocked.clone(),
             keywords: state.keywords.clone(),
@@ -102,6 +104,7 @@ impl ProfileData {
         state.saved_comments = self.saved_comments;
         state.hidden = self.hidden;
         state.joined = self.joined;
+        state.followed_profiles = self.followed_profiles;
         state.muted = self.muted;
         state.blocked = self.blocked;
         state.keywords = self.keywords;
@@ -155,6 +158,7 @@ impl ProfileData {
                 | "profile-hidden-post"
                 | "profile-hidden-comment"
                 | "joined"
+                | "followed-profile"
                 | "muted"
                 | "blocked"
                 | "keyword" => profile.read_record(line)?,
@@ -282,6 +286,7 @@ impl ProfileData {
         }
         for (label, values) in [
             ("joined", &self.joined),
+            ("followed-profile", &self.followed_profiles),
             ("muted", &self.muted),
             ("blocked", &self.blocked),
         ] {
@@ -451,6 +456,25 @@ impl State {
 
     pub(super) fn either_blocked(&self, left: &str, right: &str) -> bool {
         self.blocks(left, right) || self.blocks(right, left)
+    }
+
+    pub fn can_follow_profile(&self, handle: &str) -> bool {
+        !self.username.is_empty()
+            && handle != self.username
+            && !self.either_blocked(&self.username, handle)
+    }
+
+    pub fn following_includes_post(&self, post: &Post, group: &Community) -> bool {
+        self.joined.contains(&group.slug)
+            || (group.visibility != "private"
+                && self.followed_profiles.contains(&post.author)
+                && self.can_follow_profile(&post.author)
+                && self
+                    .account_profiles
+                    .get(&post.author)
+                    .is_some_and(|profile| {
+                        profile.public_posts && !profile.hidden_posts.contains(&post.id)
+                    }))
     }
 
     fn blocks(&self, owner: &str, other: &str) -> bool {
@@ -643,6 +667,87 @@ mod tests {
             .iter()
             .map(|&(key, value)| (key.into(), value.into()))
             .collect()
+    }
+
+    #[test]
+    fn profile_follows_preserve_privacy_and_end_with_a_block_or_deletion() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "commonline-profile-follows-{}-{nonce}.state",
+            std::process::id()
+        )));
+        let path = &fixture.0;
+        let reader = "follow_reader";
+        let author = "follow_author";
+        let mut state = State::seeded();
+        state.activate_profile(Some(author));
+        let mut group = state.communities[0].clone();
+        let mut post = state.posts[0].clone();
+        post.author = author.into();
+        post.community.clone_from(&group.slug);
+        state.save(path).unwrap();
+
+        let mut state = State::load(path).unwrap();
+        state.activate_profile(Some(reader));
+        assert!(state.followed_profiles.is_empty());
+        assert!(!state.can_follow_profile(reader));
+        assert!(!state.following_includes_post(&post, &group));
+        let follow = |state: &mut State, handle| {
+            state.apply("follow-profile", &form(&[("handle", handle)]), path)
+        };
+        follow(&mut state, author).unwrap();
+        follow(&mut state, author).unwrap();
+        assert_eq!(state.followed_profiles.len(), 1);
+
+        let mut state = State::load(path).unwrap();
+        state.activate_profile(Some("other_reader"));
+        assert!(state.followed_profiles.is_empty());
+        assert!(!state.following_includes_post(&post, &group));
+        state.activate_profile(Some(reader));
+        assert!(state.following_includes_post(&post, &group));
+
+        let old_visibility = std::mem::replace(&mut group.visibility, "private".into());
+        assert!(!state.following_includes_post(&post, &group));
+        state.joined.insert(group.slug.clone());
+        assert!(state.following_includes_post(&post, &group));
+        state.joined.remove(&group.slug);
+        group.visibility = old_visibility;
+
+        state.activate_profile(Some(author));
+        state.public_posts = false;
+        state.activate_profile(Some(reader));
+        assert!(!state.following_includes_post(&post, &group));
+        state.activate_profile(Some(author));
+        state.public_posts = true;
+        state.profile_hidden_posts.insert(post.id);
+        state.activate_profile(Some(reader));
+        assert!(!state.following_includes_post(&post, &group));
+
+        state.activate_profile(Some(author));
+        follow(&mut state, reader).unwrap();
+        let block = form(&[("author", reader)]);
+        state.apply("block", &block, path).unwrap();
+        assert!(state.followed_profiles.is_empty());
+        state.activate_profile(Some(reader));
+        assert!(state.followed_profiles.is_empty());
+        assert!(follow(&mut state, author).is_err());
+
+        state.activate_profile(Some(author));
+        state.apply("block", &block, path).unwrap();
+        state.activate_profile(Some(reader));
+        follow(&mut state, author).unwrap();
+        state
+            .delete_account_profiles(&[author.into()], path)
+            .unwrap();
+        state = State::load(path).unwrap();
+        state.activate_profile(Some(reader));
+        assert!(state.followed_profiles.is_empty());
+        let unfollow = form(&[("handle", author)]);
+        state.apply("unfollow-profile", &unfollow, path).unwrap();
+        assert!(state.followed_profiles.is_empty());
     }
 
     #[test]

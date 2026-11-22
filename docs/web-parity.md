@@ -17,7 +17,7 @@ The starting revision, `c748fcb`, had **53 implemented, 23 partial, and 24 missi
 | ID | Workflow to verify | Baseline |
 | --- | --- | --- |
 | 001 | Open Home and see a personalized mix of joined communities and public discussions. | Implemented. Membership and feed settings influence a local ranking. |
-| 002 | Switch to Following and see posts only from communities that account joined. | Implemented. |
+| 002 | Switch to Following and see posts from joined communities. With no profiles followed, posts from unjoined communities stay outside the feed. | Implemented. |
 | 003 | Browse an All feed spanning public communities while respecting personal filters. | Implemented. |
 | 004 | Open a community’s feed and browse only discussions from that community. | Implemented. |
 | 005 | Sort by Top, switch time windows, and see vote-ranked posts within the selected window. | Partial. Top uses votes with a single all-time pool. |
@@ -348,6 +348,12 @@ Workflow **052** is implemented. The comment and reply editors support bold, ita
 Chromium checks at 1440 and 390 CSS pixels covered all four controls, nested replies, converting older comments, preserving attachments, and rendering after restart. HTTP checks covered safe link and HTML rendering, fenced code, persistence, and finding a phrase that spans formatted and unformatted words.
 
 Checks on the same release build passed at both browser widths for **46 workflows**. IDs covered were **002–007, 012–016, 019–020, 023–024, 033–034, 037–039, 044–046, 049–060, 066, 071–073, 079–083, and 088–089**.
+
+## Profile following update
+
+Workflow **064** is implemented. Signed-in users can follow and unfollow profiles. Following combines posts visible on those profiles with posts from the user’s joined communities. Profile following respects public activity settings and existing feed filters. This brings the implementation count to **91 implemented, 5 partial, and 4 missing**.
+
+Chromium checks at 1440 and 390 CSS pixels covered following and unfollowing, mixed feed ordering, duplicate prevention, privacy, blocking, account isolation, and restart. Server checks covered profile visibility changes, private membership and approval, moderation and deletion, Following-scoped search, and the joined-only Home preference.
 
 ## Remaining work
 

@@ -2,9 +2,9 @@ use std::cmp::Reverse;
 use std::fmt::Write;
 
 use super::{
-    account_byline, action_form, can_view_post, community, community_url, discussion,
-    display_post_title, encode, escape, icon, initials, is_sensitive, post_card, profile_name,
-    profile_url, visible_post, PostView,
+    account_byline, action_fields, action_form, can_view_post, community, community_url,
+    discussion, display_post_title, encode, escape, icon, initials, is_sensitive, post_card,
+    profile_name, profile_url, visible_post, PostView,
 };
 use crate::model::{Comment, Post, State};
 
@@ -19,7 +19,13 @@ const TABS: &[(&str, &str)] = &[
     ("downvoted", "Downvoted"),
 ];
 
-pub(super) fn render(state: &State, requested: &str, public: bool, can_message: bool) -> String {
+pub(super) fn render(
+    state: &State,
+    requested: &str,
+    public: bool,
+    can_message: bool,
+    following: Option<bool>,
+) -> String {
     let available = if public { &TABS[..3] } else { TABS };
     let tab = available
         .iter()
@@ -32,10 +38,31 @@ pub(super) fn render(state: &State, requested: &str, public: bool, can_message: 
         "/profile".into()
     };
     let back = format!("{base}?tab={tab}");
-    let controls = if can_message {
-        format!("<div class='profile-header-actions'><a class='button light' href='/messages?peer={}'>{} Message</a></div>", encode(&state.username), icon("mail"))
-    } else if public {
-        String::new()
+    let controls = if public {
+        let mut actions = String::new();
+        if let Some(following) = following {
+            let (action, label, style) = if following {
+                ("unfollow-profile", "Unfollow", "light")
+            } else {
+                ("follow-profile", "Follow", "dark")
+            };
+            let fields = action_fields(action, &back, &[("handle", &state.username)]);
+            write!(actions, "<form class='profile-follow-form' method='post' action='/action'>{fields}<button class='button {style}' type='submit'>{label}</button></form>").unwrap();
+        }
+        if can_message {
+            write!(
+                actions,
+                "<a class='button light' href='/messages?peer={}'>{} Message</a>",
+                encode(&state.username),
+                icon("mail")
+            )
+            .unwrap();
+        }
+        if actions.is_empty() {
+            actions
+        } else {
+            format!("<div class='profile-header-actions'>{actions}</div>")
+        }
     } else {
         format!("<div class='profile-header-actions'><a class='button light' href='/profile/settings?section=identity'>{} Edit profile</a><a class='button light' href='/account/settings'>Account settings</a><a class='button light' href='/account/security'>Security</a><form method='post' action='/account/logout'><button class='button light' type='submit'>Sign out</button></form></div>", icon("sliders"))
     };

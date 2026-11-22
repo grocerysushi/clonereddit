@@ -192,7 +192,7 @@ impl<'a> Scope<'a> {
         self.selected.is_some() || self.custom.is_some()
     }
 
-    fn includes_community(&self, item: &Community) -> bool {
+    fn includes_community(&self, item: &Community, post: Option<&Post>) -> bool {
         if !self.state.can_view_community(item) {
             return false;
         }
@@ -206,7 +206,10 @@ impl<'a> Scope<'a> {
             return feed.communities.contains(&item.slug);
         }
         match self.active {
-            "following" => self.state.joined.contains(&item.slug),
+            "following" => post.map_or_else(
+                || self.state.joined.contains(&item.slug),
+                |post| self.state.following_includes_post(post, item),
+            ),
             "saved" => true,
             _ => item.visibility != "private",
         }
@@ -216,7 +219,7 @@ impl<'a> Scope<'a> {
         self.state.posts.iter().filter(move |post| {
             can_view_post(self.state, post)
                 && community(self.state, &post.community)
-                    .is_some_and(|item| self.includes_community(item))
+                    .is_some_and(|item| self.includes_community(item, Some(post)))
                 && (self.active != "saved" || self.state.saved.contains(&post.id))
                 && (self.active != "news" || post.flair.eq_ignore_ascii_case("news"))
                 && !self.state.hidden.contains(&post.id)
@@ -306,7 +309,7 @@ fn communities(scope: &Scope<'_>, needle: &str) -> String {
         .iter()
         .filter(|item| {
             let discoverable = if scope.explicit() {
-                scope.includes_community(item)
+                scope.includes_community(item, None)
             } else {
                 item.visibility == "public" && !state.muted.contains(&item.slug)
             };

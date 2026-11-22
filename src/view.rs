@@ -227,6 +227,12 @@ pub fn route(
         if action == "profile" && field(&request.form, "username") != state.username {
             return form_error(state, "Your account username stays the same.", back);
         }
+        if action == "follow-profile" {
+            let handle = field(&request.form, "handle").trim();
+            if !auth.has_account(handle) && !state.has_profile(handle) {
+                return form_error(state, "This profile is unavailable.", back);
+            }
+        }
         if matches!(
             action,
             "request-chat" | "accept-chat-request" | "decline-chat-request"
@@ -651,7 +657,7 @@ pub fn route(
         "/profile" => (
             "Your profile",
             "profile",
-            profile::render(state, profile_tab, false, false),
+            profile::render(state, profile_tab, false, false, None),
         ),
         "/profile/settings" => (
             "Profile settings",
@@ -804,14 +810,17 @@ fn public_profile(
     }
     let tab = field(&request.query, "tab");
     let can_message = registered && !viewer.username.is_empty() && viewer.username != handle;
-    let content = profile::render(&profile, tab, true, can_message);
+    let following = viewer
+        .can_follow_profile(handle)
+        .then(|| viewer.followed_profiles.contains(handle));
+    let content = profile::render(&profile, tab, true, can_message, following);
     Response::html(layout_with_rail(
         viewer,
         "public-profile",
         profile_name(&profile),
         &content,
         "",
-        "",
+        field(&request.query, "notice"),
         Some(profile_panel::render(&profile, &request.origin, true, tab)),
         None,
     ))
@@ -2138,7 +2147,7 @@ fn feed(
     let search = field(query, "q").trim();
     let searching = search::active(query);
     let home_joined_only = active == "home" && !searching && state.home_joined_only;
-    let joined_only = active == "following" || home_joined_only;
+    let following = active == "following";
     let community_feed = selected.filter(|_| !searching);
     let flair = community_feed.map_or("", |_| field(query, "flair"));
     let kind = if searching {
@@ -2216,6 +2225,11 @@ fn feed(
                 },
             )
         }
+        ("following", _, true) => masthead(
+            "The front page.",
+            "Posts from communities you’ve joined and profiles you follow.",
+            "THE THREADPORCH FEED",
+        ),
         ("home", _, true) if home_joined_only => masthead(
             "The front page.",
             "Posts from communities you’ve joined.",
@@ -2413,11 +2427,12 @@ fn feed(
                     && (item.visibility != "private"
                         || selected.is_some()
                         || custom.is_some()
-                        || joined_only
+                        || ((following || home_joined_only) && state.joined.contains(&item.slug))
                         || active == "saved")
             });
             let in_view = match active {
-                _ if joined_only => state.joined.contains(&post.community),
+                "following" => group.is_some_and(|item| state.following_includes_post(post, item)),
+                _ if home_joined_only => state.joined.contains(&post.community),
                 "saved" => state.saved.contains(&post.id),
                 "news" => post.flair.eq_ignore_ascii_case("news"),
                 _ => {
@@ -2509,7 +2524,9 @@ fn feed(
         html.push_str("<section class='panel empty'><h2>No matching media posts</h2></section>");
     } else if total == 0 && searching {
         html.push_str("<section class='panel empty'><h2>No matching posts</h2><p>Try different search terms or filters.</p></section>");
-    } else if total == 0 && joined_only {
+    } else if total == 0 && following {
+        html.push_str("<section class='panel empty'><h2>Nothing in Following yet.</h2><p>Join a community or follow a profile to see posts here.</p><a class='button light' href='/?view=communities'>Explore communities</a></section>");
+    } else if total == 0 && home_joined_only {
         html.push_str("<section class='panel empty'><h2>No posts from your communities yet.</h2><a class='button light' href='/?view=communities'>Explore communities</a></section>");
     } else if total == 0 {
         html.push_str("<section class='panel empty'><h2>No discussions here yet.</h2><p>Try a different search or check your feed controls.</p><a class='button light' href='/settings'>Feed controls</a></section>");
