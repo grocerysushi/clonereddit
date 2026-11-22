@@ -33,6 +33,9 @@ pub use moderation_roles::{ModPermission, ModeratorAssignment, ModeratorRole};
 #[path = "model/notification_preferences.rs"]
 mod notification_preferences;
 pub use notification_preferences::NotificationPreferences;
+#[path = "model/reporting.rs"]
+mod reporting;
+pub use reporting::ReportReason;
 #[path = "model/timed_restrictions.rs"]
 mod timed_restrictions;
 use timed_restrictions::{representable_expiration, restriction_expiration};
@@ -139,6 +142,9 @@ pub struct Comment {
 pub struct Report {
     pub id: u64,
     pub post: u64,
+    pub comment: Option<u64>,
+    pub reason: Option<ReportReason>,
+    pub community: Option<String>,
     pub region: String,
     pub details: String,
     pub reviewed: bool,
@@ -975,6 +981,7 @@ impl State {
             "edit-comment" => self.edit_comment(form),
             "delete-comment" => self.delete_comment(form),
             "report" => self.create_report(form),
+            "report-content" => self.report_content(form),
             "send-direct-message" => self.send_direct_message(form),
             "accept-chat-request" => self.resolve_chat_request(form, true),
             "decline-chat-request" => self.resolve_chat_request(form, false),
@@ -1658,6 +1665,9 @@ impl State {
         self.reports.push(Report {
             id,
             post,
+            comment: None,
+            reason: None,
+            community: None,
             region: region.into(),
             details: details.into(),
             reviewed: false,
@@ -1675,7 +1685,7 @@ impl State {
             .ok_or("This report could not be found.")?;
         let report = &self.reports[index];
         let community = self
-            .community_for_post(report.post)
+            .report_community(report)
             .filter(|item| self.can_moderate(item, ModPermission::Reports))
             .map(|item| item.slug.clone())
             .ok_or("This report could not be found.")?;
@@ -2225,7 +2235,15 @@ impl State {
             .iter()
             .position(|post| post.id == id && post.author == self.username)
             .ok_or("You can delete posts from your own profile.")?;
-        self.posts.remove(index);
+        let post = self.posts.remove(index);
+        // Retained community reports keep the scope of the original discussion.
+        for report in self
+            .reports
+            .iter_mut()
+            .filter(|report| report.post == id && report.reason.is_some())
+        {
+            report.community = Some(post.community.clone());
+        }
         self.content_removals
             .retain(|removal| removal.post_id != id);
         self.automod_flags.retain(|flag| flag.post_id != id);
@@ -2490,22 +2508,7 @@ impl State {
                     deleted,
                 });
             }
-            ["report", id, post, region, details, status @ ..] => {
-                let (reviewed, reporter) = match status {
-                    [] => (false, self.username.clone()),
-                    [reviewed] => (number(reviewed)?, self.username.clone()),
-                    [reviewed, reporter] => (number(reviewed)?, decode(reporter)?),
-                    _ => return None,
-                };
-                self.reports.push(Report {
-                    id: number(id)?,
-                    post: number(post)?,
-                    region: decode(region)?,
-                    details: decode(details)?,
-                    reviewed,
-                    reporter,
-                });
-            }
+            fields @ ["report", ..] => self.read_report_record(fields)?,
             ["message-sequence", next_message, next_notification] => {
                 self.next_message = number(next_message)?;
                 self.next_notification = number(next_notification)?;
@@ -2868,16 +2871,7 @@ impl State {
         self.write_content_removals(file)?;
         self.write_automod_records(file)?;
         for report in &self.reports {
-            writeln!(
-                file,
-                "report\t{}\t{}\t{}\t{}\t{}\t{}",
-                report.id,
-                report.post,
-                encode(&report.region),
-                encode(&report.details),
-                report.reviewed,
-                encode(&report.reporter),
-            )?;
+            report.write_record(file)?;
         }
         writeln!(
             file,

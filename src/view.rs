@@ -11,6 +11,7 @@ mod moderation_workspace;
 mod profile;
 mod profile_panel;
 mod publishing;
+mod reporting;
 mod restricted;
 mod scheduled;
 mod search;
@@ -199,6 +200,21 @@ pub fn route(
         }
         if action == "send-direct-message" && !auth.has_account(field(&request.form, "recipient")) {
             return message_error(state, auth, &request.form, "Choose a registered recipient.");
+        }
+        if action == "report-content" {
+            return match state.apply(action, &request.form, path) {
+                Ok(notice) => Response::redirect(&format!(
+                    "{}&notice={}",
+                    reporting::COMMUNITY_HISTORY,
+                    encode(notice)
+                )),
+                Err(error) => reporting::content_form(state, &request.form, &error).map_or_else(
+                    || missing(state),
+                    |content| {
+                        Response::html(layout(state, "reports", "Report content", &content, "", ""))
+                    },
+                ),
+            };
         }
         if action == "submit-appeal" {
             return match state.apply(action, &request.form, path) {
@@ -430,7 +446,11 @@ pub fn route(
                 "manage" => "manage",
                 _ => "queue",
             };
-            ("Moderation", section, moderation::render(state, section))
+            (
+                "Moderation",
+                section,
+                moderation::render(state, section, query),
+            )
         }
         "/moderation/tools" => {
             let selected = field(query, "community");
@@ -505,7 +525,19 @@ pub fn route(
         ),
         "/appeals" => ("Your appeals", "appeals", appeals::render(state, None, "")),
         "/policy" => ("Moderation policy", "policy", policy()),
-        "/reports" => ("Legal review log", "policy", reports(state)),
+        "/reports" => {
+            let community = field(query, "view") == "community";
+            let title = if community {
+                "Community reports"
+            } else {
+                "Legal review log"
+            };
+            (title, "reports", reporting::history(state, community))
+        }
+        "/report/content" => match reporting::content_form(state, query, "") {
+            Some(content) => ("Report content", "reports", content),
+            None => return missing(state),
+        },
         "/report" => match find_post(state, query) {
             Some(post) => ("Report a legal concern", "policy", report_form(post)),
             None => return missing(state),
@@ -924,19 +956,20 @@ fn automod_submission(
     form: &BTreeMap<String, String>,
 ) -> Response {
     let slug = field(form, "community");
-    if community(state, slug).is_none_or(|item| !state.can_moderate(item, ModPermission::Content)) {
+    let Some(item) =
+        community(state, slug).filter(|item| state.can_moderate(item, ModPermission::Content))
+    else {
         return missing(state);
-    }
-    let dismissing = action == "dismiss-automod-flag";
-    let section = if dismissing {
-        "queue&status=automod"
-    } else {
-        "automod"
     };
-    let back = format!(
-        "/moderation/tools?community={}&section={section}",
-        encode(slug)
-    );
+    let dismissing = action == "dismiss-automod-flag";
+    let back = if dismissing {
+        moderation_workspace::automod_return_url(item, form)
+    } else {
+        format!(
+            "/moderation/tools?community={}&section=automod",
+            encode(slug)
+        )
+    };
     match state.apply(action, form, path) {
         Ok(notice) => Response::redirect(&format!("{back}&notice={}", encode(notice))),
         Err(error) => {
@@ -1440,6 +1473,12 @@ fn layout_with_rail(
         ("/?view=all", "All discussions", "grid", "all"),
         ("/?view=saved", "Saved", "save", "saved"),
         ("/settings", "Feed controls", "sliders", "settings"),
+        (
+            reporting::COMMUNITY_HISTORY,
+            "Your reports",
+            "log",
+            "reports",
+        ),
         ("/appeals", "Your appeals", "shield", "appeals"),
         ("/policy", "Moderation policy", "shield", "policy"),
     ]
@@ -2418,6 +2457,14 @@ fn post_card(state: &State, post: &Post, back: &str, full: bool, pinned: bool) -
             "menu-item",
         ));
     }
+    if !state.username.is_empty() {
+        write!(
+            menu,
+            "<a class='menu-item' href='{}'>Report post</a>",
+            escape(&reporting::content_url(ContentKind::Post, post.id))
+        )
+        .unwrap();
+    }
     write!(
         menu,
         "<a class='menu-item' href='/report?id={id}'>Report a legal concern</a>"
@@ -3114,39 +3161,6 @@ fn policy() -> String {
 <h2>Community restrictions</h2><p>If a community bans your account or mutes your mod mail, you can ask its moderation team to review the restriction in <a class="subtle-link" href="/appeals">Your appeals</a>.</p>
 <div class="form-actions"><a class="button dark" href="/reports">View review log</a><a class="button light" href="/settings">Feed controls</a></div></section>"#,
     )
-}
-
-fn reports(state: &State) -> String {
-    let mut html = String::from("<section class='panel standalone'><h1>Legal review log</h1><p>Reports you submitted appear here.</p>");
-    let mut reports = state
-        .reports
-        .iter()
-        .rev()
-        .filter(|report| report.reporter == state.username)
-        .peekable();
-    if reports.peek().is_none() {
-        html.push_str("<div class='log-empty'><h2>No reports yet</h2><p>Use a post’s menu to report a legal concern.</p></div>");
-    }
-    for report in reports {
-        let title = visible_post(state, report.post).map_or_else(
-            || "Discussion unavailable".to_owned(),
-            |post| {
-                format!(
-                    "<a href='/thread?id={}'>{}</a>",
-                    post.id,
-                    escape(&post.title)
-                )
-            },
-        );
-        let status = if report.reviewed {
-            "Reviewed"
-        } else {
-            "Pending review"
-        };
-        write!(html, "<article class='log-item'><span class='flair'>{status}</span><h2>{title}</h2><p><strong>Region</strong> {}</p><p>{}</p></article>", escape(&report.region), escape(&report.details)).unwrap();
-    }
-    html.push_str("</section>");
-    html
 }
 
 fn report_form(post: &Post) -> String {

@@ -29,7 +29,7 @@ impl ContentKind {
         }
     }
 
-    pub(super) fn parse(kind: &str) -> Option<Self> {
+    pub fn parse(kind: &str) -> Option<Self> {
         match kind {
             "post" => Some(Self::Post),
             "comment" => Some(Self::Comment),

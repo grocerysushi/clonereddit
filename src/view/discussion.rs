@@ -1,5 +1,5 @@
-use super::{action_fields, escape, icon};
-use crate::model::{Comment, State};
+use super::{action_fields, escape, icon, reporting};
+use crate::model::{Comment, ContentKind, State};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CommentSort {
@@ -84,7 +84,7 @@ pub(super) fn menu(
     moderation: Option<&str>,
 ) -> String {
     let owns = comment.author == state.username;
-    if comment.deleted || (!owns && moderation.is_none()) {
+    if comment.deleted || state.username.is_empty() {
         return String::new();
     }
 
@@ -108,8 +108,9 @@ pub(super) fn menu(
             escape(url)
         )
     });
+    let report = escape(&reporting::content_url(ContentKind::Comment, comment.id));
     format!(
-        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{edit}{delete}{moderate}</div></details>",
+        "<details class='comment-menu'><summary class='action' aria-label='Comment actions'>{}</summary><div class='menu-popover comment-menu-popover'>{edit}{delete}<a class='menu-item' href='{report}'>Report comment</a>{moderate}</div></details>",
         icon("more")
     )
 }

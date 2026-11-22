@@ -7,8 +7,8 @@ use std::{
 use crate::model::{Community, ContentKind, ModPermission, Post, Report, State};
 
 use super::{
-    account_byline, action_fields, action_form, community_icon, community_owner, community_url,
-    encode, escape, field, hidden, icon, score,
+    account_byline, action_fields, action_form, can_view_post, community_icon, community_owner,
+    community_url, encode, escape, field, hidden, icon, score,
 };
 use super::{restricted, scheduled};
 
@@ -29,7 +29,7 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "queue",
         "Queue",
         "shield",
-        "Review legal reports and update their status.",
+        "Review reports and AutoMod flags.",
     ),
     (
         "mail",
@@ -194,13 +194,17 @@ pub(super) fn automod_error(
 ) -> String {
     let workspace = Workspace::new(state, item);
     if field(form, "action") == "dismiss-automod-flag" {
-        let query = BTreeMap::from([("status".to_owned(), "automod".to_owned())]);
-        let body = automod::error_notice(error) + &workspace.queue(state, &query);
+        let filters = QueueFilters::flag_return(form);
+        let body = automod::error_notice(error) + &workspace.queue_filtered(state, filters);
         workspace.frame(state, "queue", "Queue", "", &body)
     } else {
         let body = automod::rules(state, item, field(form, "id"), Some((form, error)));
         workspace.frame(state, "automod", AUTOMOD_TITLE, "", &body)
     }
+}
+
+pub(super) fn automod_return_url(item: &Community, form: &BTreeMap<String, String>) -> String {
+    QueueFilters::flag_return(form).url(item)
 }
 
 pub(super) fn content_error(
@@ -381,10 +385,98 @@ fn search_results(state: &State, item: &Community, search: &str) -> String {
     html
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct QueueKind(Option<ContentKind>);
+
+impl QueueKind {
+    pub(super) fn parse(value: &str) -> Self {
+        Self(match value {
+            "post" => Some(ContentKind::Post),
+            "comment" => Some(ContentKind::Comment),
+            _ => None,
+        })
+    }
+
+    pub(super) fn as_str(self) -> &'static str {
+        self.0.map_or("all", ContentKind::as_str)
+    }
+
+    pub(super) fn allows(self, kind: ContentKind) -> bool {
+        self.0.is_none_or(|selected| selected == kind)
+    }
+
+    pub(super) fn select(self) -> String {
+        let mut options = String::new();
+        for (value, label) in [
+            ("all", "All content"),
+            ("post", "Posts"),
+            ("comment", "Comments"),
+        ] {
+            let selected = if self.as_str() == value {
+                " selected"
+            } else {
+                ""
+            };
+            write!(
+                options,
+                "<option value='{value}'{selected}>{label}</option>"
+            )
+            .unwrap();
+        }
+        format!("<label>Content type<select name='kind'>{options}</select></label>")
+    }
+}
+
+#[derive(Clone, Copy)]
+struct QueueFilters {
+    status: &'static str,
+    sort: &'static str,
+    kind: QueueKind,
+}
+
+impl QueueFilters {
+    fn read(values: &BTreeMap<String, String>, automatic: bool) -> Self {
+        let status = match field(values, "status") {
+            "reported" => "reported",
+            "reviewed" => "reviewed",
+            "automod" if automatic => "automod",
+            _ => "needs-review",
+        };
+        let sort = if field(values, "sort") == "oldest" {
+            "oldest"
+        } else {
+            "newest"
+        };
+        Self {
+            status,
+            sort,
+            kind: QueueKind::parse(field(values, "kind")),
+        }
+    }
+
+    fn flag_return(form: &BTreeMap<String, String>) -> Self {
+        let mut filters = Self::read(form, true);
+        if field(form, "status") != "needs-review" {
+            filters.status = "automod";
+        }
+        filters
+    }
+
+    fn url(self, item: &Community) -> String {
+        format!(
+            "{}&status={}&sort={}&kind={}",
+            tools_url(item, "queue"),
+            self.status,
+            self.sort,
+            self.kind.as_str()
+        )
+    }
+}
+
 struct Workspace<'a> {
     item: &'a Community,
     posts: BTreeMap<u64, &'a Post>,
-    reports: Vec<(&'a Report, &'a Post)>,
+    reports: Vec<(&'a Report, Option<&'a Post>)>,
     comments: usize,
     upcoming: usize,
 }
@@ -400,7 +492,12 @@ impl<'a> Workspace<'a> {
         let reports = state
             .reports
             .iter()
-            .filter_map(|report| posts.get(&report.post).map(|post| (report, *post)))
+            .filter(|report| {
+                state
+                    .report_community(report)
+                    .is_some_and(|community| community.slug == item.slug)
+            })
+            .map(|report| (report, posts.get(&report.post).copied()))
             .collect();
         let comments = state
             .comments
@@ -458,33 +555,33 @@ impl<'a> Workspace<'a> {
 
     fn queue(&self, state: &State, query: &BTreeMap<String, String>) -> String {
         let automatic = state.can_moderate(self.item, ModPermission::Content);
-        let status = match field(query, "status") {
-            "reported" => "reported",
-            "reviewed" => "reviewed",
-            "automod" if automatic => "automod",
-            _ => "needs-review",
-        };
-        let sort = if field(query, "sort") == "oldest" {
-            "oldest"
-        } else {
-            "newest"
-        };
-        let base = tools_url(self.item, "queue");
-        let back = format!("{base}&status={status}&sort={sort}");
-        let pending = self.pending();
-        let flag_count = if automatic {
-            state
-                .automod_flags
-                .iter()
-                .filter(|flag| flag.community == self.item.slug)
-                .count()
-        } else {
-            0
-        };
+        self.queue_filtered(state, QueueFilters::read(query, automatic))
+    }
+
+    fn queue_filtered(&self, state: &State, filters: QueueFilters) -> String {
+        let automatic = state.can_moderate(self.item, ModPermission::Content);
+        let QueueFilters { status, sort, kind } = filters;
+        let back = filters.url(self.item);
+        let mut flags: Vec<_> = state
+            .automod_flags
+            .iter()
+            .filter(|flag| automatic && flag.community == self.item.slug && kind.allows(flag.kind))
+            .collect();
+        let flag_count = flags.len();
+        let mut entries: Vec<_> = self
+            .reports
+            .iter()
+            .copied()
+            .filter(|(report, _)| kind.allows(report.kind()))
+            .collect();
+        let pending = entries
+            .iter()
+            .filter(|(report, _)| !report.reviewed)
+            .count();
         let statuses = [
-            ("needs-review", "Needs review", pending),
-            ("reported", "Reported", self.reports.len()),
-            ("reviewed", "Reviewed", self.reports.len() - pending),
+            ("needs-review", "Needs review", pending + flag_count),
+            ("reported", "Reported", entries.len()),
+            ("reviewed", "Reviewed", entries.len() - pending),
             ("automod", "AutoMod flags", flag_count),
         ];
         let mut tabs = String::new();
@@ -497,81 +594,78 @@ impl<'a> Workspace<'a> {
             } else {
                 ""
             };
-            let href = escape(&format!("{base}&status={key}&sort={sort}"));
+            let href = escape(
+                &QueueFilters {
+                    status: key,
+                    ..filters
+                }
+                .url(self.item),
+            );
             write!(
                 tabs,
                 "<a href='{href}'{active}>{label}<span>{count}</span></a>"
             )
             .unwrap();
         }
-        let sort_label = if status == "automod" {
-            "Sort flags"
-        } else {
-            "Sort reports"
-        };
         let mut html = format!(
-            "<div class='mod-queue-controls'><nav class='mod-queue-tabs' aria-label='Queue status'>{tabs}</nav><form class='mod-queue-sort' action='/moderation/tools' method='get'>{}{}{}<label>{sort_label}<select name='sort'><option value='newest'{}>Newest first</option><option value='oldest'{}>Oldest first</option></select></label><button type='submit' class='button light'>Apply</button></form></div>",
+            "<div class='mod-queue-controls'><nav class='mod-queue-tabs' aria-label='Queue status'>{tabs}</nav><form class='mod-queue-sort' action='/moderation/tools' method='get'>{}{}{}{}<label>Sort<select name='sort'><option value='newest'{}>Newest first</option><option value='oldest'{}>Oldest first</option></select></label><button type='submit' class='button light'>Apply</button></form></div>",
             hidden("community", &self.item.slug),
             hidden("section", "queue"),
             hidden("status", status),
+            kind.select(),
             if sort == "newest" { " selected" } else { "" },
             if sort == "oldest" { " selected" } else { "" },
         );
         if status == "automod" {
-            html.push_str(&automod::flags(state, self.item, sort == "oldest", &back));
+            if flags.is_empty() {
+                html.push_str(&empty(
+                    "No AutoMod flags",
+                    "Flags matching this content type will appear here.",
+                    "check",
+                ));
+            } else {
+                html.push_str(&automod::flags(
+                    state, self.item, &mut flags, filters, &back,
+                ));
+            }
             return html;
         }
-        let mut entries: Vec<_> = self
-            .reports
-            .iter()
-            .copied()
-            .filter(|(report, _)| match status {
-                "reviewed" => report.reviewed,
-                "reported" => true,
-                _ => !report.reviewed,
-            })
-            .collect();
+        entries.retain(|(report, _)| match status {
+            "reviewed" => report.reviewed,
+            "reported" => true,
+            _ => !report.reviewed,
+        });
+        let pending_flags = status == "needs-review" && !flags.is_empty();
         entries.sort_by_key(|(report, _)| report.id);
         if sort == "newest" {
             entries.reverse();
         }
-        if entries.is_empty() {
+        if entries.is_empty() && !pending_flags {
             let (heading, detail) = match status {
                 "reported" => (
                     "No reports",
-                    "Legal reports for this community will appear here.",
+                    "Reports matching this content type will appear here.",
                 ),
                 "reviewed" => (
                     "No reviewed reports",
                     "Reports you mark reviewed will appear here.",
                 ),
-                _ if flag_count > 0 => (
-                    "Legal reports are up to date",
-                    "Open AutoMod flags to review automatic matches.",
-                ),
                 _ => (
                     "You’re caught up",
-                    "New legal reports for this community will appear here.",
+                    "New reports and AutoMod flags matching this content type will appear here.",
                 ),
             };
             html.push_str(&empty(heading, detail, "check"));
         }
         for (report, post) in entries {
-            let (label, value, button) = if report.reviewed {
-                ("Reviewed", "no", "Reopen report")
-            } else {
-                ("Pending review", "yes", "Mark reviewed")
-            };
-            let action = action_form(
-                "review-report",
-                &back,
-                &[("id", &report.id.to_string()), ("reviewed", value)],
-                button,
-                "",
-                "button light",
-            );
-            let (title, review) = self.post_review_links(state, post);
-            write!(html, "<article class='panel mod-record'><header><span class='flair'>{label}</span><span class='muted'>Report #{}</span></header><h2>{title}</h2><p><strong>Region</strong> {}</p><p class='mod-record-detail'>{}</p><div class='form-actions'>{action}{review}</div></article>", report.id, escape(&report.region), escape(&report.details)).unwrap();
+            html.push_str(&report_record(state, self.item, post, report, &back, false));
+        }
+        if pending_flags {
+            html.push_str("<section class='mod-queue-flags' aria-labelledby='pending-flags'><h2 id='pending-flags'>AutoMod flags</h2>");
+            html.push_str(&automod::flags(
+                state, self.item, &mut flags, filters, &back,
+            ));
+            html.push_str("</section>");
         }
         html
     }
@@ -703,7 +797,7 @@ impl<'a> Workspace<'a> {
 
     fn insights(&self, state: &State) -> String {
         let pending = self.pending();
-        format!("<section class='panel mod-section'><h2>Community totals</h2><dl class='mod-metrics'><div><dt>Members</dt><dd>{}</dd></div><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Legal reports</dt><dd>{}</dd></div><div><dt>Pending review</dt><dd>{pending}</dd></div><div><dt>Reviewed</dt><dd>{}</dd></div></dl></section>", state.community_member_count(self.item), self.posts.len(), self.comments, self.reports.len(), self.reports.len() - pending)
+        format!("<section class='panel mod-section'><h2>Community totals</h2><dl class='mod-metrics'><div><dt>Members</dt><dd>{}</dd></div><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Reports</dt><dd>{}</dd></div><div><dt>Pending reports</dt><dd>{pending}</dd></div><div><dt>Reviewed</dt><dd>{}</dd></div></dl></section>", state.community_member_count(self.item), self.posts.len(), self.comments, self.reports.len(), self.reports.len() - pending)
     }
 
     fn log(&self, state: &State) -> String {
@@ -766,8 +860,123 @@ impl<'a> Workspace<'a> {
     }
 
     fn summary(&self) -> String {
-        format!("<aside class='mod-tools-insights' aria-label='Community insights'><section class='panel mod-summary'><h2>Community activity</h2><dl class='mod-metrics'><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Needs review</dt><dd>{}</dd></div><div><dt>Scheduled</dt><dd>{}</dd></div></dl><a class='subtle-link' href='{}'>View insights</a></section><section class='panel mod-summary'><h2>Review policy</h2><p class='muted'>Changing a report’s status leaves its discussion visible.</p><a class='subtle-link' href='/policy'>Read the moderation policy</a></section></aside>", self.posts.len(), self.comments, self.pending(), self.upcoming, escape(&tools_url(self.item, "insights")))
+        format!("<aside class='mod-tools-insights' aria-label='Community insights'><section class='panel mod-summary'><h2>Community activity</h2><dl class='mod-metrics'><div><dt>Discussions</dt><dd>{}</dd></div><div><dt>Comments</dt><dd>{}</dd></div><div><dt>Pending reports</dt><dd>{}</dd></div><div><dt>Scheduled</dt><dd>{}</dd></div></dl><a class='subtle-link' href='{}'>View insights</a></section><section class='panel mod-summary'><h2>Review policy</h2><p class='muted'>Use Posts &amp; comments to remove or restore reported content.</p><a class='subtle-link' href='/policy'>Read the moderation policy</a></section></aside>", self.posts.len(), self.comments, self.pending(), self.upcoming, escape(&tools_url(self.item, "insights")))
     }
+}
+
+pub(super) fn report_record(
+    state: &State,
+    item: &Community,
+    post: Option<&Post>,
+    report: &Report,
+    back: &str,
+    aggregate: bool,
+) -> String {
+    let (status, value, button) = if report.reviewed {
+        ("Reviewed", "no", "Reopen report")
+    } else {
+        ("Pending review", "yes", "Mark reviewed")
+    };
+    let id = report.id;
+    let action = action_form(
+        "review-report",
+        back,
+        &[("id", &id.to_string()), ("reviewed", value)],
+        button,
+        "",
+        "button light",
+    );
+    let kind = report.kind();
+    let (heading, review) = report_target_links(state, item, post, report);
+    let (source, reason) = report.reason.map_or_else(
+        || {
+            (
+                "Legal report",
+                format!("<strong>Region</strong> {}", escape(&report.region)),
+            )
+        },
+        |reason| {
+            (
+                "Community report",
+                format!("<strong>Reason</strong> {}", escape(reason.label())),
+            )
+        },
+    );
+    let details = if report.details.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p class='mod-record-detail'>{}</p>",
+            escape(&report.details)
+        )
+    };
+    let mut scope = String::new();
+    if aggregate {
+        let name = escape(&item.name);
+        scope = if state.can_view_community(item) {
+            format!(
+                "<a class='subtle-link' href='{}'>{name}</a> · ",
+                community_url(&item.slug)
+            )
+        } else {
+            format!("{name} · ")
+        };
+    }
+    let class = if aggregate {
+        "log-item moderation-record"
+    } else {
+        "panel mod-record"
+    };
+    format!("<article class='{class} mod-report' data-report-id='{id}' data-content-kind='{}'><header><span class='flair'>{status}</span><span class='muted'>{source} · Report #{id}</span></header><h2>{heading}</h2><p class='mod-report-meta'>{scope}{} · {reason}</p>{details}<div class='form-actions'>{action}{review}</div></article>", kind.as_str(), kind.label())
+}
+
+fn report_target_links(
+    state: &State,
+    item: &Community,
+    post: Option<&Post>,
+    report: &Report,
+) -> (String, String) {
+    let kind = report.kind();
+    let content_id = report.content_id();
+    let unavailable = || (format!("{} unavailable", kind.label()), String::new());
+    let Some(post) = post else {
+        return unavailable();
+    };
+    let title = escape(&post.title);
+    let url = format!("/thread?id={}", post.id);
+    let (heading, url, visible_target) = if let Some(comment_id) = report.comment {
+        let Some(comment) = state.comments.iter().find(|comment| {
+            comment.id == comment_id && comment.post == post.id && !comment.deleted
+        }) else {
+            return unavailable();
+        };
+        (
+            format!("Comment on {title}"),
+            format!("{url}#comment-{comment_id}"),
+            !state.blocked.contains(&comment.author),
+        )
+    } else {
+        (title, url, true)
+    };
+    let heading = if state.content_removal(kind, content_id).is_some() {
+        format!("{heading} <span class='flair'>Removed</span>")
+    } else if state.is_post_removed(post.id) {
+        format!("{heading} <span class='flair'>Thread removed</span>")
+    } else if visible_target && can_view_post(state, post) {
+        format!("<a href='{}'>{heading}</a>", escape(&url))
+    } else {
+        heading
+    };
+    let review = if state.can_moderate(item, ModPermission::Content) {
+        let url = moderate_content::detail_url(item, kind, content_id);
+        format!(
+            "<a class='button light' href='{}'>Review content</a>",
+            escape(&url)
+        )
+    } else {
+        String::new()
+    };
+    (heading, review)
 }
 
 fn elapsed(seconds: u64) -> String {

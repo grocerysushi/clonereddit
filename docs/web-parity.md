@@ -221,11 +221,17 @@ Workflows **079** and **080** are implemented. Moderators can apply permanent or
 
 Desktop and mobile Chromium checks exercised live timed restrictions with affected and unrelated accounts. The deadlines survived a restart, and the affected accounts regained the corresponding publishing or mod mail access when each timer ran out. A separate server check verified automatic recovery from deadlines that elapsed while the server was stopped, private notifications, and exactly-once expiry processing.
 
+## Content reporting and queue update
+
+Workflows **082** and **083** are implemented. Signed-in users can report an accessible post or comment with a reason and track its progress privately. The community queue filters by post or comment and by review status, with AutoMod flags available in the pending queue and their own tab. Moderators can mark human reports reviewed or reopen them. Existing regional legal reports remain in the legal review log and moderation queues. This brings the implementation count to **74 implemented, 12 partial, and 14 missing**.
+
+Independent Chromium profiles at 1440 and 390 CSS pixels filed both types of report, used the combined queue filters, and verified the reporter’s private status after review, reopening, and restart. Legacy legal reports and filtered AutoMod flags were also exercised. Community reports remained reviewable in their original community after the author permanently deleted the parent discussion.
+
 ## Remaining work
 
 1. Expand the release acceptance record. Run the remaining implemented workflows at both sizes against one revision and capture the state and access checks for each ID.
 2. Improve discovery and publishing. Add structured search filters, extend post drafts, add community-defined flair, and expand sharing and discussion controls. Verify that private and removed content stays unavailable through search, attachments, profiles, and links.
-3. Expand community operations. Add structured rules and reporting, granular role permissions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
+3. Expand community operations. Add community-defined reporting rules, granular role permissions, discussion locking, recurring schedules, and richer rule conditions. Preserve moderation decisions and access state across restarts.
 4. Complete accessibility and interface preferences. Run keyboard and screen-reader checks, add user-media alternatives, and verify the theme choice and mobile layout alongside the main workflows.
 
 ## Reddit Help references

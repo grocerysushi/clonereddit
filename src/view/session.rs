@@ -14,6 +14,7 @@ pub(super) fn requires_account(request: &Request) -> bool {
             | "/edit"
             | "/settings"
             | "/report"
+            | "/report/content"
             | "/reports"
             | "/creator"
             | "/messages"

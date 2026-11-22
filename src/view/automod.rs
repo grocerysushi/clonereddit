@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::model::{AutoModAction, AutoModRule, AutoModScope, Community, ModPermission, State};
+use crate::model::{
+    AutoModAction, AutoModFlag, AutoModRule, AutoModScope, Community, ModPermission, State,
+};
 use crate::schedule_time;
 
 use super::super::{action_fields, action_form, display_post_title, escape, field};
-use super::{empty, moderate_content, tools_url};
+use super::{empty, moderate_content, tools_url, QueueFilters};
 
 pub(super) fn rules(
     state: &State,
@@ -130,21 +132,15 @@ fn rule_form(
     format!("<section id='automod-editor' class='panel mod-section mod-automod-editor'><h2>{title}</h2><form class='stack-form' action='/action' method='post'>{fields}<label>Rule name<input name='name' value='{}' maxlength='80' required></label><label>Phrase to match<input name='phrase' value='{}' maxlength='240' required></label><div class='mod-automod-choices'><label>Content type<select name='scope'>{scopes}</select></label><label>Action<select name='rule_action'>{actions}</select></label></div><label>Reason<textarea name='reason' rows='3' maxlength='1000' required>{}</textarea><small class='muted'>Authors receive this reason when AutoMod removes their content.</small></label><label class='checkbox'><input type='checkbox' name='enabled'{check}> Enabled</label><div class='form-actions'><button class='button dark' type='submit'>{button}</button>{cancel}</div></form></section>", escape(name), escape(phrase), escape(reason))
 }
 
-pub(super) fn flags(state: &State, item: &Community, oldest: bool, back: &str) -> String {
-    let mut flags: Vec<_> = state
-        .automod_flags
-        .iter()
-        .filter(|flag| flag.community == item.slug)
-        .collect();
-    if flags.is_empty() {
-        return empty(
-            "No AutoMod flags",
-            "Content matched by a Flag rule will appear here.",
-            "check",
-        );
-    }
+pub(super) fn flags(
+    state: &State,
+    item: &Community,
+    flags: &mut [&AutoModFlag],
+    filters: QueueFilters,
+    back: &str,
+) -> String {
     flags.sort_by_key(|flag| (flag.created_at, flag.id));
-    if !oldest {
+    if filters.sort == "newest" {
         flags.reverse();
     }
     let mut html = String::new();
@@ -162,12 +158,18 @@ pub(super) fn flags(state: &State, item: &Community, oldest: bool, back: &str) -
         let dismiss = action_form(
             "dismiss-automod-flag",
             back,
-            &[("community", &item.slug), ("id", &id)],
+            &[
+                ("community", &item.slug),
+                ("id", &id),
+                ("status", filters.status),
+                ("sort", filters.sort),
+                ("kind", filters.kind.as_str()),
+            ],
             "Dismiss flag",
             "",
             "button light",
         );
-        write!(html, "<article class='panel mod-record mod-automod-flag'><header><span class='flair'>AutoMod flag</span><time class='muted' datetime='{timestamp}Z'>{}</time></header><h2>{}</h2><p class='muted'>{} #{} · {}</p><p class='mod-record-detail'>{}</p><div class='form-actions'><a class='button light' href='{url}'>Review content</a>{dismiss}</div></article>", escape(&when), escape(&flag.rule_name), kind.label(), flag.content_id, escape(title), escape(&flag.reason)).unwrap();
+        write!(html, "<article class='panel mod-record mod-automod-flag' data-content-kind='{}'><header><span class='flair'>AutoMod flag</span><time class='muted' datetime='{timestamp}Z'>{}</time></header><h2>{}</h2><p class='muted'>{} #{} · {}</p><p class='mod-record-detail'>{}</p><div class='form-actions'><a class='button light' href='{url}'>Review content</a>{dismiss}</div></article>", kind.as_str(), escape(&when), escape(&flag.rule_name), kind.label(), flag.content_id, escape(title), escape(&flag.reason)).unwrap();
     }
     html
 }
